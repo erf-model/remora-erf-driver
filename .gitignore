@@ -1,0 +1,150 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+*.so.*
+
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Build directories
+build/
+Build/
+build-*/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+compile_commands.json
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+*.swp
+
+# vcpkg
+vcpkg_installed/
+
+# debug information files
+*.dwo
+
+# test output & cache
+Testing/
+.cache/
+
+# Added from ERF/.gitignore
+.idea
+.vscode
+.DS_Store
+datlog
+log.*
+*/Testing/Temporary
+.*.swp
+/external/*
+/Exec/WORK/*
+ic.txt
+plt*
+chk*
+tmp_build_dir
+.ccls-cache
+ERF*.ex
+AMReX_buildInfo.cpp
+cmake-build*
+cmake_build*
+cmake*ser*
+cmake*par*
+*.ipynb
+job_info
+CTestTestfile.cmake
+DartConfiguration.tcl
+_deps/
+ERFConfig.cmake
+*.pc
+git-state.txt
+lib*.a
+lib*.so
+bin/
+*uild*/Exec/
+*uild*/Submodules/
+*uild*/Tests/
+*uild*/cmake_packages/
+externals/
+build_*/
+install_*/
+build_*.log
+*~
+\#*\#
+.#*
+
+# Added from REMORA/.gitignore
+*.aux
+*.dvi
+*.toc
+*.bbl
+*.blg
+*.lof
+*.lot
+*.idx
+*.ilg
+*.ind
+*.backup
+Docs/*.out
+Docs/*.ps
+Docs/*.pdf
+Docs/*/*.pdf
+UsersGuide/*.out
+UsersGuide/*.pdf
+\#*
+\.#*
+*.ex
+diffs*
+*plt?????
+*chk?????
+*bl_prof
+*plt?????.old*
+*chk?????.old*
+*diffs.old*
+*bl_prof.old*
+o/
+d/
+f/
+t/
+tmp_build_dir/
+Backtrace.*
+*.orig

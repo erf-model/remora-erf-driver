@@ -34,6 +34,11 @@ MultiBlockContainer::InitializeBlocks ()
     m_atm_tick = 0;
     AllocateCaches();
     FillSyntheticData();
+
+    // TODO(stage-1): implement a soft-start / ramp-in protocol for coupled forcing.
+    // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
+    // atmosphere/ocean timescales are strongly separated. We should gradually ramp
+    // exchanged tendencies across the first few ocean macro-steps.
 }
 
 void
@@ -125,10 +130,20 @@ MultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& pack_surf
     PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
     PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanNames());
 
+    // Multi-rate clock rationale:
+    // - ERF advances a compressible atmosphere where acoustic stability often drives
+    //   dt to O(1-10 s).
+    // - REMORA advances Boussinesq/split-explicit ocean dynamics with a much larger
+    //   macro-step O(10^2-10^3 s).
+    // We therefore hold one ocean macro-state while subcycling atmosphere updates.
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
         const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
 
+        // Stage-0 note: this passes instantaneous slabs at the macro-step boundary.
+        // Future stage: use old/new cached states and time interpolation during this
+        // loop (same temporal pattern as erf-amrwind-driver boundary ingestion in
+        // Source/wind_energy/ABLReadERF.cpp) to avoid stepwise forcing artifacts.
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             const amrex::Real atm_time = m_atm_tick * m_dt_atm;
 

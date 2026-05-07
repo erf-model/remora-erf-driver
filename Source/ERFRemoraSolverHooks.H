@@ -10,6 +10,20 @@ class REMORA;
 
 namespace erf_remora::hooks
 {
+// Minimal-solver-intrusion boundary for ERF/REMORA coupling.
+//
+// Architectural mandate:
+// - ERF and REMORA do not call each other directly.
+// - Both solvers only pack/unpack AMReX slabs through this thin API.
+// - The driver (`MultiBlockContainer`) owns orchestration, timing, and cache memory.
+//
+// Precedent:
+// - `erf-amrwind-driver` conductor pattern (AMReX Multiblock indirection).
+// - AMR-Wind/CFD orchestration style in `kynema-sgf/src/CFDSim.H`.
+// - ERF side interface extension via methods declared in `erf-model/ERF/Source/ERF.H`.
+//
+// This keeps core fluid kernels isolated from coupling logic and reduces merge risk
+// as Stage-1..4 capabilities are added.
 ERF* CreateERF();
 void DestroyERF(ERF* erf);
 

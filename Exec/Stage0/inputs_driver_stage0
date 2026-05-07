@@ -1,0 +1,8 @@
+# Stage-0 synthetic-only coupling debug path
+
+driver.synthetic_only = 1
+driver.n_cell = 32
+driver.max_grid_size = 32
+driver.dt_atm = 10.0
+driver.atm_substeps_per_ocean_step = 6
+driver.ocean_steps = 2

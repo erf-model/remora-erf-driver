@@ -1,4 +1,4 @@
-#include "ERFRemoraConductor.H"
+#include "ERFRemoraMultiBlockContainer.H"
 
 #include <AMReX.H>
 #include <AMReX_ParmParse.H>
@@ -29,7 +29,7 @@ main (int argc, char* argv[])
         pp_driver.query("ocean_steps", ocean_steps);
         pp_driver.query("synthetic_only", synthetic_only);
 
-        erf_remora::MultiBlockContainer container(
+        erf_remora::ERFRemoraMultiBlockContainer container(
             n_cell,
             max_grid_size,
             dt_atm,

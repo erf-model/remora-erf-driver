@@ -1,5 +1,5 @@
-#ifndef ERF_REMORA_CONDUCTOR_H_
-#define ERF_REMORA_CONDUCTOR_H_
+#ifndef ERF_REMORA_DRIVER_MULTIBLOCK_CONTAINER_H_
+#define ERF_REMORA_DRIVER_MULTIBLOCK_CONTAINER_H_
 
 #include "ERFRemoraCouplingContract.H"
 
@@ -19,7 +19,7 @@ class REMORA;
 namespace erf_remora
 {
 /**
- * MultiBlockContainer is the stage-0 "conductor" object.
+ * ERFRemoraMultiBlockContainer is the stage-0 "conductor" object.
  *
  * Design constraints for this sprint:
  * 1. The driver (not ERF/REMORA) owns the interface memory and coupling clock.
@@ -36,11 +36,11 @@ namespace erf_remora
  * - Stage-1/2 will move data with AMReX-native `ParallelCopy` plus
  *   `NonLocalBC::MultiBlockCommMetaData` once block/rank ownership diverges.
  */
-class MultiBlockContainer
+class ERFRemoraMultiBlockContainer
 {
 public:
-    MultiBlockContainer(int n_cell, int max_grid_size, amrex::Real dt_atm, int atm_substeps_per_ocean_step);
-    ~MultiBlockContainer() = default;
+    ERFRemoraMultiBlockContainer(int n_cell, int max_grid_size, amrex::Real dt_atm, int atm_substeps_per_ocean_step);
+    ~ERFRemoraMultiBlockContainer() = default;
 
     void InitializeBlocks();
     void AdvanceBlocks(ERF& erf, REMORA& remora, int ocean_steps);

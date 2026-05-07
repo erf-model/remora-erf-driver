@@ -63,7 +63,7 @@ add_subdirectory(external-src/REMORA remora-build)
 add_executable(
   erf-remora-driver
   Source/main.cpp
-  Source/ERFRemoraConductor.cpp
+  Source/ERFRemoraMultiBlockContainer.cpp
 )
 
 target_include_directories(

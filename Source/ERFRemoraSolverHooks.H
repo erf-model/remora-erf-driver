@@ -15,7 +15,7 @@ namespace erf_remora::hooks
 // Architectural mandate:
 // - ERF and REMORA do not call each other directly.
 // - Both solvers only pack/unpack AMReX slabs through this thin API.
-// - The driver (`MultiBlockContainer`) owns orchestration, timing, and cache memory.
+// - The driver (`ERFRemoraMultiBlockContainer`) owns orchestration, timing, and cache memory.
 //
 // Precedent:
 // - `erf-amrwind-driver` conductor pattern (AMReX Multiblock indirection).

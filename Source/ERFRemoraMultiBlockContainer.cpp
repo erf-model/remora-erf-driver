@@ -1,4 +1,4 @@
-#include "ERFRemoraConductor.H"
+#include "ERFRemoraMultiBlockContainer.H"
 
 #include <AMReX.H>
 #include <AMReX_Print.H>
@@ -14,7 +14,7 @@ fill_constant(amrex::MultiFab& mf, amrex::Real value)
 
 namespace erf_remora
 {
-MultiBlockContainer::MultiBlockContainer (int n_cell, int max_grid_size, amrex::Real dt_atm, int atm_substeps_per_ocean_step)
+ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell, int max_grid_size, amrex::Real dt_atm, int atm_substeps_per_ocean_step)
     : m_dt_atm(dt_atm),
       m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step)
 {
@@ -29,7 +29,7 @@ MultiBlockContainer::MultiBlockContainer (int n_cell, int max_grid_size, amrex::
 }
 
 void
-MultiBlockContainer::InitializeBlocks ()
+ERFRemoraMultiBlockContainer::InitializeBlocks ()
 {
     m_atm_tick = 0;
     AllocateCaches();
@@ -42,7 +42,7 @@ MultiBlockContainer::InitializeBlocks ()
 }
 
 void
-MultiBlockContainer::AllocateCaches ()
+ERFRemoraMultiBlockContainer::AllocateCaches ()
 {
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanStates);
     m_atmos_to_ocean.resize(coupling::NumAtmosToOceanStates);
@@ -60,7 +60,7 @@ MultiBlockContainer::AllocateCaches ()
 }
 
 void
-MultiBlockContainer::FillSyntheticData ()
+ERFRemoraMultiBlockContainer::FillSyntheticData ()
 {
     for (int idx = 0; idx < coupling::NumAtmosToOceanStates; ++idx) {
         fill_constant(*m_atmos_to_ocean[idx], 10.0 + static_cast<amrex::Real>(idx));
@@ -70,7 +70,7 @@ MultiBlockContainer::FillSyntheticData ()
 }
 
 void
-MultiBlockContainer::PrintDiagnostics (const char* label,
+ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
                              const amrex::Vector<amrex::MultiFab*>& fields,
                              const amrex::Vector<std::string>& names) const
 {
@@ -87,14 +87,14 @@ MultiBlockContainer::PrintDiagnostics (const char* label,
 }
 
 void
-MultiBlockContainer::AdvanceBlocks (ERF& erf, REMORA& remora, int ocean_steps)
+ERFRemoraMultiBlockContainer::AdvanceBlocks (ERF& erf, REMORA& remora, int ocean_steps)
 {
     amrex::ignore_unused(erf, remora, ocean_steps);
     amrex::Abort("Solver-backed AdvanceBlocks() is disabled in stage-0 synthetic mode. Set driver.synthetic_only = 1.");
 }
 
 void
-MultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
+ERFRemoraMultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
 {
     AdvanceBlocksWithCallbacks(
         [] (amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
@@ -121,11 +121,11 @@ MultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
 }
 
 void
-MultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& pack_surface_state,
-                                                 const ConstStateFn& apply_ocean_surface_state,
-                                                 const MutableStateFn& pack_atmos_states,
-                                                 const ConstStateFn& apply_atmos_states,
-                                                 int ocean_steps)
+ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& pack_surface_state,
+                                                          const ConstStateFn& apply_ocean_surface_state,
+                                                          const MutableStateFn& pack_atmos_states,
+                                                          const ConstStateFn& apply_atmos_states,
+                                                          int ocean_steps)
 {
     PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
     PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanNames());

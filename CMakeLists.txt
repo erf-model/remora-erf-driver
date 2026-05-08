@@ -64,6 +64,8 @@ add_executable(
   erf-remora-driver
   Source/main.cpp
   Source/ERFRemoraMultiBlockContainer.cpp
+  Source/RunERFStandalone.cpp
+  Source/RunREMORAStandalone.cpp
 )
 
 target_include_directories(

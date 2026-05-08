@@ -1,4 +1,5 @@
 #include "ERFRemoraMultiBlockContainer.H"
+#include "StandaloneSolverRuns.H"
 
 #include <AMReX.H>
 #include <AMReX_ParmParse.H>
@@ -29,17 +30,18 @@ main (int argc, char* argv[])
         pp_driver.query("ocean_steps", ocean_steps);
         pp_driver.query("synthetic_only", synthetic_only);
 
-        erf_remora::ERFRemoraMultiBlockContainer container(
-            n_cell,
-            max_grid_size,
-            dt_atm,
-            atm_substeps_per_ocean_step);
-        container.InitializeBlocks();
-
         if (synthetic_only) {
+            erf_remora::ERFRemoraMultiBlockContainer container(
+                n_cell,
+                max_grid_size,
+                dt_atm,
+                atm_substeps_per_ocean_step);
+            container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
         } else {
-            amrex::Abort("driver.synthetic_only = 0 is not supported in stage-0.");
+            amrex::Print() << "Running uncoupled ERF then REMORA paths\n";
+            erf_remora::RunERFStandalone();
+            erf_remora::RunREMORAStandalone();
         }
 
         amrex::Print() << "erf-remora-driver synthetic exchange completed\n";

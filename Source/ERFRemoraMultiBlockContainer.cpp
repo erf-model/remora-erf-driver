@@ -3,20 +3,16 @@
 #include <AMReX.H>
 #include <AMReX_Print.H>
 
-namespace
-{
-void
-fill_constant(amrex::MultiFab& mf, amrex::Real value)
-{
-    mf.setVal(value);
-}
-}
-
 namespace erf_remora
 {
-ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell, int max_grid_size, amrex::Real dt_atm, int atm_substeps_per_ocean_step)
+ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell,
+                                                            int max_grid_size,
+                                                            amrex::Real dt_atm,
+                                                            int atm_substeps_per_ocean_step,
+                                                            coupling::AtmosToOceanContract atm2ocn_contract)
     : m_dt_atm(dt_atm),
-      m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step)
+      m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
+      m_atmos_to_ocean_contract(atm2ocn_contract)
 {
     amrex::Box domain(amrex::IntVect(0, 0, 0), amrex::IntVect(n_cell - 1, n_cell - 1, 0));
     m_ba.define(domain);
@@ -26,6 +22,9 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell, int max_
     amrex::RealBox real_box({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0});
     amrex::Vector<int> is_periodic(AMREX_SPACEDIM, 0);
     m_geom.define(domain, &real_box, amrex::CoordSys::cartesian, is_periodic.data());
+
+    m_atmos_to_ocean_active_indices = coupling::AtmosToOceanActiveIndices(m_atmos_to_ocean_contract);
+    m_atmos_to_ocean_active_names = coupling::AtmosToOceanNames(m_atmos_to_ocean_contract);
 }
 
 void
@@ -34,6 +33,13 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     m_atm_tick = 0;
     AllocateCaches();
     FillSyntheticData();
+
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "Atmos->ocean contract mode: "
+                       << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
+                       << " (" << static_cast<int>(m_atmos_to_ocean_active_indices.size())
+                       << " active layers)\n";
+    }
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
@@ -48,28 +54,31 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
     // Runtime coupling modes can then swap active layer views by index without
     // changing memory ownership or reallocating cache slabs.
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
-    m_atmos_to_ocean.resize(coupling::NumAtmosToOceanLayers);
-    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean.size()); ++idx) {
-        m_atmos_to_ocean_storage[idx] = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
-        m_atmos_to_ocean[idx] = m_atmos_to_ocean_storage[idx].get();
+    for (auto& mf_ptr : m_atmos_to_ocean_storage) {
+        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
+    }
+    m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
+    m_atmos_to_ocean_active.resize(m_atmos_to_ocean_active_indices.size());
+    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+        m_atmos_to_ocean_active[local_idx] = m_atmos_to_ocean[global_idx];
     }
 
     m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
-    m_ocean_to_atmos.resize(coupling::NumOceanToAtmosStates);
-    for (int idx = 0; idx < coupling::NumOceanToAtmosStates; ++idx) {
-        m_ocean_to_atmos_storage[idx] = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
-        m_ocean_to_atmos[idx] = m_ocean_to_atmos_storage[idx].get();
+    for (auto& mf_ptr : m_ocean_to_atmos_storage) {
+        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
     }
+    m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
 }
 
 void
 ERFRemoraMultiBlockContainer::FillSyntheticData ()
 {
     for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean.size()); ++idx) {
-        fill_constant(*m_atmos_to_ocean[idx], 10.0 + static_cast<amrex::Real>(idx));
+        m_atmos_to_ocean[idx]->setVal(10.0 + static_cast<amrex::Real>(idx));
     }
 
-    fill_constant(*m_ocean_to_atmos[coupling::SST], 300.0);
+    m_ocean_to_atmos[coupling::SST]->setVal(300.0);
 }
 
 void
@@ -117,7 +126,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
             if (amrex::ParallelDescriptor::IOProcessor() && !states.empty() && states[0] != nullptr) {
                 const amrex::Real sample = states[0]->min(0);
                 amrex::Print() << "Synthetic ApplyAtmosphericStates time=" << time
-                               << " sample_Uwind=" << sample << "\n";
+                               << " sample_atmos_field0=" << sample << "\n";
             }
         },
         ocean_steps);
@@ -131,7 +140,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                                                           int ocean_steps)
 {
     PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
-    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanAllNames());
+    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
 
     // Multi-rate clock rationale:
     // - ERF advances a compressible atmosphere where acoustic stability often drives
@@ -151,8 +160,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             const amrex::Real atm_time = m_atm_tick * m_dt_atm;
 
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
-            pack_atmos_states(m_atmos_to_ocean, atm_time);
-            apply_atmos_states(m_atmos_to_ocean, atm_time);
+            pack_atmos_states(m_atmos_to_ocean_active, atm_time);
+            apply_atmos_states(m_atmos_to_ocean_active, atm_time);
 
             ++m_atm_tick;
         }
@@ -163,7 +172,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
 
         PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
-        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanAllNames());
+        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
     }
 }
 } // namespace erf_remora

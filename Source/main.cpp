@@ -22,6 +22,7 @@ main (int argc, char* argv[])
         int atm_substeps_per_ocean_step = 6;
         int ocean_steps = 2;
         int synthetic_only = 1;
+        std::string atm2ocn_mode = "state";
 
         pp_driver.query("n_cell", n_cell);
         pp_driver.query("max_grid_size", max_grid_size);
@@ -29,13 +30,24 @@ main (int argc, char* argv[])
         pp_driver.query("atm_substeps_per_ocean_step", atm_substeps_per_ocean_step);
         pp_driver.query("ocean_steps", ocean_steps);
         pp_driver.query("synthetic_only", synthetic_only);
+        pp_driver.query("atm2ocn_mode", atm2ocn_mode);
+
+        erf_remora::coupling::AtmosToOceanContract atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::StatePassing;
+        if (atm2ocn_mode == "state") {
+            atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::StatePassing;
+        } else if (atm2ocn_mode == "flux") {
+            atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::FluxPassing;
+        } else {
+            amrex::Abort("Unknown driver.atm2ocn_mode. Valid values: state, flux.");
+        }
 
         if (synthetic_only) {
             erf_remora::ERFRemoraMultiBlockContainer container(
                 n_cell,
                 max_grid_size,
                 dt_atm,
-                atm_substeps_per_ocean_step);
+                atm_substeps_per_ocean_step,
+                atm2ocn_contract);
             container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
         } else {
@@ -44,7 +56,7 @@ main (int argc, char* argv[])
             erf_remora::RunREMORAStandalone();
         }
 
-        amrex::Print() << "erf-remora-driver synthetic exchange completed\n";
+        amrex::Print() << "erf-remora-driver run completed\n";
     }
     amrex::Finalize();
 

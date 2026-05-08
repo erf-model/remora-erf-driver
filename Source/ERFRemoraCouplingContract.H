@@ -18,6 +18,50 @@ namespace erf_remora::coupling
 //   - ROMS/Nonlinear/bulk_flux.F (state-driven flux computation path)
 //   - ROMS/Nonlinear/atm2ocn_flux.F (direct imported flux application path)
 //
+// Condensed variable-match table (COAWST paper/code -> current AMReX cache layers):
+//
+// Atmosphere -> Ocean cache (this repo: Vector<MultiFab*> m_atmos_to_ocean[_active])
+//   Layer/index   COAWST names              ERF symbol candidates                          REMORA symbols (sink)                              Typical units
+//   -----------   -----------------------    -------------------------------------------   --------------------------------------------------   -----------------------
+//   Uwind (0)     Uwind / U10               ERF Vars::xvel                                  vec_uwind; Uwind_data_from_file                   m s^-1
+//   Vwind (1)     Vwind / V10               ERF Vars::yvel                                  vec_vwind; Vwind_data_from_file                   m s^-1
+//   Patm  (2)     Pair / MSLP               pressure from cons                              vec_Pair; solverChoice.Pair; Pair_data_from_file  Pa (driver SI), mb in some REMORA paths
+//   RH    (3)     RH / Hair / RELH          moisture-derived RH                             vec_qair and/or solverChoice.Hair                 0-1 (driver), percent in some paths
+//   Tair  (4)     Tair / T2                 near-sfc air temp                               vec_Tair; solverChoice.Tair; Tair_data_from_file  K (driver), C in REMORA internals/IO
+//   Cloud (5)     cloud / CLDFRA            ERF::cloud_fraction                             vec_cloud; solverChoice.cloud; cloud_data_from_file 0-1
+//   Rain  (6)     rain / RAIN               ERF qmoist/rain_accum                           vec_rain; solverChoice.rain; rain_data_from_file  kg m^-2 s^-1 (or m s^-1 in some paths)
+//   SWrad (7)     swrad / GSW               ERF rad/lsm fields                              vec_srflx                                          W m^-2
+//   LWrad (8)     lwrad / GLW               ERF rad/lsm fields                              vec_longwave_down and/or vec_lrflx                W m^-2
+//   TauX  (9)     sustr / tau_x             stress export candidate                         vec_sustr                                          N m^-2
+//   TauY  (10)    svstr / tau_y             stress export candidate                         vec_svstr                                          N m^-2
+//   SHflux(11)    shflx / HFX               sensible-heat export candidate                  vec_shflx                                          W m^-2
+//   LHflux(12)    lhflx / LH                latent-heat export candidate                    vec_lhflx                                          W m^-2
+//   Evap  (13)    evap / EVAP               evap export candidate                           vec_evap; vec_EminusP                              kg m^-2 s^-1 (or m s^-1)
+//
+// Ocean -> Atmosphere cache (this repo: Vector<MultiFab*> m_ocean_to_atmos)
+//   Layer/index   COAWST name               REMORA source symbols                           ERF symbols (sink)                                 Typical units
+//   -----------   -----------------------    --------------------------------------------    --------------------------------------------------  -----------------------
+//   SST (0)       SST                       surface tracer at Temp_comp (top cell), no      sst_lev and/or lsm.Get_Data_Ptr(lev,0)            K in this driver (REMORA state uses C internally)
+//                                          dedicated vec_sst in REMORA.H
+//
+// Why this table is asymmetric (9+ atmosphere->ocean vs 1 ocean->atmos):
+// - This follows legacy COAWST Block-B state passing (Warner et al., 2010),
+//   where atmosphere exports many near-surface states and ocean computes
+//   stresses/heat internally (BULK_FLUXES-style workflow).
+// - In that baseline contract, ocean feedback to atmosphere is minimal and
+//   primarily SST; richer feedbacks are added in later coupling modes.
+// - The modern COAWST direct-flux path (ATM2OCN_FLUXES family) shifts more
+//   exchange to explicit flux layers and can justify expanding OCN->ATM too.
+//
+// Two independent extension axes (to avoid design confusion):
+// - Axis 1: ATM->OCN contract mode (`driver.atm2ocn_mode = state|flux`).
+//   This controls whether REMORA is driven by atmospheric states or direct
+//   atmosphere-computed flux layers.
+// - Axis 2: additional coupled physics (for example wave mediation).
+//   Wave coupling can add variables in either direction (ATM<->WAV, OCN<->WAV,
+//   and indirect ATM<->OCN impacts) and is not equivalent to choosing
+//   `state` vs `flux` for ATM->OCN.
+//
 // Initial architecture uses the same state-passing variable list as the WRF->ROMS path:
 //  - 10-m winds: Uwind, Vwind [m s^-1]
 //  - Atmospheric pressure: Patm [Pa]
@@ -33,12 +77,11 @@ namespace erf_remora::coupling
 //  - Sea-surface temperature: SST [K]
 //
 // Coupling mode note:
-// - This enum is for legacy state-passing, where REMORA computes bulk fluxes
-//   internally (COARE-style path).
-// - TODO(future-flux-passing): add a runtime toggle (e.g. ParmParse `driver.atm2ocn_mode`
-//   or compile-time ATM2OCN_FLUXES) for direct flux-passing (tau_x, tau_y, heat/
-//   moisture fluxes) to reduce cross-component flux inconsistencies seen when
-//   each component computes interface fluxes independently.
+// - Runtime toggle: ParmParse `driver.atm2ocn_mode = state|flux`.
+// - `state`: legacy state-passing where REMORA computes bulk fluxes internally
+//   (COARE-style path).
+// - `flux`: direct stress/heat/moisture exchange layers selected from the same
+//   native AMReX Vector<MultiFab*> allocation.
 enum class AtmosToOceanContract : int {
     StatePassing = 0,
     FluxPassing
@@ -116,6 +159,11 @@ inline const amrex::Vector<std::string>& AtmosToOceanNames (AtmosToOceanContract
 inline int NumAtmosToOceanActiveLayers (AtmosToOceanContract contract)
 {
     return static_cast<int>(AtmosToOceanActiveIndices(contract).size());
+}
+
+inline const char* AtmosToOceanContractName (AtmosToOceanContract contract)
+{
+    return (contract == AtmosToOceanContract::FluxPassing) ? "flux" : "state";
 }
 
 inline const amrex::Vector<std::string>& OceanToAtmosNames ()

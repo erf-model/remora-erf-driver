@@ -40,7 +40,11 @@ namespace erf_remora
 class ERFRemoraMultiBlockContainer
 {
 public:
-    ERFRemoraMultiBlockContainer(int n_cell, int max_grid_size, amrex::Real dt_atm, int atm_substeps_per_ocean_step);
+    ERFRemoraMultiBlockContainer(int n_cell,
+                                 int max_grid_size,
+                                 amrex::Real dt_atm,
+                                 int atm_substeps_per_ocean_step,
+                                 coupling::AtmosToOceanContract atm2ocn_contract);
     ~ERFRemoraMultiBlockContainer() = default;
 
     void InitializeBlocks();
@@ -70,6 +74,7 @@ private:
     amrex::Real m_dt_atm;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
+    coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
 
     // Atmosphere -> ocean cache slab vector.
     // Initial use is legacy COAWST Block-B state-passing; extra layers are
@@ -80,6 +85,9 @@ private:
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;
+    amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_active;
+    amrex::Vector<int> m_atmos_to_ocean_active_indices;
+    amrex::Vector<std::string> m_atmos_to_ocean_active_names;
 
     // Ocean -> atmosphere state cache (currently SST only).
     // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.

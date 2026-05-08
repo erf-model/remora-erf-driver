@@ -35,7 +35,7 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     AllocateCaches();
     FillSyntheticData();
 
-    // TODO(stage-1): implement a soft-start / ramp-in protocol for coupled forcing.
+    // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
     // atmosphere/ocean timescales are strongly separated. We should gradually ramp
     // exchanged tendencies across the first few ocean macro-steps.
@@ -90,7 +90,7 @@ void
 ERFRemoraMultiBlockContainer::AdvanceBlocks (ERF& erf, REMORA& remora, int ocean_steps)
 {
     amrex::ignore_unused(erf, remora, ocean_steps);
-    amrex::Abort("Solver-backed AdvanceBlocks() is disabled in stage-0 synthetic mode. Set driver.synthetic_only = 1.");
+    amrex::Abort("Solver-backed AdvanceBlocks() is disabled in initial architecture infrastructure mode. Set driver.synthetic_only = 1.");
 }
 
 void
@@ -140,8 +140,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
 
-        // Stage-0 note: this passes instantaneous slabs at the macro-step boundary.
-        // Future stage: use old/new cached states and time interpolation during this
+        // Initial architecture note: this passes instantaneous slabs at the macro-step boundary.
+        // Future update: use old/new cached states and time interpolation during this
         // loop (same temporal pattern as erf-amrwind-driver boundary ingestion in
         // Source/wind_energy/ABLReadERF.cpp) to avoid stepwise forcing artifacts.
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {

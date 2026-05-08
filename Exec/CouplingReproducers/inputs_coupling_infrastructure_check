@@ -1,4 +1,4 @@
-# Stage-0 synthetic-only coupling debug path
+# Coupling infrastructure-only reproducer
 
 driver.synthetic_only = 1
 driver.n_cell = 32

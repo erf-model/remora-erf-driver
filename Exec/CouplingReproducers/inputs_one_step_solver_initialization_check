@@ -1,4 +1,7 @@
-# Stage-0 synthetic coupling driver inputs
+# Uncoupled ERF+REMORA one-step smoke reproducer inputs
+
+# Driver mode selection for this reproducer
+driver.synthetic_only = 0
 
 # Shared AMReX mesh
 amr.max_level = 0
@@ -14,7 +17,7 @@ zlo.type = SlipWall
 zhi.type = SlipWall
 
 # ERF minimal setup
-erf.prob_name = "ERF-REMORA stage0"
+erf.prob_name = "UserDefined"
 erf.init_type = Uniform
 prob.rho_0 = 1.0
 prob.T_0 = 300.0
@@ -38,7 +41,7 @@ remora.flat_bathymetry = true
 remora.fixed_dt = 10.0
 remora.fixed_ndtfast_ratio = 10
 remora.plot_file = remoraplt
-remora.plot_int = 1
+remora.plot_int = -1
 remora.plot_vars_3d = salt temp x_velocity y_velocity z_velocity
 remora.plot_vars_2d = zeta
 remora.plotfile_type = amrex

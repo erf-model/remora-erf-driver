@@ -19,21 +19,22 @@ class REMORA;
 namespace erf_remora
 {
 /**
- * ERFRemoraMultiBlockContainer is the stage-0 "conductor" object.
+ * ERFRemoraMultiBlockContainer is the initial-architecture "conductor" object.
  *
- * Design constraints for this sprint:
+ * Design constraints for the initial architecture:
  * 1. The driver (not ERF/REMORA) owns the interface memory and coupling clock.
  * 2. Interface slabs are native AMReX containers (`Vector<MultiFab*>`), matching
  *    the `erf-amrwind-driver` coupling style instead of introducing wrapper types.
  * 3. Geometry is intentionally restricted to level-0, matched horizontal grids so
  *    we can debug timing and data ownership before adding conservative remapping.
- *    Generalized mismatched-grid remapping is intentionally deferred to Stage-2.
+ *    Generalized mismatched-grid remapping is intentionally deferred to a future
+ *    spatial-remapping milestone.
  *    We deliberately do not claim or target a specific external interfacing or
  *    remapping scheme at this stage, keeping the architecture flexible.
  *
  * Parallel exchange roadmap:
- * - Stage-0 uses direct local access to shared `MultiFab` objects.
- * - Stage-1/2 will move data with AMReX-native `ParallelCopy` plus
+ * - Initial architecture uses direct local access to shared `MultiFab` objects.
+ * - Future distributed-grid updates will move data with AMReX-native `ParallelCopy` plus
  *   `NonLocalBC::MultiBlockCommMetaData` once block/rank ownership diverges.
  */
 class ERFRemoraMultiBlockContainer
@@ -71,13 +72,14 @@ private:
     long long m_atm_tick = 0;
 
     // Atmosphere -> ocean state cache for COAWST Block-B variables at one coupling time.
-    // TODO(stage-1): add old/new temporal copies for interpolation during fast ERF subcycles
+    // TODO(initial-temporal-interpolation): add old/new temporal copies for interpolation
+    // during fast ERF subcycles
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;
 
     // Ocean -> atmosphere state cache (currently SST only).
-    // TODO(stage-1): same old/new cache split as m_atmos_to_ocean.
+    // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_ocean_to_atmos_storage;
     amrex::Vector<amrex::MultiFab*> m_ocean_to_atmos;
 };

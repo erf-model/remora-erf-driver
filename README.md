@@ -1,13 +1,13 @@
-# ERF-REMORA Driver (Stage-0 Scaffold)
+# ERF-REMORA Driver (Initial Architecture Scaffold)
 
 This repository hosts a top-level AMReX superbuild and a driver executable that
-couples ERF and REMORA as libraries. The current sprint target is infrastructure
+couples ERF and REMORA as libraries. The current focus is infrastructure
 validation: 2D `MultiFab` cache ownership, read/write paths, and multi-rate clock
 stability.
 
 ## Coupling Roadmap
 
-### Stage-0 / Stage-1: Legacy COAWST State-Passing
+### Initial Architecture: Legacy COAWST State-Passing
 
 The current interface contract follows the legacy COAWST state exchange defined in:
 
@@ -24,12 +24,12 @@ Current ocean -> atmosphere state list:
 
 - `SST`
 
-At this stage we use state-passing (legacy behavior): REMORA consumes atmospheric
+In the initial architecture we use state-passing (legacy behavior): REMORA consumes atmospheric
 state variables and computes surface fluxes internally via its bulk-physics path.
 
-### Stage-2: Spatial Remapping (Uncommitted Scheme)
+### Future Spatial Remapping (Uncommitted Scheme)
 
-While Stage-0/1 relies on level-0, matched horizontal grids, Stage-2 will
+While the current baseline uses level-0, matched horizontal grids, future work will
 introduce mismatched grids to support phenomena like coastal upwelling.
 
 **Crucially, this architecture does not currently claim or target a specific
@@ -38,7 +38,7 @@ can evaluate native AMReX multi-block capabilities (`ParallelCopy`,
 `MultiBlockCommMetaData`) before deciding whether an external topological engine
 is required for conservative area-weighted flux accounting.
 
-### Stage-3 / Stage-4: Modern Flux-Passing + Wave Mediation
+### Future Flux-Passing + Wave Mediation
 
 Planned transition:
 
@@ -46,7 +46,7 @@ Planned transition:
   - state-passing (legacy COAWST-like), and
   - direct flux-passing (ERF-computed stresses/heat/moisture fluxes).
 - Extend exchanged fields for wave-mediated coupling (e.g., Stokes-drift-aware
-  and wave-roughness-aware terms) when Stage-4 physics is activated.
+  and wave-roughness-aware terms) when extended coupling physics is activated.
 
 Primary scientific references for this transition:
 
@@ -97,50 +97,83 @@ Deferred/long-term mitigation path:
 
 - Upstream namespace hygiene and broader symbol-scope cleanup in ERF/REMORA.
   This is intentionally deferred because it is high-impact and not required for
-  Stage-0/1 infrastructure validation.
+  initial architecture and one-step testing validation.
 
-## Stage-0 Run Modes
+## How To Run (Reviewer Reproducers)
 
-- `driver.synthetic_only = 1` runs the driver-owned synthetic cache exchange
-  only (no ERF/REMORA physics timestepping).
-- `driver.synthetic_only = 0` runs an uncoupled smoke path:
-  `RunERFStandalone()` followed by `RunREMORAStandalone()`.
+### Build the superbuild
 
-Recommended commands:
+From repository root:
 
 ```bash
-# Synthetic cache/clock debug path only
-./build/erf-remora-driver Exec/Stage0/inputs_driver_stage0
-
-# Non-synthetic one-step smoke path (ERF then REMORA)
-./build/erf-remora-driver Exec/Stage0/inputs_synthetic_stage0 \
-  driver.synthetic_only=0 max_step=1 erf.v=0 remora.v=0
+cmake -S . -B build
+cmake --build build -j4
 ```
 
-The second command should write:
+### Reproducer A: Coupling infrastructure test (`driver.synthetic_only = 1`)
+
+Run:
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check
+```
+
+This reproducer verifies:
+
+- shared AMReX initialization/finalization in the combined executable,
+- multi-rate coupling clock progression with atmosphere subcycling,
+- native AMReX interface cache ownership and controlled read/write paths,
+- coupling infrastructure stability without executing full ERF/REMORA fluid physics.
+
+Expected behavior:
+
+- console diagnostics for initial and updated cache values,
+- ocean-step completion messages with atmosphere tick progression,
+- clean process exit.
+
+### Reproducer B: One-step standalone solver initialization tests (`driver.synthetic_only = 0`)
+
+Run:
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
+  max_step=1 erf.v=0 remora.v=0
+```
+
+This reproducer verifies:
+
+- ERF library path can read inputs, initialize, and advance one real timestep,
+- REMORA library path can read inputs, initialize, and advance one real timestep,
+- both solver libraries can run in one executable without crashing.
+
+Expected outputs:
 
 - `erfplt00000`, `erfplt00001`
-- `remoraplt00000`, `remoraplt00001`
 
-## Problem Selection In Non-Synthetic Mode
+Optional quick check:
 
-In `driver.synthetic_only = 0`, each solver still chooses its own problem setup.
+```bash
+sed -n '1,20p' erfplt00001/Header
+```
+
+### Problem selection note for standalone smoke tests
+
+When `driver.synthetic_only = 0`, each solver still chooses its own problem setup:
 
 - ERF uses `erf.prob_name`.
 - REMORA uses `remora.ic_type` plus its own init controls.
 
-Notes for the current Stage-0 deck:
+Current smoke deck notes:
 
-- `Exec/Stage0/inputs_synthetic_stage0` uses `erf.prob_name = "ERF-REMORA stage0"`.
-  ERF prints a "problem name ... not known" warning and skips named perturbations;
-  this is acceptable for the current one-step infrastructure smoke test.
-- If you want a recognized ERF problem template, set `erf.prob_name` to a known
-  ERF case (for example `"ABL"` or `"Ekman Spiral"`).
-- REMORA requires a valid timestep in this path; `remora.fixed_dt` and
-  `remora.fixed_ndtfast_ratio` are set in the Stage-0 deck to avoid a runaway
-  `DT = 1e+20` condition.
-- REMORA plotfiles require explicit plot variables; if `remora.plot_vars_3d`
-  is empty, plotfile headers can have `nComp = 0` and AMRVis will fail to load.
+- `Exec/CouplingReproducers/inputs_one_step_solver_initialization_check` sets
+  `driver.synthetic_only = 0` and sets
+  `erf.prob_name = "UserDefined"` to use ERF's supported neutral placeholder
+  problem path for this one-step initialization smoke test.
+- REMORA requires valid timestep controls in this path; the deck sets
+  `remora.fixed_dt` and `remora.fixed_ndtfast_ratio` to avoid runaway `DT = 1e+20`.
+- This smoke input disables REMORA plotfile output (`remora.plot_int = -1`) so the
+  one-step initialization test stays stable with the current placeholder BlankProblem
+  initialization path.
 
 ## Unified Inputs Example
 

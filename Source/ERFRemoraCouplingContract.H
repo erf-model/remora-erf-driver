@@ -11,14 +11,14 @@ namespace erf_remora::coupling
 //   Warner et al. (2010), "Development of a Coupled Ocean-Atmosphere-Wave-
 //   Sediment Transport (COAWST) Modeling System", Fig. 5 / Block B.
 //
-// Stage-0 uses the same state-passing variable list as the WRF->ROMS path:
+// Initial architecture uses the same state-passing variable list as the WRF->ROMS path:
 //  - 10-m winds: Uwind, Vwind [m s^-1]
 //  - Atmospheric pressure: Patm [Pa]
 //  - Relative humidity: RH [0-1 fraction]
 //  - Air temperature: Tair [K]
 //  - Cloud fraction: Cloud [0-1 fraction]
 //  - Precipitation rate: Rain [kg m^-2 s^-1]  (project SI convention)
-//    TODO(stage-1): verify/convert if upstream forcing uses legacy mm day^-1.
+//    TODO(initial-step-testing): verify/convert if upstream forcing uses legacy mm day^-1.
 //  - Shortwave radiation: SWrad [W m^-2]
 //  - Longwave radiation: LWrad [W m^-2]
 //
@@ -28,7 +28,7 @@ namespace erf_remora::coupling
 // Coupling mode note:
 // - This enum is for legacy state-passing, where REMORA computes bulk fluxes
 //   internally (COARE-style path).
-// - TODO(stage-3/4): add a runtime toggle (e.g. ParmParse `driver.atm2ocn_mode`
+// - TODO(future-flux-passing): add a runtime toggle (e.g. ParmParse `driver.atm2ocn_mode`
 //   or compile-time ATM2OCN_FLUXES) for direct flux-passing (tau_x, tau_y, heat/
 //   moisture fluxes) to avoid cross-component flux inconsistencies.
 enum AtmosToOceanIndex : int {

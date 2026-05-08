@@ -1,6 +1,7 @@
 # Coupling infrastructure-only reproducer
 
 driver.synthetic_only = 1
+driver.atm2ocn_mode = state
 driver.n_cell = 32
 driver.max_grid_size = 32
 driver.dt_atm = 10.0

@@ -131,6 +131,13 @@ Run:
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check
 ```
 
+Optional (exercise flux-layer selection with the same cache allocation):
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check \
+  driver.atm2ocn_mode=flux
+```
+
 This reproducer verifies:
 
 - shared AMReX initialization/finalization in the combined executable,
@@ -204,6 +211,7 @@ Example mixed inputs file:
 ```text
 # Driver control
 driver.synthetic_only = 0
+driver.atm2ocn_mode = state
 driver.dt_atm = 2.0
 driver.atm_substeps_per_ocean_step = 5
 driver.ocean_steps = 1

@@ -2,6 +2,7 @@
 
 # Driver mode selection for this reproducer
 driver.synthetic_only = 0
+driver.atm2ocn_mode = state
 
 # Shared AMReX mesh
 amr.max_level = 0

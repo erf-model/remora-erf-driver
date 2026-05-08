@@ -85,12 +85,62 @@ Current mitigation path in this driver:
 - In library-only mode, isolate solver-specific `amrex_probinit` entry points.
   ERF and REMORA both declare this symbol as weak; in one executable, letting
   them share one global can route one solver to the wrong problem initializer.
+- This repository now enforces explicit symbol prefixing in superbuild mode:
+  - `ERFProblem`, `ERFProblemBase`, `ERFSolverChoice`, `erf_probinit`
+  - `REMORAProblem`, `REMORAProblemBase`, `REMORASolverChoice`, `remora_probinit`
+
+Policy details and PR-splitting guidance are documented in:
+
+- `Docs/symbol-isolation.md`
 
 Deferred/long-term mitigation path:
 
 - Upstream namespace hygiene and broader symbol-scope cleanup in ERF/REMORA.
   This is intentionally deferred because it is high-impact and not required for
   Stage-0/1 infrastructure validation.
+
+## Stage-0 Run Modes
+
+- `driver.synthetic_only = 1` runs the driver-owned synthetic cache exchange
+  only (no ERF/REMORA physics timestepping).
+- `driver.synthetic_only = 0` runs an uncoupled smoke path:
+  `RunERFStandalone()` followed by `RunREMORAStandalone()`.
+
+Recommended commands:
+
+```bash
+# Synthetic cache/clock debug path only
+./build/erf-remora-driver Exec/Stage0/inputs_driver_stage0
+
+# Non-synthetic one-step smoke path (ERF then REMORA)
+./build/erf-remora-driver Exec/Stage0/inputs_synthetic_stage0 \
+  driver.synthetic_only=0 max_step=1 erf.v=0 remora.v=0
+```
+
+The second command should write:
+
+- `erfplt00000`, `erfplt00001`
+- `remoraplt00000`, `remoraplt00001`
+
+## Problem Selection In Non-Synthetic Mode
+
+In `driver.synthetic_only = 0`, each solver still chooses its own problem setup.
+
+- ERF uses `erf.prob_name`.
+- REMORA uses `remora.ic_type` plus its own init controls.
+
+Notes for the current Stage-0 deck:
+
+- `Exec/Stage0/inputs_synthetic_stage0` uses `erf.prob_name = "ERF-REMORA stage0"`.
+  ERF prints a "problem name ... not known" warning and skips named perturbations;
+  this is acceptable for the current one-step infrastructure smoke test.
+- If you want a recognized ERF problem template, set `erf.prob_name` to a known
+  ERF case (for example `"ABL"` or `"Ekman Spiral"`).
+- REMORA requires a valid timestep in this path; `remora.fixed_dt` and
+  `remora.fixed_ndtfast_ratio` are set in the Stage-0 deck to avoid a runaway
+  `DT = 1e+20` condition.
+- REMORA plotfiles require explicit plot variables; if `remora.plot_vars_3d`
+  is empty, plotfile headers can have `nComp = 0` and AMRVis will fail to load.
 
 ## Unified Inputs Example
 

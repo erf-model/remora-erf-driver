@@ -10,6 +10,13 @@ namespace erf_remora::coupling
 // Legacy contract reference:
 //   Warner et al. (2010), "Development of a Coupled Ocean-Atmosphere-Wave-
 //   Sediment Transport (COAWST) Modeling System", Fig. 5 / Block B.
+//   Zambon et al. (2014), Hurricane Ivan COAWST coupled configuration
+//   (direct stress/heat flux transfer context for ATM2OCN_FLUXES-era coupling).
+//
+// COAWST implementation anchors for state-vs-flux split:
+//   - Master/mct_roms_wrf.h (ATM2OCN_FLUXES vs BULK_FLUXES pathways)
+//   - ROMS/Nonlinear/bulk_flux.F (state-driven flux computation path)
+//   - ROMS/Nonlinear/atm2ocn_flux.F (direct imported flux application path)
 //
 // Initial architecture uses the same state-passing variable list as the WRF->ROMS path:
 //  - 10-m winds: Uwind, Vwind [m s^-1]
@@ -30,7 +37,13 @@ namespace erf_remora::coupling
 //   internally (COARE-style path).
 // - TODO(future-flux-passing): add a runtime toggle (e.g. ParmParse `driver.atm2ocn_mode`
 //   or compile-time ATM2OCN_FLUXES) for direct flux-passing (tau_x, tau_y, heat/
-//   moisture fluxes) to avoid cross-component flux inconsistencies.
+//   moisture fluxes) to reduce cross-component flux inconsistencies seen when
+//   each component computes interface fluxes independently.
+enum class AtmosToOceanContract : int {
+    StatePassing = 0,
+    FluxPassing
+};
+
 enum AtmosToOceanIndex : int {
     Uwind = 0,
     Vwind,
@@ -41,7 +54,19 @@ enum AtmosToOceanIndex : int {
     Rain,
     SWrad,
     LWrad,
-    NumAtmosToOceanStates
+    NumAtmosToOceanStateLayers,
+
+    // Extra layers reserved for direct atmosphere->ocean flux exchange.
+    // These are appended so legacy state indices remain unchanged.
+    TauX = NumAtmosToOceanStateLayers,
+    TauY,
+    SHflux,
+    LHflux,
+    Evap,
+    NumAtmosToOceanLayers,
+
+    // Backward-compatible alias used by initial state-passing paths.
+    NumAtmosToOceanStates = NumAtmosToOceanStateLayers
 };
 
 enum OceanToAtmosIndex : int {
@@ -55,6 +80,42 @@ inline const amrex::Vector<std::string>& AtmosToOceanNames ()
         "Uwind", "Vwind", "Patm", "RH", "Tair", "cloud", "rain", "SWrad", "LWrad"
     };
     return names;
+}
+
+inline const amrex::Vector<std::string>& AtmosToOceanAllNames ()
+{
+    static const amrex::Vector<std::string> names {
+        "Uwind", "Vwind", "Patm", "RH", "Tair", "cloud", "rain", "SWrad", "LWrad",
+        "tau_x", "tau_y", "SHflux", "LHflux", "evap"
+    };
+    return names;
+}
+
+inline const amrex::Vector<int>& AtmosToOceanActiveIndices (AtmosToOceanContract contract)
+{
+    static const amrex::Vector<int> state_indices {
+        Uwind, Vwind, Patm, RH, Tair, Cloud, Rain, SWrad, LWrad
+    };
+    static const amrex::Vector<int> flux_indices {
+        TauX, TauY, SHflux, LHflux, SWrad, LWrad, Rain, Evap
+    };
+    return (contract == AtmosToOceanContract::FluxPassing) ? flux_indices : state_indices;
+}
+
+inline const amrex::Vector<std::string>& AtmosToOceanNames (AtmosToOceanContract contract)
+{
+    static const amrex::Vector<std::string> state_names {
+        "Uwind", "Vwind", "Patm", "RH", "Tair", "cloud", "rain", "SWrad", "LWrad"
+    };
+    static const amrex::Vector<std::string> flux_names {
+        "tau_x", "tau_y", "SHflux", "LHflux", "SWrad", "LWrad", "rain", "evap"
+    };
+    return (contract == AtmosToOceanContract::FluxPassing) ? flux_names : state_names;
+}
+
+inline int NumAtmosToOceanActiveLayers (AtmosToOceanContract contract)
+{
+    return static_cast<int>(AtmosToOceanActiveIndices(contract).size());
 }
 
 inline const amrex::Vector<std::string>& OceanToAtmosNames ()

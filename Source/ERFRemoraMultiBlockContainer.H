@@ -71,7 +71,10 @@ private:
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
 
-    // Atmosphere -> ocean state cache for COAWST Block-B variables at one coupling time.
+    // Atmosphere -> ocean cache slab vector.
+    // Initial use is legacy COAWST Block-B state-passing; extra layers are
+    // preallocated for optional direct flux-passing so contracts can swap by
+    // active index sets without changing ownership/allocation strategy.
     // TODO(initial-temporal-interpolation): add old/new temporal copies for interpolation
     // during fast ERF subcycles
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).

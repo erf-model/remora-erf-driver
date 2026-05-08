@@ -27,6 +27,14 @@ Current ocean -> atmosphere state list:
 In the initial architecture we use state-passing (legacy behavior): REMORA consumes atmospheric
 state variables and computes surface fluxes internally via its bulk-physics path.
 
+Implementation note:
+
+- The atmosphere -> ocean cache is now allocated as a superset layer vector
+  (`Vector<MultiFab*>`) containing legacy state layers plus reserved direct-flux
+  layers (`tau_x`, `tau_y`, `SHflux`, `LHflux`, `evap`).
+- Coupling modes can swap active layer sets by index without changing the
+  driver-owned cache allocation/ownership model.
+
 ### Future Spatial Remapping (Uncommitted Scheme)
 
 While the current baseline uses level-0, matched horizontal grids, future work will
@@ -50,7 +58,12 @@ Planned transition:
 
 Primary scientific references for this transition:
 
-- Li et al. (2025), stochastic Ekman-Stokes coupling framework.
+- Warner et al. (2010), COAWST baseline and stated need for consistent flux coupling.
+- Zambon et al. (2014), COAWST hurricane application with direct stress/heat exchange.
+- COAWST implementation anchors:
+  - `Master/mct_roms_wrf.h` (`ATM2OCN_FLUXES` and `BULK_FLUXES` pathways)
+  - `ROMS/Nonlinear/atm2ocn_flux.F` (direct imported flux path)
+  - `ROMS/Nonlinear/bulk_flux.F` (state-driven bulk flux path)
 - Lattanzi et al. (ERF model papers, 2024/2025).
 - Klion et al. (REMORA model paper, 2025).
 

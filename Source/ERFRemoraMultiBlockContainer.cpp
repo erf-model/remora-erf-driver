@@ -44,9 +44,12 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
 void
 ERFRemoraMultiBlockContainer::AllocateCaches ()
 {
-    m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanStates);
-    m_atmos_to_ocean.resize(coupling::NumAtmosToOceanStates);
-    for (int idx = 0; idx < coupling::NumAtmosToOceanStates; ++idx) {
+    // Allocate a superset layer vector once (legacy state + optional flux layers).
+    // Runtime coupling modes can then swap active layer views by index without
+    // changing memory ownership or reallocating cache slabs.
+    m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
+    m_atmos_to_ocean.resize(coupling::NumAtmosToOceanLayers);
+    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean.size()); ++idx) {
         m_atmos_to_ocean_storage[idx] = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
         m_atmos_to_ocean[idx] = m_atmos_to_ocean_storage[idx].get();
     }
@@ -62,7 +65,7 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
 void
 ERFRemoraMultiBlockContainer::FillSyntheticData ()
 {
-    for (int idx = 0; idx < coupling::NumAtmosToOceanStates; ++idx) {
+    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean.size()); ++idx) {
         fill_constant(*m_atmos_to_ocean[idx], 10.0 + static_cast<amrex::Real>(idx));
     }
 
@@ -128,7 +131,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                                                           int ocean_steps)
 {
     PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
-    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanNames());
+    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanAllNames());
 
     // Multi-rate clock rationale:
     // - ERF advances a compressible atmosphere where acoustic stability often drives
@@ -160,7 +163,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
 
         PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
-        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanNames());
+        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean, coupling::AtmosToOceanAllNames());
     }
 }
 } // namespace erf_remora

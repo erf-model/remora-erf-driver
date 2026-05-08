@@ -25,6 +25,9 @@ erf.les_type = None
 erf.molec_diff_type = Constant
 erf.dynamic_viscosity = 1.0
 erf.v = 0
+erf.plot_file_1 = erfplt
+erf.plot_int_1 = 1
+erf.plot_vars_1 = density x_velocity y_velocity z_velocity pressure temp theta
 
 # REMORA minimal setup
 remora.v = 0
@@ -32,4 +35,10 @@ remora.sum_interval = -1
 remora.ic_type = analytic
 remora.grid_scale_type = constant
 remora.flat_bathymetry = true
+remora.fixed_dt = 10.0
+remora.fixed_ndtfast_ratio = 10
+remora.plot_file = remoraplt
+remora.plot_int = 1
+remora.plot_vars_3d = salt temp x_velocity y_velocity z_velocity
+remora.plot_vars_2d = zeta
 remora.plotfile_type = amrex

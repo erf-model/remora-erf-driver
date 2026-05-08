@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ERF_REMORA_ENABLE_MPI "Enable MPI across AMReX/ERF/REMORA" OFF)
 option(ERF_REMORA_ENABLE_OPENMP "Enable OpenMP across AMReX/ERF/REMORA" OFF)
 option(ERF_REMORA_ENABLE_TESTS "Enable top-level tests" OFF)
+message(STATUS "ERF-REMORA symbol policy: prefixed (fixed)")
 
 set(AMReX_SPACEDIM 3 CACHE STRING "" FORCE)
 set(AMReX_MPI ${ERF_REMORA_ENABLE_MPI} CACHE BOOL "" FORCE)

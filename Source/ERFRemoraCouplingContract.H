@@ -24,23 +24,23 @@ namespace erf_remora::coupling
 // Atmosphere -> Ocean cache
 // (this repo: Vector<MultiFab*> m_atmos_to_ocean[_active])
 //
-//   idx  layer   COAWST names   ERF symbol candidates     REMORA symbols (sink)                  units
+//   idx  layer   COAWST names   ERF source/derive path    REMORA symbols (sink)                  units
 //   ---  ------  -------------  ------------------------  -------------------------------------  ------------------------
 //    0   Uwind   Uwind, U10     ERF Vars::xvel            vec_uwind; Uwind_data_from_file       m s^-1
 //    1   Vwind   Vwind, V10     ERF Vars::yvel            vec_vwind; Vwind_data_from_file       m s^-1
-//    2   Patm    Pair, MSLP     pressure from cons        vec_Pair; solverChoice.Pair;          Pa (driver SI), mb in
-//                                                          Pair_data_from_file                    some REMORA paths
-//    3   RH      RH, Hair,      RH field from ERF         solverChoice.Hair (RH) and/or         0-1 (driver)
-//                RELH
-//                                                          vec_qair (specific humidity path)
-//    4   Tair    Tair, T2       near-sfc air temp         vec_Tair; solverChoice.Tair;          K (driver), C in
-//                                                          Tair_data_from_file                    REMORA internals/IO
+//    2   Patm    Pair, MSLP     derived "pressure" field  vec_Pair; solverChoice.Pair;          Pa (driver SI), mb in
+//                                (base via p0_comp)       Pair_data_from_file                    some REMORA paths
+//    3   RH      RH, Hair,      derived rel_humidity      solverChoice.Hair (RH) and/or         0-1 (driver)
+//                RELH           from moisture state        vec_qair (specific humidity path)
+//    4   Tair    Tair, T2       derived near-sfc temp     vec_Tair; solverChoice.Tair;          K (driver), C in
+//                                (RhoTheta/moisture)      Tair_data_from_file                    REMORA internals/IO
 //    5   Cloud   cloud, CLDFRA  ERF::cloud_fraction       vec_cloud; solverChoice.cloud;         0-1
 //                                                          cloud_data_from_file
-//    6   Rain    rain, RAIN     ERF qmoist/rain_accum     vec_rain; solverChoice.rain;          kg m^-2 s^-1 (or m s^-1)
-//                                                          rain_data_from_file
+//    6   Rain    rain, RAIN     qrain/rain_accum          vec_rain; solverChoice.rain;          kg m^-2 s^-1 (or m s^-1)
+//                                diagnostics from qmoist   rain_data_from_file
 //    7   SWrad   swrad, GSW     ERF rad/lsm fields        vec_srflx                              W m^-2
-//    8   LWrad   lwrad, GLW     ERF rad/lsm fields        vec_longwave_down and/or vec_lrflx    W m^-2
+//    8   LWrad   lwrad, GLW     ERF rad/lsm fields        vec_longwave_down (state path)        W m^-2
+//                                                          and/or vec_lrflx (flux field)
 //    9   TauX    sustr, tau_x   stress export candidate   vec_sustr                              N m^-2
 //   10   TauY    svstr, tau_y   stress export candidate   vec_svstr                              N m^-2
 //   11   SHflux  shflx, HFX     sensible-heat candidate   vec_shflx                              W m^-2

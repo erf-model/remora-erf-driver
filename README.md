@@ -176,6 +176,28 @@ Optional quick check:
 sed -n '1,20p' erfplt00001/Header
 ```
 
+### Flag status: expected now vs prototype
+
+Expected for current reproducible checks:
+
+- Coupling infrastructure check: `driver.synthetic_only = 1`.
+- One-step standalone smoke: `driver.synthetic_only = 0`, `max_step=1`,
+  `erf.prob_name = "UserDefined"`, `remora.ic_type = analytic`,
+  `remora.fixed_dt` and `remora.fixed_ndtfast_ratio` set to finite values.
+- One-step smoke keeps `remora.plot_int = -1` for stability with the current
+  placeholder BlankProblem path.
+
+Prototype / staged (not full physics-coupled yet):
+
+- `driver.atm2ocn_mode = flux` is currently for cache-layer routing checks;
+  it does not yet represent a validated full flux-coupled physics path.
+- In `driver.synthetic_only = 0` mode, default behavior remains standalone
+  ERF then standalone REMORA smoke paths.
+- A minimal one-way bridge path is available with `driver.coupled_one_step=1`:
+  run one ERF step, pack cache slabs, apply them in REMORA, then run one
+  REMORA step.
+- Full multi-rate two-way runtime coupling in this mode is still not enabled yet.
+
 ### Problem selection note for standalone smoke tests
 
 When `driver.synthetic_only = 0`, each solver still chooses its own problem setup:

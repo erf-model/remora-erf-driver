@@ -1,6 +1,7 @@
 #include "ERFRemoraMultiBlockContainer.H"
 
 #include <AMReX.H>
+#include <AMReX_Box.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 
@@ -15,7 +16,9 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell,
       m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
       m_atmos_to_ocean_contract(atm2ocn_contract)
 {
-    amrex::Box domain(amrex::IntVect(0, 0, 0), amrex::IntVect(n_cell - 1, n_cell - 1, 0));
+    amrex::Box full_domain(amrex::IntVect(0, 0, 0),
+                           amrex::IntVect(n_cell - 1, n_cell - 1, n_cell - 1));
+    amrex::Box domain = amrex::makeSlab(full_domain, 2, 0);
     m_ba.define(domain);
     m_ba.maxSize(max_grid_size);
     m_dm.define(m_ba);

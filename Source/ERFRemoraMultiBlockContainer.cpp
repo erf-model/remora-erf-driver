@@ -1,6 +1,7 @@
 #include "ERFRemoraMultiBlockContainer.H"
 
 #include <AMReX.H>
+#include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 
 namespace erf_remora
@@ -21,6 +22,8 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell,
 
     amrex::RealBox real_box({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0});
     amrex::Vector<int> is_periodic(AMREX_SPACEDIM, 0);
+    amrex::ParmParse pp_geom("geometry");
+    pp_geom.queryarr("is_periodic", is_periodic, 0, AMREX_SPACEDIM);
     m_geom.define(domain, &real_box, amrex::CoordSys::cartesian, is_periodic.data());
 
     m_atmos_to_ocean_active_indices = coupling::AtmosToOceanActiveIndices(m_atmos_to_ocean_contract);
@@ -130,6 +133,18 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
             }
         },
         ocean_steps);
+}
+
+amrex::Vector<amrex::MultiFab*>&
+ERFRemoraMultiBlockContainer::AtmosToOceanActiveCache ()
+{
+    return m_atmos_to_ocean_active;
+}
+
+const amrex::Vector<std::string>&
+ERFRemoraMultiBlockContainer::AtmosToOceanActiveNames () const
+{
+    return m_atmos_to_ocean_active_names;
 }
 
 void

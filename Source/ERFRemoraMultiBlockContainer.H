@@ -50,6 +50,8 @@ public:
     void InitializeBlocks();
     void AdvanceBlocks(ERF& erf, REMORA& remora, int ocean_steps);
     void AdvanceBlocksSynthetic(int ocean_steps);
+    amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();
+    const amrex::Vector<std::string>& AtmosToOceanActiveNames() const;
 
 private:
     using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&, amrex::Real)>;

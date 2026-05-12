@@ -176,6 +176,28 @@ Optional quick check:
 sed -n '1,20p' erfplt00001/Header
 ```
 
+### Reproducer C: One-way coupled ERF shear deck -> REMORA one-step apply/evolve
+
+Run:
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_erf_shear_oneway
+```
+
+This reproducer verifies:
+
+- ERF one-step path can use the ERF `RemoraCoupling/inputs_shear_oneway` deck,
+- ERF `PackAtmosphericStates` -> REMORA `ApplyAtmosphericStates` bridge runs in
+  one process,
+- REMORA can advance one step after applying cache slabs.
+
+Dependency note:
+
+- The inputs file uses:
+  - `FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+  - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
+- Those files must exist in your ERF checkout.
+
 ### Flag status: expected now vs prototype
 
 Expected for current reproducible checks:

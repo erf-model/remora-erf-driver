@@ -54,3 +54,27 @@ Note:
 
 - This smoke input intentionally sets `remora.plot_int = -1` for stability with
   current placeholder BlankProblem initialization.
+
+---
+
+### `CouplingReproducers/inputs_one_step_coupled_erf_shear_oneway`
+
+Purpose:
+
+- one-way coupled one-step path (`driver.coupled_one_step = 1`) where ERF runs
+  one step with the ERF `RemoraCoupling/inputs_shear_oneway` setup, packs cache slabs,
+  then REMORA applies and runs one step.
+
+Run:
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_erf_shear_oneway
+```
+
+Dependency note:
+
+- This input uses:
+  - `FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+  - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
+- It requires those files to exist in your ERF checkout (expected once that
+  branch lands on ERF `development`).

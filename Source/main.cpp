@@ -95,6 +95,13 @@ main (int argc, char* argv[])
                     max_grid_size, dt_atm, atm_substeps_per_ocean_step,
                     atm2ocn_contract);
                 container.InitializeBlocks();
+                amrex::ParmParse().remove("amr.check_int");
+                amrex::ParmParse().remove("amr.check_per");
+                amrex::ParmParse().remove("amr.check_int_time");
+                amrex::ParmParse().remove("amr.restart");
+                amrex::ParmParse().remove("amr.regrid_int");
+                amrex::ParmParse().remove("amr.do_substep");
+                amrex::ParmParse().remove("amr.iterate_grids");
                 const amrex::Real coupling_time = amrex::Real(0.0);
                 erf_remora::RunERFOneStepAndPack(container, container.AtmosToOceanActiveCache(), coupling_time);
                 erf_remora::RunREMORAApplyAndOneStep(container, container.AtmosToOceanActiveCache(), coupling_time);

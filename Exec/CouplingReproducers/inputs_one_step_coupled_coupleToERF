@@ -1,0 +1,42 @@
+# One-step ERF->cache->REMORA using the REMORA CoupleToERF problem.
+# REMORA params come from the CoupleToERF problem directory; ERF params
+# come from the RemoraCoupling shear deck.
+#
+# Requires:
+#   external-src/REMORA/Exec/CoupleToERF/inputs
+#   external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
+#   external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding
+
+FILE = external-src/REMORA/Exec/CoupleToERF/inputs
+FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
+
+# Override FPE trap from CoupleToERF/inputs while coupling plumbing is validated.
+amrex.fpe_trap_invalid = 0
+
+# Ensure ERF resolves sounding file from ERF checkout location.
+erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding
+
+# Driver-owned topology.
+# Atmosphere: match ocean horizontal extent from CoupleToERF (1600x1600).
+driver.atm.prob_lo     = 0.0 0.0 0.0
+driver.atm.prob_hi     = 1600.0 1600.0 1600.0
+driver.atm.n_cell      = 16 16 16
+driver.atm.is_periodic = 1 1 0
+
+# Ocean: from CoupleToERF/inputs (1600x1600x150m, 16x16x32 cells).
+driver.ocn.prob_lo     = 0.0 0.0 -150.0
+driver.ocn.prob_hi     = 1600.0 1600.0 0.0
+driver.ocn.n_cell      = 16 16 32
+
+# Driver mode: non-synthetic, coupled one-step path.
+driver.synthetic_only = 0
+driver.coupled_one_step = 1
+driver.atm2ocn_mode = state
+
+# Smoke test: one step only.
+max_step = 1
+
+# AMReX blocking factor: ocean z=32, ERF z=16 both divisible by 8 (default).
+# Plotfile overrides.
+remora.plot_file = remoraplt
+remora.plot_int = -1

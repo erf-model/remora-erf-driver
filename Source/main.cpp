@@ -15,6 +15,13 @@ main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
     {
+        // When both FILE=CoupleToERF/inputs (remora.max_step) and the ERF shear
+        // deck (max_step) are loaded, REMORA::ReadParameters aborts on the
+        // conflict. The driver owns the combined ParmParse environment, so drop
+        // the prefixed alias; the canonical max_step/stop_time keys remain.
+        amrex::ParmParse().remove("remora.max_step");
+        amrex::ParmParse().remove("remora.stop_time");
+
         amrex::ParmParse pp_driver("driver");
 
         int max_grid_size = 32;

@@ -13,9 +13,16 @@ RunREMORAStandalone()
 }
 
 void
-RunREMORAApplyAndOneStep(const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
+RunREMORAApplyAndOneStep(const ERFRemoraMultiBlockContainer& container,
+                          const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
 {
-    REMORA remora;
+    REMORA remora(container.GetOcnRealBox(),
+                  container.GetMaxLevel(),
+                  container.GetOcnNCell(),
+                  container.GetCoord(),
+                  container.GetRefRatio(),
+                  container.GetIsPeriodic(),
+                  "remora");
     remora.InitData();
     remora.ApplyAtmosphericStates(states, time);
     remora.Evolve();

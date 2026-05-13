@@ -4,6 +4,7 @@
 #include <AMReX.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
+#include <AMReX_RealBox.H>
 
 #include <string>
 
@@ -16,7 +17,6 @@ main (int argc, char* argv[])
     {
         amrex::ParmParse pp_driver("driver");
 
-        int n_cell = 32;
         int max_grid_size = 32;
         amrex::Real dt_atm = 10.0;
         int atm_substeps_per_ocean_step = 6;
@@ -25,7 +25,6 @@ main (int argc, char* argv[])
         int coupled_one_step = 0;
         std::string atm2ocn_mode = "state";
 
-        pp_driver.query("n_cell", n_cell);
         pp_driver.query("max_grid_size", max_grid_size);
         pp_driver.query("dt_atm", dt_atm);
         pp_driver.query("atm_substeps_per_ocean_step", atm_substeps_per_ocean_step);
@@ -43,12 +42,40 @@ main (int argc, char* argv[])
             amrex::Abort("Unknown driver.atm2ocn_mode. Valid values: state, flux.");
         }
 
+        // Parse driver-owned topology from input file.
+        // Atmosphere: z >= 0, Ocean: z <= 0.
+        amrex::ParmParse pp_atm("driver.atm");
+        amrex::ParmParse pp_ocn("driver.ocn");
+
+        amrex::Vector<amrex::Real> atm_lo = {0.0, 0.0, 0.0};
+        amrex::Vector<amrex::Real> atm_hi = {1.0, 1.0, 1.0};
+        amrex::Vector<int> n_cell_atm = {32, 32, 32};
+        amrex::Vector<amrex::Real> ocn_lo = {0.0, 0.0, -1.0};
+        amrex::Vector<amrex::Real> ocn_hi = {1.0, 1.0,  0.0};
+        amrex::Vector<int> n_cell_ocn = {32, 32, 10};
+
+        pp_atm.queryarr("prob_lo", atm_lo, 0, AMREX_SPACEDIM);
+        pp_atm.queryarr("prob_hi", atm_hi, 0, AMREX_SPACEDIM);
+        pp_atm.queryarr("n_cell",  n_cell_atm, 0, AMREX_SPACEDIM);
+        pp_ocn.queryarr("prob_lo", ocn_lo, 0, AMREX_SPACEDIM);
+        pp_ocn.queryarr("prob_hi", ocn_hi, 0, AMREX_SPACEDIM);
+        pp_ocn.queryarr("n_cell",  n_cell_ocn, 0, AMREX_SPACEDIM);
+
+        amrex::RealBox atm_rb(atm_lo.data(), atm_hi.data());
+        amrex::RealBox ocn_rb(ocn_lo.data(), ocn_hi.data());
+
+        int max_level = 0;
+        int coord = 0;
+        amrex::Vector<amrex::IntVect> ref_ratio(1, amrex::IntVect(2));
+        amrex::Vector<int> is_periodic_vec = {0, 0, 0};
+        pp_atm.queryarr("is_periodic", is_periodic_vec, 0, AMREX_SPACEDIM);
+        amrex::Array<int,AMREX_SPACEDIM> is_periodic{is_periodic_vec[0], is_periodic_vec[1], is_periodic_vec[2]};
+
         if (synthetic_only) {
             erf_remora::ERFRemoraMultiBlockContainer container(
-                n_cell,
-                max_grid_size,
-                dt_atm,
-                atm_substeps_per_ocean_step,
+                atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
+                max_level, coord, ref_ratio, is_periodic,
+                max_grid_size, dt_atm, atm_substeps_per_ocean_step,
                 atm2ocn_contract);
             container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
@@ -56,15 +83,14 @@ main (int argc, char* argv[])
             if (coupled_one_step) {
                 amrex::Print() << "Running one-step ERF->cache->REMORA path\n";
                 erf_remora::ERFRemoraMultiBlockContainer container(
-                    n_cell,
-                    max_grid_size,
-                    dt_atm,
-                    atm_substeps_per_ocean_step,
+                    atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
+                    max_level, coord, ref_ratio, is_periodic,
+                    max_grid_size, dt_atm, atm_substeps_per_ocean_step,
                     atm2ocn_contract);
                 container.InitializeBlocks();
                 const amrex::Real coupling_time = amrex::Real(0.0);
-                erf_remora::RunERFOneStepAndPack(container.AtmosToOceanActiveCache(), coupling_time);
-                erf_remora::RunREMORAApplyAndOneStep(container.AtmosToOceanActiveCache(), coupling_time);
+                erf_remora::RunERFOneStepAndPack(container, container.AtmosToOceanActiveCache(), coupling_time);
+                erf_remora::RunREMORAApplyAndOneStep(container, container.AtmosToOceanActiveCache(), coupling_time);
             } else {
                 amrex::Print() << "Running uncoupled ERF then REMORA paths\n";
                 erf_remora::RunERFStandalone();

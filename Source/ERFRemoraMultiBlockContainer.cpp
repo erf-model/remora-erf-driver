@@ -7,27 +7,38 @@
 
 namespace erf_remora
 {
-ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (int n_cell,
-                                                            int max_grid_size,
-                                                            amrex::Real dt_atm,
-                                                            int atm_substeps_per_ocean_step,
-                                                            coupling::AtmosToOceanContract atm2ocn_contract)
-    : m_dt_atm(dt_atm),
+ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
+    const amrex::RealBox& atm_rb,
+    const amrex::Vector<int>& n_cell_atm,
+    const amrex::RealBox& ocn_rb,
+    const amrex::Vector<int>& n_cell_ocn,
+    int max_level,
+    int coord,
+    const amrex::Vector<amrex::IntVect>& ref_ratio,
+    const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
+    int max_grid_size,
+    amrex::Real dt_atm,
+    int atm_substeps_per_ocean_step,
+    coupling::AtmosToOceanContract atm2ocn_contract)
+    : m_atm_rb(atm_rb), m_atm_n_cell(n_cell_atm),
+      m_ocn_rb(ocn_rb), m_ocn_n_cell(n_cell_ocn),
+      m_max_level(max_level), m_coord(coord),
+      m_ref_ratio(ref_ratio), m_is_periodic(is_periodic),
+      m_dt_atm(dt_atm),
       m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
       m_atmos_to_ocean_contract(atm2ocn_contract)
 {
-    amrex::Box full_domain(amrex::IntVect(0, 0, 0),
-                           amrex::IntVect(n_cell - 1, n_cell - 1, n_cell - 1));
-    amrex::Box domain = amrex::makeSlab(full_domain, 2, 0);
+    // Interface slab: horizontal extent of the atmosphere at z = 0.
+    amrex::Box domain(amrex::IntVect(0, 0, 0),
+                      amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
     m_ba.define(domain);
     m_ba.maxSize(max_grid_size);
     m_dm.define(m_ba);
 
-    amrex::RealBox real_box({0.0, 0.0, 0.0}, {1.0, 1.0, 1.0});
-    amrex::Vector<int> is_periodic(AMREX_SPACEDIM, 0);
-    amrex::ParmParse pp_geom("geometry");
-    pp_geom.queryarr("is_periodic", is_periodic, 0, AMREX_SPACEDIM);
-    m_geom.define(domain, &real_box, amrex::CoordSys::cartesian, is_periodic.data());
+    amrex::Real dz_atm = (atm_rb.hi(2) - atm_rb.lo(2)) / n_cell_atm[2];
+    amrex::RealBox slab_rb({atm_rb.lo(0), atm_rb.lo(1), 0.0},
+                            {atm_rb.hi(0), atm_rb.hi(1), dz_atm});
+    m_geom.define(domain, &slab_rb, amrex::CoordSys::cartesian, is_periodic.data());
 
     m_atmos_to_ocean_active_indices = coupling::AtmosToOceanActiveIndices(m_atmos_to_ocean_contract);
     m_atmos_to_ocean_active_names = coupling::AtmosToOceanNames(m_atmos_to_ocean_contract);

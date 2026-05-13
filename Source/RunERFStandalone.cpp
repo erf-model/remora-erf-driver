@@ -13,9 +13,16 @@ RunERFStandalone()
 }
 
 void
-RunERFOneStepAndPack(amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
+RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
+                      amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
 {
-    ERF erf;
+    ERF erf(container.GetAtmRealBox(),
+            container.GetMaxLevel(),
+            container.GetAtmNCell(),
+            container.GetCoord(),
+            container.GetRefRatio(),
+            container.GetIsPeriodic(),
+            "erf");
     erf.InitData();
     erf.Evolve();
     erf.PackAtmosphericStates(states, time);

@@ -95,6 +95,7 @@ main (int argc, char* argv[])
                     max_grid_size, dt_atm, atm_substeps_per_ocean_step,
                     atm2ocn_contract);
                 container.InitializeBlocks();
+                container.PrefillAtmosToOceanFallbacks();
                 amrex::ParmParse().remove("amr.check_int");
                 amrex::ParmParse().remove("amr.check_per");
                 amrex::ParmParse().remove("amr.check_int_time");
@@ -108,6 +109,17 @@ main (int argc, char* argv[])
             } else {
                 amrex::Print() << "Running uncoupled ERF then REMORA paths\n";
                 erf_remora::RunERFStandalone();
+                // ERF's AmrMesh read amr.n_cell from the atmosphere deck. REMORA's
+                // AmrCore also reads amr.n_cell, so replace it with the ocean grid
+                // before constructing REMORA.
+                {
+                    amrex::Vector<int> ocn_n_cell;
+                    amrex::ParmParse("remora").queryarr("n_cell", ocn_n_cell, 0, AMREX_SPACEDIM);
+                    if (!ocn_n_cell.empty()) {
+                        amrex::ParmParse().remove("amr.n_cell");
+                        amrex::ParmParse("amr").addarr("n_cell", ocn_n_cell);
+                    }
+                }
                 erf_remora::RunREMORAStandalone();
             }
         }

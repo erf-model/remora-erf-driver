@@ -57,6 +57,7 @@ public:
     ~ERFRemoraMultiBlockContainer() = default;
 
     void InitializeBlocks();
+    void PrefillAtmosToOceanFallbacks();
     void AdvanceBlocks(ERF& erf, REMORA& remora, int ocean_steps);
     void AdvanceBlocksSynthetic(int ocean_steps);
     amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();

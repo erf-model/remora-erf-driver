@@ -45,6 +45,41 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
 }
 
 void
+ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
+{
+    // Set default values in the atmos→ocean slab for fields that ERF may not
+    // be able to provide (no moisture model, no radiation). Called by the driver
+    // before PackAtmosphericStates so that PackAtmosphericStates can simply leave
+    // unavailable slots untouched rather than guessing REMORA-specific constants.
+    //
+    // NOTE: remora.air_humidity is relative humidity [0-1], but the contract slot
+    // RH carries specific humidity [kg/kg] (vec_qair path). A direct copy of 0.776
+    // as specific humidity gives ~50× saturation and blows up the bulk flux.
+    // Use 0 here; when ERF has prognostic moisture it will overwrite with the
+    // correct specific humidity from its state.
+    amrex::ParmParse pp_rem("remora");
+    amrex::Real cloud_val = 0.0, rain_val = 0.0;
+    pp_rem.query("cloud", cloud_val);
+    pp_rem.query("rain",  rain_val);
+
+    auto set_slot = [&] (int global_idx, amrex::Real val) {
+        const auto& active = m_atmos_to_ocean_active_indices;
+        for (int local = 0; local < static_cast<int>(active.size()); ++local) {
+            if (active[local] == global_idx && m_atmos_to_ocean_active[local] != nullptr) {
+                m_atmos_to_ocean_active[local]->setVal(val);
+                break;
+            }
+        }
+    };
+
+    set_slot(coupling::RH,    0.0);       // qair [kg/kg]: dry-atmosphere fallback
+    set_slot(coupling::Cloud, cloud_val); // cloud fraction [0-1]
+    set_slot(coupling::Rain,  rain_val);  // rain rate [kg m-2 s-1]
+    set_slot(coupling::SWrad, 0.0);       // shortwave [W m-2]: no radiation fallback
+    set_slot(coupling::LWrad, 0.0);       // longwave  [W m-2]: no radiation fallback
+}
+
+void
 ERFRemoraMultiBlockContainer::InitializeBlocks ()
 {
     m_atm_tick = 0;

@@ -36,7 +36,8 @@ driver.atm2ocn_mode = state
 # Smoke test: one step only.
 max_step = 1
 
-# AMReX blocking factor: ocean z=32, ERF z=16 both divisible by 8 (default).
 # Plotfile overrides.
+erf.plot_file = erfplt
+erf.plot_int_1 = 1 #-1
 remora.plot_file = remoraplt
-remora.plot_int = -1
+remora.plot_int = 1 #-1

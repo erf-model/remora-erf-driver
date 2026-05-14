@@ -63,7 +63,7 @@ Purpose:
 
 - one-way coupled one-step path (`driver.coupled_one_step = 1`) where ERF runs
   one step with the ERF `RemoraCoupling/inputs_shear_oneway` setup, packs cache slabs,
-  then REMORA applies and runs one step.
+  then REMORA applies the physical state and runs one step.
 
 Run:
 
@@ -78,3 +78,27 @@ Dependency note:
   - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
 - It requires those files to exist in your ERF checkout (expected once that
   branch lands on ERF `development`).
+
+---
+
+### `CouplingReproducers/inputs_one_step_coupled_coupleToERF`
+
+Purpose:
+
+- one-way coupled one-step path (`driver.coupled_one_step = 1`) using the REMORA
+  `CoupleToERF` problem setup.
+
+Run:
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF
+```
+
+Dependency note:
+
+- This input uses:
+  - `FILE = external-src/REMORA/Exec/CoupleToERF/inputs`
+  - `FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+  - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
+- It requires those files to exist in your respective solver checkouts.
+

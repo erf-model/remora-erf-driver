@@ -1,9 +1,9 @@
 # ERF-REMORA Driver (Initial Architecture Scaffold)
 
 This repository hosts a top-level AMReX superbuild and a driver executable that
-couples ERF and REMORA as libraries. The current focus is validated coupled
-infrastructure: 2D `MultiFab` cache ownership, read/write paths, driver-owned
-multi-rate clock stability, and solver advancement through the coupled loop.
+couples ERF and REMORA as libraries. The focus is coupled infrastructure:
+2D `MultiFab` cache ownership, read/write paths, driver-owned multi-rate clock
+stability, and solver advancement through the coupled loop.
 
 ## Coupling Roadmap
 
@@ -51,20 +51,18 @@ Implementation note:
 - Coupling modes can swap active layer sets by index without changing the
   driver-owned cache allocation/ownership model.
 
-### Future Spatial Remapping (Uncommitted Scheme)
+### Spatial Remapping
 
-While the current baseline uses level-0, matched horizontal grids, future work will
-introduce mismatched grids to support phenomena like coastal upwelling.
+The current baseline uses level-0, matched horizontal grids.
 
-**Crucially, this architecture does not currently claim or target a specific
-external interfacing or remapping scheme.** The design remains agnostic so we
-can evaluate native AMReX multi-block capabilities (`ParallelCopy`,
-`MultiBlockCommMetaData`) before deciding whether an external topological engine
-is required for conservative area-weighted flux accounting.
+The design remains agnostic about the remapping mechanism so we can evaluate
+native AMReX multi-block capabilities (`ParallelCopy`, `MultiBlockCommMetaData`)
+before deciding whether an external topological engine is required for
+conservative area-weighted flux accounting.
 
-### Future Flux-Passing + Wave Mediation
+### Flux-Passing + Wave Mediation
 
-Planned transition:
+Planned extensions:
 
 - Add a runtime coupling-mode toggle (e.g., `ParmParse`) to switch between:
   - state-passing (legacy COAWST-like), and

@@ -9,7 +9,7 @@ cmake -S . -B build
 cmake --build build -j4
 ```
 
-## How To Run (Reviewer Reproducers)
+## How To Run
 
 ### Reproducer A: Coupling infrastructure test (`driver.synthetic_only = 1`)
 
@@ -91,9 +91,9 @@ Dependency note:
   - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
 - Those files must exist in your ERF checkout.
 
-### Flag status: expected now vs reserved
+### Flag status
 
-Expected for current reproducible checks:
+Expected for the reproducible checks:
 
 - Coupling infrastructure check: `driver.synthetic_only = 1`.
 - One-step standalone smoke: `driver.synthetic_only = 0`, `max_step=1`,
@@ -111,7 +111,7 @@ Current coupled runtime behavior:
 - The accepted smoke-test cadence is 1:1 with `driver.dt_atm = 1`,
   `driver.atm_substeps_per_ocean_step = 1`, and `remora.fixed_dt = 1`.
 
-### Problem selection note for standalone smoke tests
+### Problem Selection
 
 When `driver.synthetic_only = 0`, each solver still chooses its own problem setup:
 

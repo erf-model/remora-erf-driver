@@ -64,20 +64,25 @@ Optional quick check:
 sed -n '1,20p' erfplt00001/Header
 ```
 
-### Reproducer C: One-way coupled ERF shear deck -> REMORA one-step apply/evolve
+### Reproducer C: Coupled ERF shear deck -> REMORA coupled apply/evolve loop
 
 Run:
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_erf_shear_oneway
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF \
+  max_step=10 \
+  driver.dt_atm=1 \
+  driver.atm_substeps_per_ocean_step=1 \
+  remora.fixed_dt=1 \
+  erf.plot_int_1=1 \
+  remora.plot_int=1
 ```
 
 This reproducer verifies:
 
-- ERF one-step path can use the ERF `RemoraCoupling/inputs_shear_oneway` deck,
-- ERF `PackAtmosphericStates` -> REMORA `ApplyAtmosphericStates` bridge runs in
-  one process,
-- REMORA can advance one step after applying cache slabs.
+- ERF and REMORA both advance through the driver-owned coupled loop,
+- atmospheric state packing and ocean application occur at each coupled step,
+- REMORA advances after receiving cache slabs from ERF.
 
 Dependency note:
 
@@ -86,7 +91,7 @@ Dependency note:
   - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
 - Those files must exist in your ERF checkout.
 
-### Flag status: expected now vs prototype
+### Flag status: expected now vs reserved
 
 Expected for current reproducible checks:
 
@@ -94,19 +99,17 @@ Expected for current reproducible checks:
 - One-step standalone smoke: `driver.synthetic_only = 0`, `max_step=1`,
   `erf.prob_name = "UserDefined"`, `remora.ic_type = analytic`,
   `remora.fixed_dt` and `remora.fixed_ndtfast_ratio` set to finite values.
-- One-step smoke keeps `remora.plot_int = -1` for stability with the current
-  placeholder BlankProblem path.
+- The standalone one-step smoke deck keeps `remora.plot_int = -1` for stability
+  with the current placeholder BlankProblem path.
 
-Prototype / staged (not full physics-coupled yet):
+Current coupled runtime behavior:
 
-- `driver.atm2ocn_mode = flux` is currently for cache-layer routing checks;
-  it does not yet represent a validated full flux-coupled physics path.
-- In `driver.synthetic_only = 0` mode, default behavior remains standalone
-  ERF then standalone REMORA smoke paths.
-- A minimal one-way bridge path is available with `driver.coupled_one_step=1`:
-  run one ERF step, pack cache slabs, apply them in REMORA, then run one
-  REMORA step.
-- Full multi-rate two-way runtime coupling in this mode is still not enabled yet.
+- `driver.atm2ocn_mode = state` is the validated V1 coupling mode.
+- `driver.atm2ocn_mode = flux` remains hard-disabled in the driver.
+- The coupled loop is driver-owned: ERF advances one atmospheric step, REMORA
+  applies the packed state, then REMORA advances one ocean step.
+- The accepted smoke-test cadence is 1:1 with `driver.dt_atm = 1`,
+  `driver.atm_substeps_per_ocean_step = 1`, and `remora.fixed_dt = 1`.
 
 ### Problem selection note for standalone smoke tests
 
@@ -117,15 +120,13 @@ When `driver.synthetic_only = 0`, each solver still chooses its own problem setu
 
 Current smoke deck notes:
 
-- `Exec/CouplingReproducers/inputs_one_step_solver_initialization_check` sets
-  `driver.synthetic_only = 0` and sets
-  `erf.prob_name = "UserDefined"` to use ERF's supported neutral placeholder
-  problem path for this one-step initialization smoke test.
-- REMORA requires valid timestep controls in this path; the deck sets
+- `Exec/CouplingReproducers/inputs_one_step_solver_initialization_check` keeps
+  the standalone solver initialization smoke test separate from coupled runs.
+- REMORA requires valid timestep controls in that path; the deck sets
   `remora.fixed_dt` and `remora.fixed_ndtfast_ratio` to avoid runaway `DT = 1e+20`.
-- This smoke input disables REMORA plotfile output (`remora.plot_int = -1`) so the
-  one-step initialization test stays stable with the current placeholder BlankProblem
-  initialization path.
+- The coupled reproducer now uses `Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF`
+  with `max_step=10`, `driver.dt_atm=1`, `driver.atm_substeps_per_ocean_step=1`,
+  and `remora.fixed_dt=1`.
 
 ## Unified Inputs Example
 

@@ -1,9 +1,9 @@
 # ERF-REMORA Driver (Initial Architecture Scaffold)
 
 This repository hosts a top-level AMReX superbuild and a driver executable that
-couples ERF and REMORA as libraries. The current focus is coupled infrastructure:
-2D `MultiFab` cache ownership, read/write paths, driver-owned multi-rate clock
-stability, and solver advancement through the coupled loop.
+couples ERF and REMORA as libraries. The current focus is validated coupled
+infrastructure: 2D `MultiFab` cache ownership, read/write paths, driver-owned
+multi-rate clock stability, and solver advancement through the coupled loop.
 
 ## Coupling Roadmap
 
@@ -26,8 +26,22 @@ Current ocean -> atmosphere state list:
 
 Note: REMORA does not currently support vertical refinement; the refinement ratio in the z-direction must be set to 1.
 
-The current coupled implementation uses state-passing (legacy behavior): REMORA consumes atmospheric
-state variables and computes surface fluxes internally via its bulk-physics path.
+The current coupled implementation is validated in state-passing mode:
+REMORA consumes atmospheric state variables and computes surface fluxes
+internally via its bulk-physics path.
+
+Validated V1 behavior:
+
+- driver-owned coupled stepping with ERF and REMORA advancing in the same run,
+- state-passing exchange at each coupled step,
+- 1:1 cadence smoke tests with `driver.dt_atm = 1` and `remora.fixed_dt = 1`,
+- `driver.atm2ocn_mode = flux` hard-disabled.
+
+Deferred / future work:
+
+- direct flux-passing,
+- wave-mediated extensions,
+- mismatched-grid spatial remapping.
 
 Implementation note:
 

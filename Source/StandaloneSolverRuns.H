@@ -25,6 +25,7 @@ void ERFApplyOceanSurfaceState(void* erf_handle,
 void ERFPackAtmosphericStates(void* erf_handle,
                               amrex::Vector<amrex::MultiFab*>& states,
                               amrex::Real time);
+amrex::Real ERFEvolveOneStep(void* erf_handle, amrex::Real time, amrex::Real dt_request);
 
 void* CreateREMORASolver(const ERFRemoraMultiBlockContainer& container);
 void DestroyREMORASolver(void* remora_handle) noexcept;
@@ -35,6 +36,7 @@ void REMORAPackSurfaceState(void* remora_handle,
 void REMORAApplyAtmosphericStates(void* remora_handle,
                                   const amrex::Vector<amrex::MultiFab*>& states,
                                   amrex::Real time);
+amrex::Real REMORAEvolveOneStep(void* remora_handle, amrex::Real time, amrex::Real dt_request);
 
 // Coupled one-step path: container provides driver-owned topology so each solver
 // is constructed via its explicit-topology constructor instead of parsing amr.*/geometry.*.

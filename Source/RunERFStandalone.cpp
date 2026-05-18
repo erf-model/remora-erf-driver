@@ -52,6 +52,12 @@ ERFPackAtmosphericStates(void* erf_handle,
     static_cast<ERF*>(erf_handle)->PackAtmosphericStates(states, time);
 }
 
+amrex::Real
+ERFEvolveOneStep(void* erf_handle, amrex::Real time, amrex::Real dt_request)
+{
+    return static_cast<ERF*>(erf_handle)->EvolveOneStep(time, dt_request);
+}
+
 void
 RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
                       amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)

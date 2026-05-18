@@ -35,10 +35,25 @@ main (int argc, char* argv[])
         pp_driver.query("max_grid_size", max_grid_size);
         pp_driver.query("dt_atm", dt_atm);
         pp_driver.query("atm_substeps_per_ocean_step", atm_substeps_per_ocean_step);
-        pp_driver.query("ocean_steps", ocean_steps);
+        const bool has_driver_ocean_steps = pp_driver.query("ocean_steps", ocean_steps);
         pp_driver.query("synthetic_only", synthetic_only);
         pp_driver.query("coupled_one_step", coupled_one_step);
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
+
+        int top_level_max_step = ocean_steps;
+        const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
+        if (has_top_level_max_step) {
+            if (has_driver_ocean_steps && top_level_max_step != ocean_steps) {
+                amrex::Print() << "WARNING: both max_step (" << top_level_max_step
+                               << ") and driver.ocean_steps (" << ocean_steps
+                               << ") are set; using max_step for ocean macro-step count.\n";
+            }
+            ocean_steps = top_level_max_step;
+        }
+
+        if (pp_driver.contains("ocean_step") && !pp_driver.contains("ocean_steps")) {
+            amrex::Print() << "WARNING: found driver.ocean_step, but driver.ocean_steps is the supported key; ignoring driver.ocean_step.\n";
+        }
 
         erf_remora::coupling::AtmosToOceanContract atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::StatePassing;
         if (atm2ocn_mode == "state") {

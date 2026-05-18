@@ -3,7 +3,10 @@
 
 #include <AMReX.H>
 #include <AMReX_BLProfiler.H>
+#include <AMReX_Math.H>
 #include <AMReX_ParmParse.H>
+
+#include <string>
 
 namespace erf_remora
 {
@@ -220,12 +223,28 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
         [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Atmos");
             ERFPackAtmosphericStates(m_erf, states, time);
+            static int cloud_warn_count = 0;
+            constexpr int cloud_warn_limit = 5;
+            constexpr amrex::Real cloud_tol = 1.0e-6;
 
             // Finite check on packed atmospheric states
-            for (auto* mf : states) {
+            for (int idx = 0; idx < static_cast<int>(states.size()); ++idx) {
+                auto* mf = states[idx];
                 if (mf) {
                     if (mf->min(0) != mf->min(0) || mf->max(0) != mf->max(0)) {
                         amrex::Abort("Non-finite value detected in PackAtmosphericStates output.");
+                    }
+                    const bool is_cloud_lane = (idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()) &&
+                                                m_atmos_to_ocean_active_indices[idx] == coupling::Cloud);
+                    if (is_cloud_lane && amrex::ParallelDescriptor::IOProcessor() &&
+                        cloud_warn_count < cloud_warn_limit) {
+                        const amrex::Real cmin = mf->min(0);
+                        const amrex::Real cmax = mf->max(0);
+                        if (cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) {
+                            ++cloud_warn_count;
+                            amrex::Print() << "WARNING: packed cloud lane outside tolerance [-1e-6,1+1e-6]: min="
+                                           << cmin << " max=" << cmax << "\n";
+                        }
                     }
                 }
             }
@@ -294,6 +313,25 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     // - REMORA advances Boussinesq/split-explicit ocean dynamics with a much larger
     //   macro-step O(10^2-10^3 s).
     // We therefore hold one ocean macro-state while subcycling atmosphere updates.
+    const amrex::Real dt_ocn_request = m_dt_atm * static_cast<amrex::Real>(m_atm_substeps_per_ocean_step);
+    const amrex::Real abs_tol = 1.0e-12;
+    const amrex::Real rel_tol = 1.0e-8;
+
+    auto enforce_dt = [&] (const char* solver_name, amrex::Real dt_request, amrex::Real dt_used,
+                           int ocean_step, int substep) {
+        const amrex::Real err = amrex::Math::abs(dt_used - dt_request);
+        const amrex::Real tol = amrex::max(abs_tol, rel_tol * amrex::Math::abs(dt_request));
+        if (err > tol) {
+            amrex::Abort(std::string("Coupled cadence drift in ") + solver_name +
+                         " at ocean_step=" + std::to_string(ocean_step) +
+                         " substep=" + std::to_string(substep) +
+                         " dt_request=" + std::to_string(dt_request) +
+                         " dt_used=" + std::to_string(dt_used) +
+                         " abs_err=" + std::to_string(err) +
+                         " tol=" + std::to_string(tol));
+        }
+    };
+
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
         const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
@@ -307,6 +345,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 
             BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
+            enforce_dt("ERF", m_dt_atm, ERFEvolveOneStep(m_erf, atm_time, m_dt_atm), ocean_step, substep);
             
             BL_PROFILE("Driver::AMReX_ParallelCopy"); // Region around state transfer
             pack_atmos_states(m_atmos_to_ocean_active, atm_time);
@@ -314,6 +353,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 
             ++m_atm_tick;
         }
+
+        enforce_dt("REMORA", dt_ocn_request, REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request),
+                   ocean_step, -1);
 
         if (amrex::ParallelDescriptor::IOProcessor()) {
             amrex::Print() << "Completed ocean step " << ocean_step

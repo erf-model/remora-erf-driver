@@ -178,6 +178,9 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
         const auto min_val = fields[idx]->min(0);
         const auto max_val = fields[idx]->max(0);
         amrex::Print() << "  " << names[idx] << ": min=" << min_val << " max=" << max_val << "\n";
+        if (names[idx] == "rain" && (min_val > 100.0 || max_val > 100.0)) {
+            amrex::Print() << "  *** WARNING: implausibly large rain values detected! ***\n";
+        }
     }
 }
 

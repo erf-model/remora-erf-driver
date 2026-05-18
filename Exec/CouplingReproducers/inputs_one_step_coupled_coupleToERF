@@ -32,12 +32,16 @@ driver.ocn.n_cell      = 16 16 16
 driver.synthetic_only = 0
 driver.coupled_one_step = 1
 driver.atm2ocn_mode = state
+driver.dt_atm = 1
+driver.atm_substeps_per_ocean_step = 1
 
 # Smoke test: one step only.
 max_step = 1
 
-# Plotfile overrides.
+# ERF / REMORA specific flags.
+erf.fixed_dt = 1
 erf.plot_file = erfplt
 erf.plot_int_1 = 1 #-1
 remora.plot_file = remoraplt
+remora.fixed_dt = 1
 remora.plot_int = 1 #-1

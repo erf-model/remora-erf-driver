@@ -30,12 +30,12 @@ The current coupled implementation is validated in state-passing mode:
 REMORA consumes atmospheric state variables and computes surface fluxes
 internally via its bulk-physics path.
 
-Validated V1 behavior:
+Validated behavior:
 
 - driver-owned coupled stepping with ERF and REMORA advancing in the same run,
 - state-passing exchange at each coupled step,
 - 1:1 cadence smoke tests with `driver.dt_atm = 1` and `remora.fixed_dt = 1`,
-- `driver.atm2ocn_mode = flux` hard-disabled.
+- `driver.atm2ocn_mode = flux` is disabled in the driver.
 
 Deferred / future work:
 

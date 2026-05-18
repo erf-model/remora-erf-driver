@@ -104,8 +104,8 @@ Expected for current reproducible checks:
 
 Current coupled runtime behavior:
 
-- `driver.atm2ocn_mode = state` is the validated V1 coupling mode.
-- `driver.atm2ocn_mode = flux` remains hard-disabled in the driver.
+- `driver.atm2ocn_mode = state` is the validated coupling mode.
+- `driver.atm2ocn_mode = flux` is disabled in the driver.
 - The coupled loop is driver-owned: ERF advances one atmospheric step, REMORA
   applies the packed state, then REMORA advances one ocean step.
 - The accepted smoke-test cadence is 1:1 with `driver.dt_atm = 1`,

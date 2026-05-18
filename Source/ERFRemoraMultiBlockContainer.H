@@ -16,9 +16,6 @@
 #include <functional>
 #include <memory>
 
-class ERF;
-class REMORA;
-
 namespace erf_remora
 {
 /**
@@ -54,11 +51,12 @@ public:
                                   amrex::Real dt_atm,
                                   int atm_substeps_per_ocean_step,
                                   coupling::AtmosToOceanContract atm2ocn_contract);
-    ~ERFRemoraMultiBlockContainer() = default;
+    ~ERFRemoraMultiBlockContainer();
 
     void InitializeBlocks();
+    void InitializeSolvers();
     void PrefillAtmosToOceanFallbacks();
-    void AdvanceBlocks(ERF& erf, REMORA& remora, int ocean_steps);
+    void AdvanceBlocks(int ocean_steps);
     void AdvanceBlocksSynthetic(int ocean_steps);
     amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();
     const amrex::Vector<std::string>& AtmosToOceanActiveNames() const;
@@ -124,6 +122,9 @@ private:
     // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_ocean_to_atmos_storage;
     amrex::Vector<amrex::MultiFab*> m_ocean_to_atmos;
+
+    void* m_erf = nullptr;
+    void* m_remora = nullptr;
 };
 } // namespace erf_remora
 

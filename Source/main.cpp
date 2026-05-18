@@ -44,7 +44,7 @@ main (int argc, char* argv[])
         if (atm2ocn_mode == "state") {
             atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::StatePassing;
         } else if (atm2ocn_mode == "flux") {
-            atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::FluxPassing;
+            amrex::Abort("driver.atm2ocn_mode=flux is disabled for V1 infrastructure. Only 'state' mode is supported.");
         } else {
             amrex::Abort("Unknown driver.atm2ocn_mode. Valid values: state, flux.");
         }
@@ -87,45 +87,28 @@ main (int argc, char* argv[])
             container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
         } else {
-            if (coupled_one_step) {
-                amrex::Print() << "Running one-step ERF->cache->REMORA path\n";
-                erf_remora::ERFRemoraMultiBlockContainer container(
-                    atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
-                    max_level, coord, ref_ratio, is_periodic,
-                    max_grid_size, dt_atm, atm_substeps_per_ocean_step,
-                    atm2ocn_contract);
-                container.InitializeBlocks();
-                container.PrefillAtmosToOceanFallbacks();
-                amrex::ParmParse().remove("amr.check_int");
-                amrex::ParmParse().remove("amr.check_per");
-                amrex::ParmParse().remove("amr.check_int_time");
-                amrex::ParmParse().remove("amr.restart");
-                amrex::ParmParse().remove("amr.regrid_int");
-                amrex::ParmParse().remove("amr.do_substep");
-                amrex::ParmParse().remove("amr.iterate_grids");
-                const amrex::Real coupling_time = amrex::Real(0.0);
-                erf_remora::RunERFOneStepAndPack(container, container.AtmosToOceanActiveCache(), coupling_time);
-                erf_remora::RunREMORAApplyAndOneStep(container, container.AtmosToOceanActiveCache(), coupling_time);
-            } else {
-                amrex::Print() << "Running uncoupled ERF then REMORA paths\n";
-                erf_remora::RunERFStandalone();
-                // ERF's AmrMesh read amr.n_cell from the atmosphere deck. REMORA's
-                // AmrCore also reads amr.n_cell, so replace it with the ocean grid
-                // before constructing REMORA.
-                {
-                    amrex::Vector<int> ocn_n_cell;
-                    amrex::ParmParse("remora").queryarr("n_cell", ocn_n_cell, 0, AMREX_SPACEDIM);
-                    if (!ocn_n_cell.empty()) {
-                        amrex::ParmParse().remove("amr.n_cell");
-                        amrex::ParmParse("amr").addarr("n_cell", ocn_n_cell);
-                    }
-                }
-                erf_remora::RunREMORAStandalone();
-            }
-        }
+            amrex::Print() << "Running coupled ERF <-> REMORA path\n";
+            erf_remora::ERFRemoraMultiBlockContainer container(
+                atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
+                max_level, coord, ref_ratio, is_periodic,
+                max_grid_size, dt_atm, atm_substeps_per_ocean_step,
+                atm2ocn_contract);
+            container.InitializeBlocks();
+            container.InitializeSolvers();
+            container.PrefillAtmosToOceanFallbacks();
+            
+            amrex::ParmParse().remove("amr.check_int");
+            amrex::ParmParse().remove("amr.check_per");
+            amrex::ParmParse().remove("amr.check_int_time");
+            amrex::ParmParse().remove("amr.restart");
+            amrex::ParmParse().remove("amr.regrid_int");
+            amrex::ParmParse().remove("amr.do_substep");
+            amrex::ParmParse().remove("amr.iterate_grids");
 
-        amrex::Print() << "erf-remora-driver run completed\n";
+            container.AdvanceBlocks(ocean_steps);
+        }
     }
+    amrex::Print() << "erf-remora-driver run completed\n";
     amrex::Finalize();
 
     return 0;

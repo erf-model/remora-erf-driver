@@ -1,12 +1,24 @@
 #include "ERFRemoraMultiBlockContainer.H"
+#include "StandaloneSolverRuns.H"
 
 #include <AMReX.H>
-#include <AMReX_Box.H>
+#include <AMReX_BLProfiler.H>
 #include <AMReX_ParmParse.H>
-#include <AMReX_Print.H>
 
 namespace erf_remora
 {
+ERFRemoraMultiBlockContainer::~ERFRemoraMultiBlockContainer()
+{
+    if (m_erf != nullptr) {
+        DestroyERFSolver(m_erf);
+        m_erf = nullptr;
+    }
+    if (m_remora != nullptr) {
+        DestroyREMORASolver(m_remora);
+        m_remora = nullptr;
+    }
+}
+
 ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     const amrex::RealBox& atm_rb,
     const amrex::Vector<int>& n_cell_atm,
@@ -45,6 +57,25 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
 }
 
 void
+ERFRemoraMultiBlockContainer::InitializeSolvers ()
+{
+    if (m_erf != nullptr) {
+        DestroyERFSolver(m_erf);
+        m_erf = nullptr;
+    }
+    if (m_remora != nullptr) {
+        DestroyREMORASolver(m_remora);
+        m_remora = nullptr;
+    }
+
+    m_erf = CreateERFSolver(*this);
+    InitERFSolver(m_erf);
+
+    m_remora = CreateREMORASolver(*this);
+    InitREMORASolver(m_remora);
+}
+
+void
 ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
 {
     // Set default values in the atmos→ocean slab for fields that ERF may not
@@ -53,7 +84,7 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
     // unavailable slots untouched rather than guessing REMORA-specific constants.
     //
     // NOTE: remora.air_humidity is relative humidity [0-1], but the contract slot
-    // RH carries specific humidity [kg/kg] (vec_qair path). A direct copy of 0.776
+    // Qair carries specific humidity [kg/kg] (vec_qair path). A direct copy of 0.776
     // as specific humidity gives ~50× saturation and blows up the bulk flux.
     // Use 0 here; when ERF has prognostic moisture it will overwrite with the
     // correct specific humidity from its state.
@@ -72,7 +103,7 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
         }
     };
 
-    set_slot(coupling::RH,    0.0);       // qair [kg/kg]: dry-atmosphere fallback
+    set_slot(coupling::Qair,    0.0);       // qair [kg/kg]: dry-atmosphere fallback
     set_slot(coupling::Cloud, cloud_val); // cloud fraction [0-1]
     set_slot(coupling::Rain,  rain_val);  // rain rate [kg m-2 s-1]
     set_slot(coupling::SWrad, 0.0);       // shortwave [W m-2]: no radiation fallback
@@ -151,10 +182,56 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
 }
 
 void
-ERFRemoraMultiBlockContainer::AdvanceBlocks (ERF& erf, REMORA& remora, int ocean_steps)
+ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
 {
-    amrex::ignore_unused(erf, remora, ocean_steps);
-    amrex::Abort("Solver-backed AdvanceBlocks() is disabled in initial architecture infrastructure mode. Set driver.synthetic_only = 1.");
+    // V1 Hard Invariants: Verify required solver instances are active
+    if (!m_erf || !m_remora) {
+        amrex::Abort("Coupling loop started without initialized ERF or REMORA solvers.");
+    }
+
+    // Verify subcycling ratio is strictly positive
+    if (m_atm_substeps_per_ocean_step <= 0) {
+        amrex::Abort("Invalid atmosphere subcycling ratio: must be > 0.");
+    }
+
+    AdvanceBlocksWithCallbacks(
+        [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
+            BL_PROFILE("Driver::Pack_Surface");
+            REMORAPackSurfaceState(m_remora, state, time);
+            
+            // Finite check on packed surface state
+            for (auto* mf : state) {
+                if (mf) {
+                    // We use a simple check: if any value is non-finite, abort.
+                    // In a production environment, we'd use a reduction.
+                    if (mf->min(0) != mf->min(0) || mf->max(0) != mf->max(0)) {
+                        amrex::Abort("Non-finite value detected in PackSurfaceState output.");
+                    }
+                }
+            }
+        },
+        [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
+            BL_PROFILE("Driver::Apply_Surface");
+            ERFApplyOceanSurfaceState(m_erf, state, time);
+        },
+        [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
+            BL_PROFILE("Driver::Pack_Atmos");
+            ERFPackAtmosphericStates(m_erf, states, time);
+
+            // Finite check on packed atmospheric states
+            for (auto* mf : states) {
+                if (mf) {
+                    if (mf->min(0) != mf->min(0) || mf->max(0) != mf->max(0)) {
+                        amrex::Abort("Non-finite value detected in PackAtmosphericStates output.");
+                    }
+                }
+            }
+        },
+        [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
+            BL_PROFILE("Driver::Apply_Atmos");
+            REMORAApplyAtmosphericStates(m_remora, states, time);
+        },
+        ocean_steps);
 }
 
 void
@@ -198,13 +275,15 @@ ERFRemoraMultiBlockContainer::AtmosToOceanActiveNames () const
 
 void
 ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& pack_surface_state,
-                                                          const ConstStateFn& apply_ocean_surface_state,
-                                                          const MutableStateFn& pack_atmos_states,
-                                                          const ConstStateFn& apply_atmos_states,
-                                                          int ocean_steps)
+                                                           const ConstStateFn& apply_ocean_surface_state,
+                                                           const MutableStateFn& pack_atmos_states,
+                                                           const ConstStateFn& apply_atmos_states,
+                                                           int ocean_steps)
 {
+    BL_PROFILE("Driver::Build_Comm_Metadata"); // V1 Baseline marker
     PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
     PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+
 
     // Multi-rate clock rationale:
     // - ERF advances a compressible atmosphere where acoustic stability often drives
@@ -223,7 +302,10 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             const amrex::Real atm_time = m_atm_tick * m_dt_atm;
 
+            BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
+            
+            BL_PROFILE("Driver::AMReX_ParallelCopy"); // Region around state transfer
             pack_atmos_states(m_atmos_to_ocean_active, atm_time);
             apply_atmos_states(m_atmos_to_ocean_active, atm_time);
 

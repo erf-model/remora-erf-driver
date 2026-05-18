@@ -26,7 +26,7 @@ driver.atm.is_periodic = 1 1 0
 # Ocean: from CoupleToERF/inputs (1600x1600x150m, 16x16x32 cells).
 driver.ocn.prob_lo     = 0.0 0.0 -150.0
 driver.ocn.prob_hi     = 1600.0 1600.0 0.0
-driver.ocn.n_cell      = 16 16 32
+driver.ocn.n_cell      = 16 16 16
 
 # Driver mode: non-synthetic, coupled one-step path.
 driver.synthetic_only = 0

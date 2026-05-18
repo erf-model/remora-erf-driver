@@ -114,7 +114,7 @@ enum AtmosToOceanIndex : int {
     Uwind = 0,
     Vwind,
     Patm,
-    RH,
+    Qair,
     Tair,
     Cloud,
     Rain,
@@ -132,6 +132,7 @@ enum AtmosToOceanIndex : int {
     NumAtmosToOceanLayers,
 
     // Backward-compatible alias used by initial state-passing paths.
+    RH = Qair,
     NumAtmosToOceanStates = NumAtmosToOceanStateLayers
 };
 
@@ -143,7 +144,7 @@ enum OceanToAtmosIndex : int {
 inline const amrex::Vector<std::string>& AtmosToOceanNames ()
 {
     static const amrex::Vector<std::string> names {
-        "Uwind", "Vwind", "Patm", "RH", "Tair", "cloud", "rain", "SWrad", "LWrad"
+        "Uwind", "Vwind", "Patm", "Qair", "Tair", "cloud", "rain", "SWrad", "LWrad"
     };
     return names;
 }
@@ -151,7 +152,7 @@ inline const amrex::Vector<std::string>& AtmosToOceanNames ()
 inline const amrex::Vector<std::string>& AtmosToOceanAllNames ()
 {
     static const amrex::Vector<std::string> names {
-        "Uwind", "Vwind", "Patm", "RH", "Tair", "cloud", "rain", "SWrad", "LWrad",
+        "Uwind", "Vwind", "Patm", "Qair", "Tair", "cloud", "rain", "SWrad", "LWrad",
         "tau_x", "tau_y", "SHflux", "LHflux", "evap"
     };
     return names;
@@ -171,7 +172,7 @@ inline const amrex::Vector<int>& AtmosToOceanActiveIndices (AtmosToOceanContract
 inline const amrex::Vector<std::string>& AtmosToOceanNames (AtmosToOceanContract contract)
 {
     static const amrex::Vector<std::string> state_names {
-        "Uwind", "Vwind", "Patm", "RH", "Tair", "cloud", "rain", "SWrad", "LWrad"
+        "Uwind", "Vwind", "Patm", "Qair", "Tair", "cloud", "rain", "SWrad", "LWrad"
     };
     static const amrex::Vector<std::string> flux_names {
         "tau_x", "tau_y", "SHflux", "LHflux", "SWrad", "LWrad", "rain", "evap"

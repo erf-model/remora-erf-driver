@@ -96,21 +96,32 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
     pp_rem.query("cloud", cloud_val);
     pp_rem.query("rain",  rain_val);
 
-    auto set_slot = [&] (int global_idx, amrex::Real val) {
-        const auto& active = m_atmos_to_ocean_active_indices;
-        for (int local = 0; local < static_cast<int>(active.size()); ++local) {
-            if (active[local] == global_idx && m_atmos_to_ocean_active[local] != nullptr) {
-                m_atmos_to_ocean_active[local]->setVal(val);
-                break;
-            }
+    for (int local = 0; local < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local) {
+        auto* mf = m_atmos_to_ocean_active[local];
+        if (mf == nullptr) {
+            continue;
         }
-    };
 
-    set_slot(coupling::Qair,    0.0);       // qair [kg/kg]: dry-atmosphere fallback
-    set_slot(coupling::Cloud, cloud_val); // cloud fraction [0-1]
-    set_slot(coupling::Rain,  rain_val);  // rain rate [kg m-2 s-1]
-    set_slot(coupling::SWrad, 0.0);       // shortwave [W m-2]: no radiation fallback
-    set_slot(coupling::LWrad, 0.0);       // longwave  [W m-2]: no radiation fallback
+        switch (m_atmos_to_ocean_active_indices[local]) {
+        case coupling::Qair:
+            mf->setVal(0.0);       // qair [kg/kg]: dry-atmosphere fallback
+            break;
+        case coupling::Cloud:
+            mf->setVal(cloud_val); // cloud fraction [0-1]
+            break;
+        case coupling::Rain:
+            mf->setVal(rain_val);  // rain rate [kg m-2 s-1]
+            break;
+        case coupling::SWrad:
+            mf->setVal(0.0);       // shortwave [W m-2]: no radiation fallback
+            break;
+        case coupling::LWrad:
+            mf->setVal(0.0);       // longwave  [W m-2]: no radiation fallback
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 void

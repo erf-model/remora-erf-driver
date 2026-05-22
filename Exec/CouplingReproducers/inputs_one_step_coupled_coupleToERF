@@ -3,9 +3,9 @@
 # come from the RemoraCoupling shear deck.
 #
 # Requires:
-#   external-src/REMORA/Exec/CoupleToERF/inputs
-#   external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
-#   external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding
+#   REMORA source: Exec/CoupleToERF/inputs
+#   ERF source: .Exec_dev/RemoraCoupling/inputs_shear_oneway
+#   ERF source: .Exec_dev/RemoraCoupling/input_sounding
 
 FILE = external-src/REMORA/Exec/CoupleToERF/inputs
 FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway

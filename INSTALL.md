@@ -1,72 +1,48 @@
-# Installation and Usage Guide
+# Installation and Reproducer Guide
 
-## Build the superbuild
+## Build
 
 From repository root:
 
 ```bash
 cmake -S . -B build
-cmake --build build -j4
+cmake --build build -j4 --target erf-remora-driver
 ```
 
-## How To Run
+If you update files in the ERF or REMORA source trees used by this build,
+rebuild the same target:
 
-### Reproducer A: Coupling infrastructure test (`driver.synthetic_only = 1`)
+```bash
+cmake --build build -j4 --target erf-remora-driver
+```
 
-Run:
+## Ordered Reproducer Set
+
+### Reproducer A: Coupling infrastructure-only control (`driver.synthetic_only = 1`)
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check
 ```
 
-Optional (exercise flux-layer selection with the same cache allocation):
+Scientific intent:
 
-```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check \
-  driver.atm2ocn_mode=flux
-```
+- verify stable atmosphere/ocean coupling cadence and subcycling bookkeeping,
+- verify cache slab ownership/update path without solver-physics confounders,
+- establish a clean control case for subsequent physical coupling runs.
 
-This reproducer verifies:
-
-- shared AMReX initialization/finalization in the combined executable,
-- multi-rate coupling clock progression with atmosphere subcycling,
-- native AMReX interface cache ownership and controlled read/write paths,
-- coupling infrastructure stability without executing full ERF/REMORA fluid physics.
-
-Expected behavior:
-
-- console diagnostics for initial and updated cache values,
-- ocean-step completion messages with atmosphere tick progression,
-- clean process exit.
-
-### Reproducer B: One-step standalone solver initialization tests (`driver.synthetic_only = 0`)
-
-Run:
+### Reproducer B: One-step standalone solver initialization (`driver.synthetic_only = 0`)
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
   max_step=1 erf.v=0 remora.v=0
 ```
 
-This reproducer verifies:
+Scientific intent:
 
-- ERF library path can read inputs, initialize, and advance one real timestep,
-- REMORA library path can read inputs, initialize, and advance one real timestep,
-- both solver libraries can run in one executable without crashing.
+- verify both solvers can initialize and advance prognostic state in the shared executable,
+- separate initialization/stability issues from coupling-path issues.
 
-Expected outputs:
-
-- `erfplt00000`, `erfplt00001`
-
-Optional quick check:
-
-```bash
-sed -n '1,20p' erfplt00001/Header
-```
-
-### Reproducer C: Coupled ERF shear deck -> REMORA coupled apply/evolve loop
-
-Run:
+### Reproducer C: Coupled state-exchange baseline
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF \
@@ -78,55 +54,59 @@ Run:
   remora.plot_int=1
 ```
 
-This reproducer verifies:
+Scientific intent:
 
-- ERF and REMORA both advance through the driver-owned coupled loop,
-- atmospheric state packing and ocean application occur at each coupled step,
-- REMORA advances after receiving cache slabs from ERF.
+- verify atmosphere-state transfer and ocean application at each coupled step,
+- establish baseline coupled behavior before enabling SST feedback into ERF.
 
-Dependency note:
+### Reproducer D: Coupled SST feedback into ERF (`OceanSurf` active)
 
-- The inputs file uses:
-  - `FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway`
-  - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
-- Those files must exist in your ERF checkout.
+Use the dedicated OceanSurf deck plus longer runtime:
 
-### Flag status
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF_oceansurf \
+  max_step=600
+```
 
-Expected for the reproducible checks:
+Equivalent runtime overrides (if starting from the old coupled deck):
 
-- Coupling infrastructure check: `driver.synthetic_only = 1`.
-- One-step standalone smoke: `driver.synthetic_only = 0`, `max_step=1`,
-  `erf.prob_name = "UserDefined"`, `remora.ic_type = analytic`,
-  `remora.fixed_dt` and `remora.fixed_ndtfast_ratio` set to finite values.
-- The standalone one-step smoke deck keeps `remora.plot_int = -1` for stability
-  with the current placeholder BlankProblem path.
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF \
+  max_step=600 \
+  erf.land_surface_model=OceanSurf \
+  erf.most.Cd=0.0015 \
+  erf.most.Ch=0.0010 \
+  erf.most.Cq=0.0010
+```
 
-Current coupled runtime behavior:
+Scientific intent:
 
-- `driver.atm2ocn_mode = state` is the validated coupling mode.
-- `driver.atm2ocn_mode = flux` is disabled in the driver.
-- The coupled loop is driver-owned: ERF advances one atmospheric step, REMORA
-  applies the packed state, then REMORA advances one ocean step.
-- The accepted smoke-test cadence is 1:1 with `driver.dt_atm = 1`,
-  `driver.atm_substeps_per_ocean_step = 1`, and `remora.fixed_dt = 1`.
+- verify SST from REMORA is injected into persistent ERF OceanSurf `t_surf` (K),
+- verify ERF surface-layer fluxes respond to ocean state (`Cd`, `Ch`, `Cq` nonzero),
+- produce measurable thermodynamic response in ERF (`temp`, `theta`) over long windows.
 
-### Problem Selection
+### Quick validation diagnostics
 
-When `driver.synthetic_only = 0`, each solver still chooses its own problem setup:
+```bash
+~/codes/ERF/tools/fcompare_serial -d temp plt00000 plt00600
+~/codes/ERF/tools/fcompare_serial -d theta plt00000 plt00600
+```
 
-- ERF uses `erf.prob_name`.
-- REMORA uses `remora.ic_type` plus its own init controls.
+Interpretation:
 
-Current smoke deck notes:
+- machine-zero drift in `temp/theta` suggests negligible SST-to-ERF feedback,
+- O(1e-1 K) scale over 600 s (case-dependent) indicates feedback is dynamically active.
 
-- `Exec/CouplingReproducers/inputs_one_step_solver_initialization_check` keeps
-  the standalone solver initialization smoke test separate from coupled runs.
-- REMORA requires valid timestep controls in that path; the deck sets
-  `remora.fixed_dt` and `remora.fixed_ndtfast_ratio` to avoid runaway `DT = 1e+20`.
-- The coupled reproducer now uses `Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF`
-  with `max_step=10`, `driver.dt_atm=1`, `driver.atm_substeps_per_ocean_step=1`,
-  and `remora.fixed_dt=1`.
+### Dependency notes
+
+Coupled decks require:
+
+- REMORA source: `Exec/CoupleToERF/inputs`
+- ERF source: `.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+- ERF source: `.Exec_dev/RemoraCoupling/input_sounding`
+
+`driver.atm2ocn_mode=state` is the validated mode. `driver.atm2ocn_mode=flux`
+is still disabled in this driver.
 
 ## Unified Inputs Example
 

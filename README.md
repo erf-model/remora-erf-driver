@@ -128,7 +128,10 @@ Deferred/long-term mitigation path:
 
 ## How To Run (Reviewer Reproducers)
 
-For detailed build and run instructions, including reproducible smoke tests, see [INSTALL.md](INSTALL.md).
+For detailed build and run instructions, including ordered reproducer profiles
+(infrastructure control, standalone initialization, coupled baseline, and
+OceanSurf SST-feedback experiments),
+see [INSTALL.md](INSTALL.md).
 
 ## Unified Inputs Example
 

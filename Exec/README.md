@@ -1,7 +1,7 @@
 # Exec Reproducer Index
 
-This directory contains inputs used to reproduce the current coupling and
-standalone smoke milestones in the driver.
+This directory contains ordered reproducer inputs for coupling controls and
+short physical experiments in the ERF-REMORA driver.
 
 ## Inputs
 
@@ -9,7 +9,7 @@ standalone smoke milestones in the driver.
 
 Purpose:
 
-- coupling infrastructure reproducer through the driver
+- coupling-infrastructure control experiment through the driver
   (`driver.synthetic_only = 1`).
 
 Run:
@@ -18,7 +18,7 @@ Run:
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check
 ```
 
-Verifies:
+What to verify:
 
 - coupling clock/subcycling progression,
 - interface cache allocation and controlled slab updates,
@@ -30,7 +30,7 @@ Verifies:
 
 Purpose:
 
-- one-step uncoupled standalone smoke path
+- one-step uncoupled initialization path
   (`driver.synthetic_only = 0`) where ERF runs then REMORA runs.
 
 Run:
@@ -40,11 +40,11 @@ Run:
   max_step=1 erf.v=0 remora.v=0
 ```
 
-Verifies:
+What to verify:
 
 - ERF and REMORA libraries can initialize and advance real solver state in the
   same executable,
-- one-step non-crashing solver initialization/evolution path in one executable.
+- one-step standalone evolution path remains stable.
 
 Expected outputs:
 
@@ -63,7 +63,7 @@ Purpose:
 
 - one-way coupled one-step path (`driver.coupled_one_step = 1`) where ERF runs
   one step with the ERF `RemoraCoupling/inputs_shear_oneway` setup, packs cache slabs,
-  then REMORA applies the physical state and runs one step.
+  then REMORA applies the transferred state and runs one step.
 
 Run:
 
@@ -74,9 +74,9 @@ Run:
 Dependency note:
 
 - This input uses:
-  - `FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway`
-  - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
-- It requires those files to exist in your ERF checkout (expected once that
+  - ERF source: `.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+  - ERF source: `.Exec_dev/RemoraCoupling/input_sounding`
+- It requires those files to exist in your ERF source checkout (expected once that
   branch lands on ERF `development`).
 
 ---
@@ -86,7 +86,7 @@ Dependency note:
 Purpose:
 
 - one-way coupled one-step path (`driver.coupled_one_step = 1`) using the REMORA
-  `CoupleToERF` problem setup.
+  `CoupleToERF` setup as the baseline coupled experiment.
 
 Run:
 
@@ -97,8 +97,34 @@ Run:
 Dependency note:
 
 - This input uses:
-  - `FILE = external-src/REMORA/Exec/CoupleToERF/inputs`
-  - `FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway`
-  - `erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding`
-- It requires those files to exist in your respective solver checkouts.
+  - REMORA source: `Exec/CoupleToERF/inputs`
+  - ERF source: `.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+  - ERF source: `.Exec_dev/RemoraCoupling/input_sounding`
+- It requires those files to exist in your respective solver source checkouts.
 
+---
+
+### `CouplingReproducers/inputs_coupled_coupleToERF_oceansurf`
+
+Purpose:
+
+- coupled ERF/REMORA run with OceanSurf enabled so SST from the ocean cache is
+  copied into ERF LSM persistent `t_surf` and used by the ERF surface layer.
+
+Run:
+
+```bash
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF_oceansurf \
+  max_step=600
+```
+
+What to verify:
+
+- ocean SST cache is applied into OceanSurf state each ocean step,
+- ERF surface-layer transfer is SST-sensitive (`erf.most.Cd/Ch/Cq` are set),
+- ERF `temp/theta` show measurable evolution over long windows.
+
+Dependency note:
+
+- This input uses the same `FILE` dependencies as
+  `inputs_one_step_coupled_coupleToERF`.

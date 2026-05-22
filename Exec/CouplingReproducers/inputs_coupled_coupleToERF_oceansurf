@@ -1,0 +1,47 @@
+# Coupled ERF<->REMORA run with OceanSurf SST feedback active in ERF.
+# This deck is intended for sensitivity/reproducer runs where ocean SST should
+# materially affect ERF surface fluxes/temperature tendencies.
+#
+# Requires:
+#   REMORA source: Exec/CoupleToERF/inputs
+#   ERF source: .Exec_dev/RemoraCoupling/inputs_shear_oneway
+#   ERF source: .Exec_dev/RemoraCoupling/input_sounding
+
+FILE = external-src/REMORA/Exec/CoupleToERF/inputs
+FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
+
+amrex.fpe_trap_invalid = 0
+erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding
+
+# Driver-owned topology (matched horizontal footprint).
+driver.atm.prob_lo     = 0.0 0.0 0.0
+driver.atm.prob_hi     = 1600.0 1600.0 1600.0
+driver.atm.n_cell      = 16 16 16
+driver.atm.is_periodic = 1 1 0
+
+driver.ocn.prob_lo     = 0.0 0.0 -150.0
+driver.ocn.prob_hi     = 1600.0 1600.0 0.0
+driver.ocn.n_cell      = 16 16 16
+
+driver.synthetic_only = 0
+driver.coupled_one_step = 1
+driver.atm2ocn_mode = state
+driver.dt_atm = 1
+driver.atm_substeps_per_ocean_step = 1
+
+# Coupled feedback switches.
+erf.land_surface_model = OceanSurf
+erf.most.Cd = 0.0015
+erf.most.Ch = 0.0010
+erf.most.Cq = 0.0010
+
+# Keep plotting dense for quick verification.
+erf.fixed_dt = 1
+erf.plot_file = erfplt
+erf.plot_int_1 = 1
+remora.plot_file = remoraplt
+remora.fixed_dt = 1
+remora.plot_int = 1
+
+# Default short smoke length; override at runtime (e.g. max_step=600).
+max_step = 10

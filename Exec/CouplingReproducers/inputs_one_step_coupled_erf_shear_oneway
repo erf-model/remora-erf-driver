@@ -3,14 +3,14 @@
 #   .Exec_dev/RemoraCoupling/inputs_shear_oneway
 #   .Exec_dev/RemoraCoupling/input_sounding
 
-FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
+FILE = Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
 
 # Combined-driver smoke runs should not abort on the first FP invalid in REMORA
 # while we are still validating initialization/coupling plumbing.
 amrex.fpe_trap_invalid = 0
 
 # Ensure ERF resolves sounding file from ERF checkout location.
-erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding
+erf.input_sounding_file = Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding
 
 # Compatibility overrides for ERF ParmParse path (standalone ERF deck uses geometry.prob_extent;
 # these ensure the correct physical domain is visible before the explicit constructor takes over).

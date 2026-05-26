@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(erf-remora-driver CXX C)
 
+include(GNUInstallDirs)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -28,8 +30,8 @@ set(AMReX_ASSERTIONS ON CACHE BOOL "" FORCE)
 set(AMReX_FPE OFF CACHE BOOL "" FORCE)
 set(AMReX_GPU_BACKEND NONE CACHE STRING "" FORCE)
 
-add_subdirectory(external-src/amrex amrex-build)
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/external-src/amrex/Tools/CMake")
+add_subdirectory(Submodules/amrex amrex-build)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Submodules/amrex/Tools/CMake")
 unset(AMReX_DIR CACHE)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -62,8 +64,9 @@ set(REMORA_BUILD_EXECUTABLES OFF CACHE BOOL "" FORCE)
 set(REMORA_LIBRARY_PROBLEM "CoupleToERF" CACHE STRING "" FORCE)
 set(REMORA_ENABLE_TINY_PROFILE ON CACHE BOOL "" FORCE)
 
-add_subdirectory(external-src/ERF erf-build)
-add_subdirectory(external-src/REMORA remora-build)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Submodules/ERF/CMake")
+add_subdirectory(Submodules/ERF erf-build)
+add_subdirectory(Submodules/REMORA remora-build)
 
 add_executable(
   erf-remora-driver
@@ -77,8 +80,8 @@ target_include_directories(
   erf-remora-driver
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Source
-    ${CMAKE_CURRENT_SOURCE_DIR}/external-src/ERF/Source
-    ${CMAKE_CURRENT_SOURCE_DIR}/external-src/REMORA/Source
+    ${CMAKE_CURRENT_SOURCE_DIR}/Submodules/ERF/Source
+    ${CMAKE_CURRENT_SOURCE_DIR}/Submodules/REMORA/Source
 )
 
 target_link_libraries(
@@ -87,6 +90,11 @@ target_link_libraries(
     AMReX::amrex
     erf_api
     remora_api
+)
+
+install(
+  TARGETS erf-remora-driver
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
 if(ERF_REMORA_ENABLE_TESTS)

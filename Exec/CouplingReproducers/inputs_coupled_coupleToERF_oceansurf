@@ -7,11 +7,11 @@
 #   ERF source: .Exec_dev/RemoraCoupling/inputs_shear_oneway
 #   ERF source: .Exec_dev/RemoraCoupling/input_sounding
 
-FILE = external-src/REMORA/Exec/CoupleToERF/inputs
-FILE = external-src/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
+FILE = Submodules/REMORA/Exec/CoupleToERF/inputs
+FILE = Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_oneway
 
 amrex.fpe_trap_invalid = 0
-erf.input_sounding_file = external-src/ERF/.Exec_dev/RemoraCoupling/input_sounding
+erf.input_sounding_file = Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding
 
 # Driver-owned topology (matched horizontal footprint).
 driver.atm.prob_lo     = 0.0 0.0 0.0

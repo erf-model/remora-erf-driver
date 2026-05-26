@@ -77,8 +77,8 @@ log.*
 */Testing/Temporary
 .*.swp
 /external/*
-/external-src/
-/external-src_local_bootstrap_*/
+/Submodules/
+/Submodules_local_bootstrap_*/
 /Exec/WORK/*
 ic.txt
 plt*

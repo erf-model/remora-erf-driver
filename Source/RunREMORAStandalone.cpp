@@ -15,8 +15,14 @@ RunREMORAStandalone()
 void*
 CreateREMORASolver(const ERFRemoraMultiBlockContainer& container)
 {
-    static_cast<void>(container);
-    return static_cast<void*>(new REMORA());
+    return static_cast<void*>(new REMORA(
+        container.GetOcnRealBox(),
+        container.GetMaxLevel(),
+        container.GetOcnNCell(),
+        container.GetCoord(),
+        container.GetRefRatio(),
+        container.GetIsPeriodic(),
+        "remora"));
 }
 
 void

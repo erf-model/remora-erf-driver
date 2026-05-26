@@ -25,23 +25,24 @@ driver.ocn.n_cell      = 16 16 16
 
 driver.synthetic_only = 0
 driver.coupled_one_step = 1
-driver.atm2ocn_mode = state
+# driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt
+# must match so each solver takes exactly one step per coupled advance.
 driver.dt_atm = 1
 driver.atm_substeps_per_ocean_step = 1
 
-# Coupled feedback switches.
+# Default short run; override at runtime for sensitivity experiments (e.g. max_step=600).
+max_step = 10
+
+# ERF: OceanSurf land surface model with bulk transfer coefficients for SST feedback
+erf.fixed_dt = 1
 erf.land_surface_model = OceanSurf
 erf.most.Cd = 0.0015
 erf.most.Ch = 0.0010
 erf.most.Cq = 0.0010
-
-# Keep plotting dense for quick verification.
-erf.fixed_dt = 1
-erf.plot_file = erfplt
+erf.plot_file_1 = erfplt
 erf.plot_int_1 = 1
-remora.plot_file = remoraplt
-remora.fixed_dt = 1
-remora.plot_int = 1
 
-# Default short smoke length; override at runtime (e.g. max_step=600).
-max_step = 10
+# REMORA: CoupleToERF IC, SST packed into cache each ocean step for ERF OceanSurf injection
+remora.fixed_dt = 1
+remora.plot_file = remoraplt
+remora.plot_int = 1

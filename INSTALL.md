@@ -34,7 +34,7 @@ Scientific intent:
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
-  max_step=1 erf.v=0 remora.v=0
+  max_step=1
 ```
 
 Scientific intent:
@@ -45,13 +45,7 @@ Scientific intent:
 ### Reproducer C: Coupled state-exchange baseline
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF \
-  max_step=10 \
-  driver.dt_atm=1 \
-  driver.atm_substeps_per_ocean_step=1 \
-  remora.fixed_dt=1 \
-  erf.plot_int_1=1 \
-  remora.plot_int=1
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF
 ```
 
 Scientific intent:

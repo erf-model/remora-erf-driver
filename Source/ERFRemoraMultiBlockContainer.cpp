@@ -50,6 +50,13 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     m_ba.maxSize(max_grid_size);
     m_dm.define(m_ba);
 
+    // Ocean-resolution slab for atm->ocn fields.
+    amrex::Box ocn_domain(amrex::IntVect(0, 0, 0),
+                          amrex::IntVect(n_cell_ocn[0]-1, n_cell_ocn[1]-1, 0));
+    m_ba_ocn.define(ocn_domain);
+    m_ba_ocn.maxSize(max_grid_size);
+    m_dm_ocn.define(m_ba_ocn);
+
     amrex::Real dz_atm = (atm_rb.hi(2) - atm_rb.lo(2)) / n_cell_atm[2];
     amrex::RealBox slab_rb({atm_rb.lo(0), atm_rb.lo(1), 0.0},
                             {atm_rb.hi(0), atm_rb.hi(1), dz_atm});
@@ -152,7 +159,7 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
     // changing memory ownership or reallocating cache slabs.
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
     for (auto& mf_ptr : m_atmos_to_ocean_storage) {
-        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
+        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba_ocn, m_dm_ocn, 1, 0);
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
     m_atmos_to_ocean_active.resize(m_atmos_to_ocean_active_indices.size());

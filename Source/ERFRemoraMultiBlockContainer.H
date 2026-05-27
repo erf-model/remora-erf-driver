@@ -103,6 +103,10 @@ private:
     amrex::DistributionMapping m_dm;
     amrex::Geometry m_geom;
 
+    // Ocean-resolution interface slab; may differ from m_ba when grids are non-matching.
+    amrex::BoxArray m_ba_ocn;
+    amrex::DistributionMapping m_dm_ocn;
+
     amrex::Real m_dt_atm;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;

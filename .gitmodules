@@ -3,7 +3,7 @@
 	url = https://github.com/AMReX-Codes/amrex.git
 [submodule "Submodules/ERF"]
 	path = Submodules/ERF
-	url = https://github.com/jmsexton03/ERF.git
+	url = https://github.com/erf-model/ERF.git
 [submodule "Submodules/REMORA"]
 	path = Submodules/REMORA
 	url = https://github.com/seahorce-scidac/REMORA.git

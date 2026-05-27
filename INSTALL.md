@@ -1,6 +1,15 @@
 # Installation and Reproducer Guide
 
+## Quick Start
+```bash
+git clone --recursive git@github.com:erf-model/remora-erf-driver
+cd remora-erf-driver
+cmake -S . -B build && cmake --build build -j4 --target erf-remora-driver
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF max_step=10
+```
+
 ## Build
+
 
 From repository root:
 

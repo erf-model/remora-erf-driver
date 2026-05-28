@@ -169,8 +169,9 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
     }
 
     m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
+    const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
     for (auto& mf_ptr : m_ocean_to_atmos_storage) {
-        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
+        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
     }
     m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
 }
@@ -183,6 +184,23 @@ ERFRemoraMultiBlockContainer::FillSyntheticData ()
     }
 
     m_ocean_to_atmos[coupling::SST]->setVal(300.0);
+    FillOceanToAtmosGhosts();
+}
+
+void
+ERFRemoraMultiBlockContainer::FillOceanToAtmosGhosts ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_geom.isPeriodic(0) == static_cast<bool>(m_is_periodic[0]) &&
+        m_geom.isPeriodic(1) == static_cast<bool>(m_is_periodic[1]) &&
+        m_geom.isPeriodic(2) == static_cast<bool>(m_is_periodic[2]),
+        "Driver surface-slab geometry lost the requested periodic flags.");
+
+    for (auto* mf : m_ocean_to_atmos) {
+        if (mf != nullptr) {
+            mf->FillBoundary(m_geom.periodicity());
+        }
+    }
 }
 
 void
@@ -353,6 +371,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
         const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
+        FillOceanToAtmosGhosts();
 
         // Initial architecture note: this passes instantaneous slabs at the macro-step boundary.
         // Future update: use old/new cached states and time interpolation during this

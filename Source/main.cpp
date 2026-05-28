@@ -6,6 +6,8 @@
 #include <AMReX_Print.H>
 #include <AMReX_RealBox.H>
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 
 std::string inputs_name = "erf-remora-driver.synthetic";
@@ -29,16 +31,27 @@ main (int argc, char* argv[])
         int atm_substeps_per_ocean_step = 6;
         int ocean_steps = 2;
         int synthetic_only = 1;
-        int coupled_one_step = 0;
         std::string atm2ocn_mode = "state";
+        std::string coupling_direction;
 
         pp_driver.query("max_grid_size", max_grid_size);
         pp_driver.query("dt_atm", dt_atm);
         pp_driver.query("atm_substeps_per_ocean_step", atm_substeps_per_ocean_step);
         const bool has_driver_ocean_steps = pp_driver.query("ocean_steps", ocean_steps);
         pp_driver.query("synthetic_only", synthetic_only);
-        pp_driver.query("coupled_one_step", coupled_one_step);
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
+        const bool has_coupling_direction = pp_driver.query("coupling_direction", coupling_direction);
+
+        if (pp_driver.contains("coupled_one_step")) {
+            amrex::Print() << "WARNING: driver.coupled_one_step is deprecated and ignored; "
+                           << "use deck naming plus driver.coupling_direction instead.\n";
+        }
+
+        auto lowercase = [](std::string value) {
+            std::transform(value.begin(), value.end(), value.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return value;
+        };
 
         int top_level_max_step = ocean_steps;
         const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
@@ -62,6 +75,33 @@ main (int argc, char* argv[])
             amrex::Abort("driver.atm2ocn_mode=flux is disabled for V1 infrastructure. Only 'state' mode is supported.");
         } else {
             amrex::Abort("Unknown driver.atm2ocn_mode. Valid values: state, flux.");
+        }
+
+        if (has_coupling_direction) {
+            const std::string coupling_direction_lc = lowercase(coupling_direction);
+            if (!synthetic_only) {
+                amrex::ParmParse pp_erf("erf");
+                std::string land_surface_model;
+                const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
+                const std::string land_surface_model_lc = lowercase(land_surface_model);
+
+                if (coupling_direction_lc == "two_way") {
+                    if (!has_land_surface_model || land_surface_model_lc != "oceansurf") {
+                        amrex::Abort("driver.coupling_direction=two_way requires "
+                                     "erf.land_surface_model=OceanSurf so REMORA SST feeds back into ERF.");
+                    }
+                } else if (coupling_direction_lc == "erftoremora") {
+                    if (has_land_surface_model && land_surface_model_lc == "oceansurf") {
+                        amrex::Abort("driver.coupling_direction=ERFtoREMORA is inconsistent with "
+                                     "erf.land_surface_model=OceanSurf. Use driver.coupling_direction=two_way instead.");
+                    }
+                } else {
+                    amrex::Abort("Unknown driver.coupling_direction. Valid values: ERFtoREMORA, two_way.");
+                }
+            } else {
+                amrex::Print() << "WARNING: driver.coupling_direction is ignored when "
+                               << "driver.synthetic_only=1.\n";
+            }
         }
 
         // Parse driver-owned topology from input file.
@@ -98,8 +138,12 @@ main (int argc, char* argv[])
         int max_level = 0;
         int coord = 0;
         amrex::Vector<amrex::IntVect> ref_ratio(1, amrex::IntVect(2));
-        amrex::Vector<int> is_periodic_vec = {0, 0, 0};
-        pp_atm.queryarr("is_periodic", is_periodic_vec, 0, AMREX_SPACEDIM);
+        amrex::Vector<int> is_periodic_vec = {1, 1, 0};
+        const bool have_driver_periodic = pp_atm.queryarr("is_periodic", is_periodic_vec, 0, AMREX_SPACEDIM);
+        if (!have_driver_periodic) {
+            amrex::ParmParse pp_geom("geometry");
+            pp_geom.queryarr("is_periodic", is_periodic_vec, 0, AMREX_SPACEDIM);
+        }
         amrex::Array<int,AMREX_SPACEDIM> is_periodic{is_periodic_vec[0], is_periodic_vec[1], is_periodic_vec[2]};
 
         if (synthetic_only) {

@@ -5,12 +5,12 @@
 git clone --recursive git@github.com:erf-model/remora-erf-driver
 cd remora-erf-driver
 cmake -S . -B build && cmake --build build -j4 --target erf-remora-driver
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF max_step=10
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF max_step=10
 ```
 
 ## Coupled ABL Reproducer
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_ABL
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_ABL
 ```
 
 ## Build
@@ -57,10 +57,10 @@ Scientific intent:
 - verify both solvers can initialize and advance prognostic state in the shared executable,
 - separate initialization/stability issues from coupling-path issues.
 
-### Reproducer C: Coupled state-exchange baseline
+### Reproducer C: `ERFtoREMORA` state-exchange baseline
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF
 ```
 
 Scientific intent:
@@ -68,24 +68,13 @@ Scientific intent:
 - verify atmosphere-state transfer and ocean application at each coupled step,
 - establish baseline coupled behavior before enabling SST feedback into ERF.
 
-### Reproducer D: Coupled SST feedback into ERF (`OceanSurf` active)
+### Reproducer D: `two_way` SST feedback into ERF (`OceanSurf` active)
 
 Use the dedicated OceanSurf deck plus longer runtime:
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupled_coupleToERF_oceansurf \
+./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_coupleToERF \
   max_step=600
-```
-
-Equivalent runtime overrides (if starting from the old coupled deck):
-
-```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_coupled_coupleToERF \
-  max_step=600 \
-  erf.land_surface_model=OceanSurf \
-  erf.most.Cd=0.0015 \
-  erf.most.Ch=0.0010 \
-  erf.most.Cq=0.0010
 ```
 
 Scientific intent:
@@ -111,7 +100,8 @@ Interpretation:
 Coupled decks require:
 
 - REMORA source: `Exec/CoupleToERF/inputs`
-- ERF source: `.Exec_dev/RemoraCoupling/inputs_shear_oneway`
+- ERF source: `.Exec_dev/RemoraCoupling/inputs_shear_ERFtoREMORA` or
+  `.Exec_dev/RemoraCoupling/inputs_shear_two_way`
 - ERF source: `.Exec_dev/RemoraCoupling/input_sounding`
 
 `driver.atm2ocn_mode=state` is the validated mode. `driver.atm2ocn_mode=flux`
@@ -133,6 +123,7 @@ Example mixed inputs file:
 ```text
 # Driver control
 driver.synthetic_only = 0
+driver.coupling_direction = two_way
 driver.atm2ocn_mode = state
 driver.dt_atm = 2.0
 driver.atm_substeps_per_ocean_step = 5

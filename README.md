@@ -129,8 +129,8 @@ Deferred/long-term mitigation path:
 ## How To Run (Reviewer Reproducers)
 
 For detailed build and run instructions, including ordered reproducer profiles
-(infrastructure control, standalone initialization, coupled baseline, and
-OceanSurf SST-feedback experiments),
+(infrastructure control, standalone initialization, `ERFtoREMORA` state-passing
+baseline, and `two_way` SST-feedback experiments),
 see [INSTALL.md](INSTALL.md).
 
 ## Unified Inputs Example
@@ -149,6 +149,7 @@ Example mixed inputs file:
 ```text
 # Driver control
 driver.synthetic_only = 0
+driver.coupling_direction = two_way
 driver.atm2ocn_mode = state
 driver.dt_atm = 2.0
 driver.atm_substeps_per_ocean_step = 5

@@ -93,13 +93,13 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
     // before PackAtmosphericStates so that PackAtmosphericStates can simply leave
     // unavailable slots untouched rather than guessing REMORA-specific constants.
     //
-    // NOTE: remora.air_humidity is relative humidity [0-1], but the contract slot
-    // Qair carries specific humidity [kg/kg] (vec_qair path). A direct copy of 0.776
-    // as specific humidity gives ~50× saturation and blows up the bulk flux.
-    // Use 0 here; when ERF has prognostic moisture it will overwrite with the
-    // correct specific humidity from its state.
+    // Under the current REMORA bulk-flux interpretation, values below 2 in the
+    // humidity lane are treated as relative humidity [0-1]. Seed the fallback
+    // from remora.air_humidity, then let ERF overwrite it with diagnosed RH
+    // when atmospheric moisture is active.
     amrex::ParmParse pp_rem("remora");
-    amrex::Real cloud_val = 0.0, rain_val = 0.0;
+    amrex::Real humidity_val = 0.0, cloud_val = 0.0, rain_val = 0.0;
+    pp_rem.query("air_humidity", humidity_val);
     pp_rem.query("cloud", cloud_val);
     pp_rem.query("rain",  rain_val);
 
@@ -111,7 +111,7 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
 
         switch (m_atmos_to_ocean_active_indices[local]) {
         case coupling::Qair:
-            mf->setVal(0.0);       // qair [kg/kg]: dry-atmosphere fallback
+            mf->setVal(humidity_val); // RH fallback [0-1] for REMORA bulk fluxes
             break;
         case coupling::Cloud:
             mf->setVal(cloud_val); // cloud fraction [0-1]

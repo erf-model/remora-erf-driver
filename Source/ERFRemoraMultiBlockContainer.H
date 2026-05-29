@@ -29,7 +29,8 @@ namespace erf_remora
  * 3. ERF and REMORA are constructed by caller translation units using GetAtm()/GetOcn() getters
  *    to pass explicit topology into their explicit-construction constructors.
  * 4. Interface memory uses native AMReX containers (Vector<MultiFab*>).
- * 5. Geometry is level-0 only; remapping is deferred to a future milestone.
+ * 5. Geometry is level-0 only; coupling slabs may remap across integer-ratio
+ *    horizontal resolution mismatches where supported by the exchange path.
  *
  * Parallel exchange roadmap:
  * - Current: direct local access to shared MultiFab objects.

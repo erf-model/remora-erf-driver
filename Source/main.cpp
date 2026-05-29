@@ -126,14 +126,16 @@ main (int argc, char* argv[])
         amrex::RealBox atm_rb(atm_lo.data(), atm_hi.data());
         amrex::RealBox ocn_rb(ocn_lo.data(), ocn_hi.data());
 
-        // Horizontal extents must match and ocean cells must evenly divide atmosphere cells.
+        // Current supported topology is atmosphere same-or-finer than ocean on a
+        // shared horizontal domain. ERF -> REMORA uses averaging; REMORA -> ERF
+        // handles the reverse SST prolongation internally.
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             atm_lo[0] == ocn_lo[0] && atm_lo[1] == ocn_lo[1] &&
             atm_hi[0] == ocn_hi[0] && atm_hi[1] == ocn_hi[1],
             "Atmosphere and ocean horizontal domains must be identical.");
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             n_cell_atm[0] % n_cell_ocn[0] == 0 && n_cell_atm[1] % n_cell_ocn[1] == 0,
-            "Ocean horizontal cell counts must evenly divide atmosphere horizontal cell counts.");
+            "Current coupling requires atmosphere horizontal cell counts to be integer multiples of ocean horizontal cell counts; ocean-finer-than-atmosphere topologies are unsupported.");
 
         int max_level = 0;
         int coord = 0;

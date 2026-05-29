@@ -24,6 +24,14 @@ cmake -S . -B build
 cmake --build build -j4 --target erf-remora-driver
 ```
 
+If you configure with `-DERF_REMORA_ENABLE_TESTS=ON`, the following CTest
+labels are registered:
+
+```bash
+ctest --test-dir build -L compile
+ctest --test-dir build -L reproducer
+```
+
 If you update files in the ERF or REMORA source trees used by this build,
 rebuild the same target:
 

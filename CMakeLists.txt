@@ -99,4 +99,109 @@ install(
 
 if(ERF_REMORA_ENABLE_TESTS)
   enable_testing()
+
+  set(ERF_REMORA_DRIVER_EXE "$<TARGET_FILE:erf-remora-driver>")
+  set(ERF_REMORA_TEST_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_reproducer.cmake")
+
+  add_test(
+    NAME compile_erf_remora_driver
+    COMMAND
+      "${CMAKE_COMMAND}"
+      --build "${CMAKE_BINARY_DIR}"
+      --target erf-remora-driver
+  )
+  set_tests_properties(compile_erf_remora_driver
+    PROPERTIES
+      LABELS "compile"
+  )
+
+  add_test(
+    NAME reproducer_coupling_infrastructure_check
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_coupling_infrastructure_check
+      -DERF_REMORA_ARGS=
+      -P "${ERF_REMORA_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_coupling_infrastructure_check
+    PROPERTIES
+      LABELS "reproducer"
+  )
+
+  add_test(
+    NAME reproducer_one_step_solver_initialization_check
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_one_step_solver_initialization_check
+      -DERF_REMORA_ARGS=max_step=1
+      -P "${ERF_REMORA_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_one_step_solver_initialization_check
+    PROPERTIES
+      LABELS "reproducer"
+  )
+
+  add_test(
+    NAME reproducer_erftoremora_coupleToERF
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF
+      -DERF_REMORA_ARGS=max_step=10
+      -P "${ERF_REMORA_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_erftoremora_coupleToERF
+    PROPERTIES
+      LABELS "reproducer"
+  )
+
+  add_test(
+    NAME reproducer_two_way_coupleToERF
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_two_way_coupleToERF
+      "-DERF_REMORA_ARGS=max_step=600;remora.v=1;erf.v=1;amr.v=1;amrex.tiny_profiler=1"
+      -P "${ERF_REMORA_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_two_way_coupleToERF
+    PROPERTIES
+      LABELS "reproducer"
+  )
+
+  add_test(
+    NAME reproducer_two_way_ABL
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_two_way_ABL
+      -DERF_REMORA_ARGS=
+      -P "${ERF_REMORA_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_two_way_ABL
+    PROPERTIES
+      LABELS "reproducer"
+  )
+
+  add_test(
+    NAME reproducer_two_way_couette
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_two_way_couette
+      -DERF_REMORA_ARGS=
+      -P "${ERF_REMORA_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_two_way_couette
+    PROPERTIES
+      LABELS "reproducer"
+  )
 endif()

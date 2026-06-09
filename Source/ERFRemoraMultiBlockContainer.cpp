@@ -404,6 +404,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
         FillOceanToAtmosGhosts();
+        pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
+        apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
 
         // Initial architecture note: this passes instantaneous slabs at the macro-step boundary.
         // Future update: use old/new cached states and time interpolation during this
@@ -425,23 +427,19 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
             const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_dt_atm);
-            if (dt_used == amrex::Real(0.0) && m_atm_tick >= expected_atm_ticks) {
+            if (dt_used == amrex::Real(0.0)) {
                 if (amrex::ParallelDescriptor::IOProcessor()) {
-                    amrex::Print() << "ERF returned dt=0 at terminal time; stopping cleanly."
+                    amrex::Print() << "ERF returned dt=0 before the driver completed the planned"
+                                   << " atmosphere subcycling schedule."
                                    << " ocean_step=" << ocean_step
                                    << " substep=" << substep
                                    << " atm_tick=" << m_atm_tick
                                    << " expected_atm_ticks=" << expected_atm_ticks
                                    << std::endl;
                 }
-                stop_coupling = true;
-                break;
+                amrex::Abort("ERF terminated before the driver reached a valid coupled macro-step boundary.");
             }
             enforce_dt("ERF", m_dt_atm, dt_used, ocean_step, substep);
-            
-            BL_PROFILE("Driver::AMReX_ParallelCopy"); // Region around state transfer
-            pack_atmos_states(m_atmos_to_ocean_active, atm_time);
-            apply_atmos_states(m_atmos_to_ocean_active, atm_time);
 
             ++m_atm_tick;
         }
@@ -451,15 +449,16 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
 
         const amrex::Real ocn_dt_used = REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request);
-        if (ocn_dt_used == amrex::Real(0.0) && m_atm_tick >= expected_atm_ticks) {
+        if (ocn_dt_used == amrex::Real(0.0)) {
             if (amrex::ParallelDescriptor::IOProcessor()) {
-                amrex::Print() << "REMORA returned dt=0 at terminal time; stopping cleanly."
+                amrex::Print() << "REMORA returned dt=0 before the driver completed the planned"
+                               << " ocean macro-step schedule."
                                << " ocean_step=" << ocean_step
                                << " atm_tick=" << m_atm_tick
                                << " expected_atm_ticks=" << expected_atm_ticks
                                << std::endl;
             }
-            break;
+            amrex::Abort("REMORA terminated before the driver reached a valid coupled macro-step boundary.");
         }
         enforce_dt("REMORA", dt_ocn_request, ocn_dt_used, ocean_step, -1);
 

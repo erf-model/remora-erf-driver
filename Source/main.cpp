@@ -67,6 +67,32 @@ main (int argc, char* argv[])
             ocean_steps = top_level_max_step;
         }
 
+        const amrex::Real ocean_macro_dt =
+            dt_atm * static_cast<amrex::Real>(atm_substeps_per_ocean_step);
+        if (has_stop_time) {
+            const int stop_time_macro_steps =
+                static_cast<int>(stop_time / ocean_macro_dt);
+            if (stop_time_macro_steps < ocean_steps) {
+                if (amrex::ParallelDescriptor::IOProcessor()) {
+                    amrex::Print() << "Clipping coupled ocean_steps from " << ocean_steps
+                                   << " to " << stop_time_macro_steps
+                                   << " so the driver stops cleanly at stop_time="
+                                   << stop_time << ".\n";
+                }
+                ocean_steps = stop_time_macro_steps;
+            }
+            const amrex::Real clipped_stop_time =
+                ocean_macro_dt * static_cast<amrex::Real>(stop_time_macro_steps);
+            if (amrex::ParallelDescriptor::IOProcessor() &&
+                stop_time_macro_steps >= 0 &&
+                stop_time > clipped_stop_time) {
+                amrex::Print() << "WARNING: coupled driver only stops on ocean macro-step boundaries;"
+                               << " stop_time=" << stop_time
+                               << " is being clipped to " << clipped_stop_time
+                               << " for driver-side termination.\n";
+            }
+        }
+
         const amrex::Real expected_run_time = dt_atm * static_cast<amrex::Real>(atm_substeps_per_ocean_step)
                                              * static_cast<amrex::Real>(ocean_steps);
         if (amrex::ParallelDescriptor::IOProcessor()) {

@@ -350,14 +350,37 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     //   macro-step O(10^2-10^3 s).
     // We therefore hold one ocean macro-state while subcycling atmosphere updates.
     const amrex::Real dt_ocn_request = m_dt_atm * static_cast<amrex::Real>(m_atm_substeps_per_ocean_step);
+    const long long expected_atm_ticks = static_cast<long long>(ocean_steps) *
+                                         static_cast<long long>(m_atm_substeps_per_ocean_step);
     const amrex::Real abs_tol = 1.0e-12;
     const amrex::Real rel_tol = 1.0e-8;
+
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "Coupled cadence plan:"
+                       << " ocean_steps=" << ocean_steps
+                       << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
+                       << " expected_atm_ticks=" << expected_atm_ticks
+                       << " expected_run_time=" << (dt_ocn_request * static_cast<amrex::Real>(ocean_steps))
+                       << std::endl;
+    }
 
     auto enforce_dt = [&] (const char* solver_name, amrex::Real dt_request, amrex::Real dt_used,
                            int ocean_step, int substep) {
         const amrex::Real err = amrex::Math::abs(dt_used - dt_request);
         const amrex::Real tol = amrex::max(abs_tol, rel_tol * amrex::Math::abs(dt_request));
         if (err > tol) {
+            amrex::Print() << "Coupled cadence mismatch before abort:"
+                           << " solver=" << solver_name
+                           << " ocean_step=" << ocean_step
+                           << " substep=" << substep
+                           << " dt_request=" << dt_request
+                           << " dt_used=" << dt_used
+                           << " abs_err=" << err
+                           << " tol=" << tol
+                           << " m_dt_atm=" << m_dt_atm
+                           << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
+                           << " expected_ocean_macro_dt=" << dt_ocn_request
+                           << std::endl;
             amrex::Abort(std::string("Coupled cadence drift in ") + solver_name +
                          " at ocean_step=" + std::to_string(ocean_step) +
                          " substep=" + std::to_string(substep) +
@@ -369,6 +392,15 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     };
 
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
+        bool stop_coupling = false;
+        if (m_atm_tick >= expected_atm_ticks) {
+            if (amrex::ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "Reached expected coupled end time before ocean_step "
+                               << ocean_step << "; stopping cleanly at atmosphere tick "
+                               << m_atm_tick << " of " << expected_atm_ticks << std::endl;
+            }
+            break;
+        }
         const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
         FillOceanToAtmosGhosts();
@@ -378,11 +410,34 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         // loop (same temporal pattern as erf-amrwind-driver boundary ingestion in
         // Source/wind_energy/ABLReadERF.cpp) to avoid stepwise forcing artifacts.
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
+            if (m_atm_tick >= expected_atm_ticks) {
+                if (amrex::ParallelDescriptor::IOProcessor()) {
+                    amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="
+                                   << ocean_step << " substep=" << substep
+                                   << "; skipping remaining substeps and exiting cleanly."
+                                   << std::endl;
+                }
+                stop_coupling = true;
+                break;
+            }
             const amrex::Real atm_time = m_atm_tick * m_dt_atm;
 
             BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
-            enforce_dt("ERF", m_dt_atm, ERFEvolveOneStep(m_erf, atm_time, m_dt_atm), ocean_step, substep);
+            const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_dt_atm);
+            if (dt_used == amrex::Real(0.0) && m_atm_tick >= expected_atm_ticks) {
+                if (amrex::ParallelDescriptor::IOProcessor()) {
+                    amrex::Print() << "ERF returned dt=0 at terminal time; stopping cleanly."
+                                   << " ocean_step=" << ocean_step
+                                   << " substep=" << substep
+                                   << " atm_tick=" << m_atm_tick
+                                   << " expected_atm_ticks=" << expected_atm_ticks
+                                   << std::endl;
+                }
+                stop_coupling = true;
+                break;
+            }
+            enforce_dt("ERF", m_dt_atm, dt_used, ocean_step, substep);
             
             BL_PROFILE("Driver::AMReX_ParallelCopy"); // Region around state transfer
             pack_atmos_states(m_atmos_to_ocean_active, atm_time);
@@ -391,8 +446,22 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             ++m_atm_tick;
         }
 
-        enforce_dt("REMORA", dt_ocn_request, REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request),
-                   ocean_step, -1);
+        if (stop_coupling) {
+            break;
+        }
+
+        const amrex::Real ocn_dt_used = REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request);
+        if (ocn_dt_used == amrex::Real(0.0) && m_atm_tick >= expected_atm_ticks) {
+            if (amrex::ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "REMORA returned dt=0 at terminal time; stopping cleanly."
+                               << " ocean_step=" << ocean_step
+                               << " atm_tick=" << m_atm_tick
+                               << " expected_atm_ticks=" << expected_atm_ticks
+                               << std::endl;
+            }
+            break;
+        }
+        enforce_dt("REMORA", dt_ocn_request, ocn_dt_used, ocean_step, -1);
 
         if (amrex::ParallelDescriptor::IOProcessor()) {
             amrex::Print() << "Completed ocean step " << ocean_step

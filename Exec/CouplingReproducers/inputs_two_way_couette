@@ -34,6 +34,7 @@ erf.land_surface_model = OceanSurf
 # Timing alignment
 erf.fixed_dt = 1.0
 remora.fixed_dt = 1.0
+remora.bulk_flux_debug = 1
 
 # Diagnostics
 erf.plot_file_1 = erf_couette_plt

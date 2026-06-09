@@ -42,6 +42,9 @@ main (int argc, char* argv[])
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
         const bool has_coupling_direction = pp_driver.query("coupling_direction", coupling_direction);
 
+        amrex::Real stop_time = -1.0;
+        const bool has_stop_time = amrex::ParmParse().query("stop_time", stop_time);
+
         if (pp_driver.contains("coupled_one_step")) {
             amrex::Print() << "WARNING: driver.coupled_one_step is deprecated and ignored; "
                            << "use deck naming plus driver.coupling_direction instead.\n";
@@ -62,6 +65,23 @@ main (int argc, char* argv[])
                                << ") are set; using max_step for ocean macro-step count.\n";
             }
             ocean_steps = top_level_max_step;
+        }
+
+        const amrex::Real expected_run_time = dt_atm * static_cast<amrex::Real>(atm_substeps_per_ocean_step)
+                                             * static_cast<amrex::Real>(ocean_steps);
+        if (amrex::ParallelDescriptor::IOProcessor()) {
+            amrex::Print() << "Coupled run plan:"
+                           << " expected_run_time=" << expected_run_time
+                           << " dt_atm=" << dt_atm
+                           << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
+                           << " ocean_steps=" << ocean_steps;
+            if (has_stop_time) {
+                amrex::Print() << " stop_time=" << stop_time
+                               << " (either stop_time or max_step may terminate the run first)";
+            } else {
+                amrex::Print() << " stop_time=<unset>";
+            }
+            amrex::Print() << "\n";
         }
 
         if (pp_driver.contains("ocean_step") && !pp_driver.contains("ocean_steps")) {

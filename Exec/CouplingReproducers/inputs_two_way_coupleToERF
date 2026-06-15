@@ -37,6 +37,7 @@ max_step = 10
 # by the two-way ERF RemoraCoupling base deck.
 erf.fixed_dt = 1
 erf.land_surface_model = OceanSurf
+erf.is_land = 0
 erf.plot_file_1 = erfplt
 erf.plot_int_1 = 1
 

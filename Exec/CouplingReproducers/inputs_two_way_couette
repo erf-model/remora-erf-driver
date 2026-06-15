@@ -30,6 +30,7 @@ max_step = 10
 
 # Route imported REMORA SST through ERF's OceanSurf surface model.
 erf.land_surface_model = OceanSurf
+erf.is_land = 0
 
 # Timing alignment
 erf.fixed_dt = 1.0

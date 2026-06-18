@@ -18,7 +18,16 @@ amr.blocking_factor_z = 1
 # Ekman Spiral uses periodic lateral boundaries in x/y.
 geometry.is_periodic = 0 1 0
 
-zlo.type = "SlipWall"
+#zlo.type = "SlipWall"
+zlo.type = "surface_layer"
+erf.surface_layer.flux_type = "bulk_coeff"
+erf.most.Cd  = 0.0 # ustar
+erf.most.Ch  = 0.0 # theta flux
+erf.most.Cq  = 0.0 # qv    flux
+erf.most.surf_temp  = 289.0
+erf.most.surf_moist = 0.0
+erf.most.z0     = 0.1
+erf.most.zref   = 50.0
 zhi.type = "SlipWall"
 xlo.type = "Outflow"
 xhi.type = "Outflow"

@@ -133,3 +133,19 @@ Run:
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_couette
 ```
+
+---
+
+### `PaperReproducers/inputs_perlin_ERF_REMORA`
+
+Purpose:
+
+- Reproduces 2007 Perlin et al. paper DOI: https://doi.org/10.1175/JPO3104.1
+  
+Run:
+
+```bash
+cd Exec/PaperReproducer
+../../build/erf-remora-driver inputs_perlin_ERF_REMORA
+```
+                                                       

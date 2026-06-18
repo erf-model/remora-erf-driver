@@ -1,0 +1,62 @@
+# Two-way ERF<->REMORA run with OceanSurf SST feedback active in ERF.
+#
+# Coastal idealization target:
+#   - horizontal domain: 50 km x 20 km
+#   - atmosphere: 47 levels to 9 km, 31 levels below 1 km
+#   - ocean: 40 levels, bottom slopes from 10 m at the coast to ~300 m offshore
+#   - alongshore direction periodic, cross-shore direction open/radiative in ERF
+#
+# Important:
+#   This wrapper only sets the coupled domain and solver cadence.
+#   The vertical temperature/moisture/salinity profiles and the sloping
+#   bathymetry must be edited in the imported ERF/REMORA base decks.
+#
+# Requires:
+#   REMORA source: Exec/CoupleToERF/inputs
+#   ERF source: .Exec_dev/RemoraCoupling/inputs_shear_two_way
+#   ERF source: .Exec_dev/RemoraCoupling/input_sounding
+
+FILE = inputs_REMORA
+FILE = inputs_ERF
+
+amrex.fpe_trap_invalid = 0
+erf.input_sounding_file = new_sounding
+
+
+
+
+
+# Driver-owned topology (matched horizontal footprint).
+driver.atm.prob_lo     = 0.0 0.0 0.0
+driver.atm.prob_hi     = 50000 20000 9000
+driver.atm.n_cell      = 50 20 48 
+driver.atm.is_periodic = 0 1 0
+
+driver.ocn.prob_lo     = 0.0 0.0 -300.0
+driver.ocn.prob_hi     = 50000 20000 0.0
+driver.ocn.n_cell      = 50 20 40
+
+driver.synthetic_only = 0
+driver.coupling_direction = two_way
+# driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt
+# must match so each solver takes exactly one step per coupled advance.
+driver.dt_atm = 1
+driver.atm_substeps_per_ocean_step = 300
+
+# Default short run; override at runtime for sensitivity experiments (e.g. max_step=600).
+max_step = 10
+
+# ERF: OceanSurf land surface model with bulk transfer coefficients supplied
+# by the two-way ERF RemoraCoupling base deck.
+erf.fixed_dt = 1
+erf.land_surface_model = OceanSurf
+erf.is_land = 0
+erf.plot_file_1 = erfplt
+erf.plot_int_1 = 50
+
+# REMORA: CoupleToERF IC, SST packed into cache each ocean step for ERF OceanSurf injection.
+# Set flat_bathymetry=false in the REMORA deck and provide the coastal slope there.
+remora.flat_bathymetry = false
+remora.fixed_dt = 300
+remora.plot_file = remoraplt
+remora.plot_int = 1

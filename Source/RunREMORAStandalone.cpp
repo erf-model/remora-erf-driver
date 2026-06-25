@@ -60,6 +60,12 @@ REMORAEvolveOneStep(void* remora_handle, amrex::Real time, amrex::Real dt_reques
 }
 
 void
+REMORAWriteAtFinalTime(void* remora_handle)
+{
+    return static_cast<REMORA*>(remora_handle)->WriteAtFinalTime();
+}
+
+void
 RunREMORAApplyAndOneStep(const ERFRemoraMultiBlockContainer& container,
                           const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
 {

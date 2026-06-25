@@ -240,7 +240,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
         [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Surface");
             REMORAPackSurfaceState(m_remora, state, time);
-            
+
             // Finite check on packed surface state
             for (auto* mf : state) {
                 if (mf) {
@@ -470,5 +470,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
         PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
     }
+    REMORAWriteAtFinalTime(m_remora);
+    ERFWriteAtFinalTime(m_erf);
+
 }
 } // namespace erf_remora

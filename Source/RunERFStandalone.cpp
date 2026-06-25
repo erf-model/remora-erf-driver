@@ -59,6 +59,12 @@ ERFEvolveOneStep(void* erf_handle, amrex::Real time, amrex::Real dt_request)
 }
 
 void
+ERFWriteAtFinalTime(void* erf_handle)
+{
+    return static_cast<ERF*>(erf_handle)->WriteAtFinalTime();
+}
+
+void
 RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
                       amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
 {

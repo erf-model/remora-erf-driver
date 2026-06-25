@@ -33,7 +33,6 @@ xlo.type = "Outflow"
 xhi.type = "Outflow"
 # TIME STEP CONTROL
 erf.substepping_type = Implicit 
-erf.fixed_dt         = 0.25     # fixed time step
 
 # DIAGNOSTICS & VERBOSITY
 erf.sum_interval   = 1       # timesteps between computing mass
@@ -43,14 +42,8 @@ amr.v              = 1       # verbosity in Amr.cpp
 # REFINEMENT / REGRIDDING
 amr.max_level       = 0       # maximum level number allowed
 
-# CHECKPOINT FILES
-erf.check_file      = chk        # root name of checkpoint file
-erf.check_int       =-57600        # number of timesteps between checkpoints
-
 # PLOTFILES
-erf.plot_file_1     = plt        # prefix of plotfile name
-erf.plot_int_1      = 1000         # number of timesteps between plotfiles
-erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse
+erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys
 
 # SOLVER CHOICE
 erf.alpha_T = 0.0
@@ -62,8 +55,9 @@ erf.molec_diff_type   = "Constant"
 erf.dynamic_viscosity = 5.0
 
 erf.use_coriolis = true
+erf.coriolis_3d = false
 erf.abl_driver_type = "GeostrophicWind"
-erf.latitude = 90.
+erf.latitude = 42
 erf.abl_geo_wind = 0.0 -15.0 0.0
 erf.rotational_time_period = 86164.0900027328
 
@@ -83,4 +77,29 @@ prob.advection_heating_rate =1.1574074e-5
 # INITIALIZATION WITH ATM DATA
 erf.init_type = "input_sounding"
 erf.sounding_type = Ideal
-erf.input_sounding_file = "new_sounding"
+erf.input_sounding_file = "new_sounding4"
+
+erf.start_datetime        = "2025-06-25 12:00:00"
+erf.radiation_model        = "RRTMGP"
+erf.rad.datalog            = "radiation"
+erf.profile_rad_int        = 100
+erf.rad_freq_in_steps      = 80
+erf.rad_do_subcol_sampling = false
+erf.rad_write_fluxes       = false
+erf.co2vmr                 = 0.00036
+erf.o3vmr                  = 3.0e-8
+erf.n2ovmr                 = 3.2e-7
+erf.covmr                  = 1.5e-7
+erf.ch4vmr                 = 1.7e-6
+erf.o2vmr                  = 0.209
+erf.n2vmr                  = 0.7906
+erf.nswbands               = 14
+erf.nlwbands               = 16
+erf.nswgpts                = 224
+erf.nlwgpts                = 256
+erf.rrtmgp_file_path       = /home/feranmi/gitcode/
+erf.rrtmgp_file_path       = /home/feranmi/gitcode/
+erf.rrtmgp_coeffs_sw       = rrtmgp-data-sw-g224-2018-12-04.nc
+erf.rrtmgp_coeffs_lw       = rrtmgp-data-lw-g256-2018-12-04.nc
+erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc
+erf.rrtmgp_cloud_optics_lw = rrtmgp-cloud-optics-coeffs-lw.nc

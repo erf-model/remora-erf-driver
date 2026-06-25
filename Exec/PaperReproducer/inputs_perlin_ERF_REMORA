@@ -20,11 +20,7 @@ FILE = inputs_REMORA
 FILE = inputs_ERF
 
 amrex.fpe_trap_invalid = 0
-erf.input_sounding_file = new_sounding
-
-
-
-
+erf.input_sounding_file = new_sounding4
 
 # Driver-owned topology (matched horizontal footprint).
 driver.atm.prob_lo     = 0.0 0.0 0.0
@@ -40,23 +36,32 @@ driver.synthetic_only = 0
 driver.coupling_direction = two_way
 # driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt
 # must match so each solver takes exactly one step per coupled advance.
-driver.dt_atm = 1
-driver.atm_substeps_per_ocean_step = 300
+driver.dt_atm = 3
+driver.atm_substeps_per_ocean_step = 100
 
-# Default short run; override at runtime for sensitivity experiments (e.g. max_step=600).
-max_step = 10
+# 1 (REMORA) step at 300s/step = 5 minutes ... 72 hours = 72*60=4320 minutes = 864 steps
+max_step = 100
+
+erf.fixed_dt = 3
+remora.fixed_dt = 300
 
 # ERF: OceanSurf land surface model with bulk transfer coefficients supplied
 # by the two-way ERF RemoraCoupling base deck.
-erf.fixed_dt = 1
 erf.land_surface_model = OceanSurf
 erf.is_land = 0
+
 erf.plot_file_1 = erfplt
-erf.plot_int_1 = 50
+erf.plot_int_1 = 3000
+
+erf.check_file = erfchk
+erf.check_int = 3000
 
 # REMORA: CoupleToERF IC, SST packed into cache each ocean step for ERF OceanSurf injection.
 # Set flat_bathymetry=false in the REMORA deck and provide the coastal slope there.
 remora.flat_bathymetry = false
-remora.fixed_dt = 300
+
 remora.plot_file = remoraplt
-remora.plot_int = 1
+remora.plot_int = 10
+
+remora.check_file = remorachk
+remora.check_int = 10

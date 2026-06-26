@@ -5,20 +5,24 @@ stop_time = 259200
 
 erf.vert_implicit = false
 
-amrex.fpe_trap_invalid = 1
+erf.moisture_model = MoistNoCondensation
 
-fabarray.mfiter_tile_size = 1024 1024 1024
+amrex.fpe_trap_invalid = 1
 
 # PROBLEM SIZE & GEOMETRY
 geometry.prob_extent = 50000 20000 9000.
 amr.n_cell           = 50    20   48
+
 amr.blocking_factor_x = 1
 amr.blocking_factor_y = 1
 amr.blocking_factor_z = 1
-# Ekman Spiral uses periodic lateral boundaries in x/y.
+
+# Periodic in N/S direction
 geometry.is_periodic = 0 1 0
 
-#zlo.type = "SlipWall"
+xlo.type = "Outflow"
+xhi.type = "Outflow"
+
 zlo.type = "surface_layer"
 erf.surface_layer.flux_type = "bulk_coeff"
 erf.most.Cd  = 0.0 # ustar
@@ -28,9 +32,9 @@ erf.most.surf_temp  = 289.0
 erf.most.surf_moist = 0.0
 erf.most.z0     = 0.1
 erf.most.zref   = 50.0
+
 zhi.type = "SlipWall"
-xlo.type = "Outflow"
-xhi.type = "Outflow"
+
 # TIME STEP CONTROL
 erf.substepping_type = Implicit 
 
@@ -77,9 +81,11 @@ prob.advection_heating_rate =1.1574074e-5
 # INITIALIZATION WITH ATM DATA
 erf.init_type = "input_sounding"
 erf.sounding_type = Ideal
-erf.input_sounding_file = "new_sounding4"
+erf.input_sounding_file = input_sounding_for_ERF
 
-erf.start_datetime        = "2025-06-25 12:00:00"
+erf.rad_t_sfc              = 300.
+
+erf.start_datetime         = "2025-06-25 12:00:00"
 erf.radiation_model        = "RRTMGP"
 erf.rad.datalog            = "radiation"
 erf.profile_rad_int        = 100
@@ -97,8 +103,8 @@ erf.nswbands               = 14
 erf.nlwbands               = 16
 erf.nswgpts                = 224
 erf.nlwgpts                = 256
-erf.rrtmgp_file_path       = /home/feranmi/gitcode/
-erf.rrtmgp_file_path       = /home/feranmi/gitcode/
+erf.rrtmgp_file_path       = /home/feranmi/data-files
+#erf.rrtmgp_file_path       = /home/almgren/GitCode/data-files
 erf.rrtmgp_coeffs_sw       = rrtmgp-data-sw-g224-2018-12-04.nc
 erf.rrtmgp_coeffs_lw       = rrtmgp-data-lw-g256-2018-12-04.nc
 erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc

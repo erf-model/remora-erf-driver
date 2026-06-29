@@ -49,7 +49,7 @@ public:
                                   const amrex::Vector<amrex::IntVect>& ref_ratio,
                                   const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
                                   int max_grid_size,
-                                  amrex::Real dt_atm,
+                                  amrex::Real erf_dt,
                                   int atm_substeps_per_ocean_step,
                                   coupling::AtmosToOceanContract atm2ocn_contract);
     ~ERFRemoraMultiBlockContainer();
@@ -109,7 +109,7 @@ private:
     amrex::BoxArray m_ba_ocn;
     amrex::DistributionMapping m_dm_ocn;
 
-    amrex::Real m_dt_atm;
+    amrex::Real m_erf_dt;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;

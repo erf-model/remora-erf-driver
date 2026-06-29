@@ -25,7 +25,7 @@ main (int argc, char* argv[])
         amrex::ParmParse pp_driver("driver");
 
         int max_grid_size = 32;
-        amrex::Real dt_atm = 10.0;
+        amrex::Real erf_dt = 10.0; // Replaced dt_atm with erf_dt
         int atm_substeps_per_ocean_step = 6;
         int ocean_steps = 2;
         int synthetic_only = 1;
@@ -33,7 +33,7 @@ main (int argc, char* argv[])
         std::string coupling_direction;
 
         pp_driver.query("max_grid_size", max_grid_size);
-        pp_driver.query("dt_atm", dt_atm);
+        pp_driver.query("erf_dt", erf_dt);
         pp_driver.query("atm_substeps_per_ocean_step", atm_substeps_per_ocean_step);
         const bool has_driver_ocean_steps = pp_driver.query("ocean_steps", ocean_steps);
         pp_driver.query("synthetic_only", synthetic_only);
@@ -66,7 +66,7 @@ main (int argc, char* argv[])
         }
 
         const amrex::Real ocean_macro_dt =
-            dt_atm * static_cast<amrex::Real>(atm_substeps_per_ocean_step);
+            erf_dt * static_cast<amrex::Real>(atm_substeps_per_ocean_step);
         if (has_stop_time) {
             const int stop_time_macro_steps =
                 static_cast<int>(stop_time / ocean_macro_dt);
@@ -91,12 +91,12 @@ main (int argc, char* argv[])
             }
         }
 
-        const amrex::Real expected_run_time = dt_atm * static_cast<amrex::Real>(atm_substeps_per_ocean_step)
+        const amrex::Real expected_run_time = erf_dt * static_cast<amrex::Real>(atm_substeps_per_ocean_step)
                                              * static_cast<amrex::Real>(ocean_steps);
         if (amrex::ParallelDescriptor::IOProcessor()) {
             amrex::Print() << "Coupled run plan:"
                            << " expected_run_time=" << expected_run_time
-                           << " dt_atm=" << dt_atm
+                           << " erf_dt=" << erf_dt
                            << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
                            << " ocean_steps=" << ocean_steps;
             if (has_stop_time) {
@@ -125,6 +125,7 @@ main (int argc, char* argv[])
             const std::string coupling_direction_lc = lowercase(coupling_direction);
             if (!synthetic_only) {
                 amrex::ParmParse pp_erf("erf");
+                pp_erf.get("fixed_dt", erf_dt);
                 std::string land_surface_model;
                 const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
                 const std::string land_surface_model_lc = lowercase(land_surface_model);
@@ -196,7 +197,7 @@ main (int argc, char* argv[])
             erf_remora::ERFRemoraMultiBlockContainer container(
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,
-                max_grid_size, dt_atm, atm_substeps_per_ocean_step,
+                max_grid_size, erf_dt, atm_substeps_per_ocean_step,
                 atm2ocn_contract);
             container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
@@ -205,7 +206,7 @@ main (int argc, char* argv[])
             erf_remora::ERFRemoraMultiBlockContainer container(
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,
-                max_grid_size, dt_atm, atm_substeps_per_ocean_step,
+                max_grid_size, erf_dt, atm_substeps_per_ocean_step,
                 atm2ocn_contract);
             container.InitializeBlocks();
             container.InitializeSolvers();

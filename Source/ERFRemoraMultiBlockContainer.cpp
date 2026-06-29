@@ -32,14 +32,14 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     const amrex::Vector<amrex::IntVect>& ref_ratio,
     const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
     int max_grid_size,
-    amrex::Real dt_atm,
+    amrex::Real erf_dt,
     int atm_substeps_per_ocean_step,
     coupling::AtmosToOceanContract atm2ocn_contract)
     : m_atm_rb(atm_rb), m_atm_n_cell(n_cell_atm),
       m_ocn_rb(ocn_rb), m_ocn_n_cell(n_cell_ocn),
       m_max_level(max_level), m_coord(coord),
       m_ref_ratio(ref_ratio), m_is_periodic(is_periodic),
-      m_dt_atm(dt_atm),
+      m_erf_dt(erf_dt),
       m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
       m_atmos_to_ocean_contract(atm2ocn_contract)
 {
@@ -349,7 +349,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     // - REMORA advances Boussinesq/split-explicit ocean dynamics with a much larger
     //   macro-step O(10^2-10^3 s).
     // We therefore hold one ocean macro-state while subcycling atmosphere updates.
-    const amrex::Real dt_ocn_request = m_dt_atm * static_cast<amrex::Real>(m_atm_substeps_per_ocean_step);
+    const amrex::Real dt_ocn_request = m_erf_dt * static_cast<amrex::Real>(m_atm_substeps_per_ocean_step);
     const long long expected_atm_ticks = static_cast<long long>(ocean_steps) *
                                          static_cast<long long>(m_atm_substeps_per_ocean_step);
     const amrex::Real abs_tol = 1.0e-12;
@@ -377,7 +377,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                            << " dt_used=" << dt_used
                            << " abs_err=" << err
                            << " tol=" << tol
-                           << " m_dt_atm=" << m_dt_atm
+                           << " m_erf_dt=" << m_erf_dt
                            << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
                            << " expected_ocean_macro_dt=" << dt_ocn_request
                            << std::endl;
@@ -401,7 +401,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             }
             break;
         }
-        const amrex::Real ocean_time = m_atm_tick * m_dt_atm;
+        const amrex::Real ocean_time = m_atm_tick * m_erf_dt;
         pack_surface_state(m_ocean_to_atmos, ocean_time);
         FillOceanToAtmosGhosts();
         pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
@@ -422,11 +422,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 stop_coupling = true;
                 break;
             }
-            const amrex::Real atm_time = m_atm_tick * m_dt_atm;
+            const amrex::Real atm_time = m_atm_tick * m_erf_dt;
 
             BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
-            const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_dt_atm);
+            const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_erf_dt);
             if (dt_used == amrex::Real(0.0)) {
                 if (amrex::ParallelDescriptor::IOProcessor()) {
                     amrex::Print() << "ERF returned dt=0 before the driver completed the planned"
@@ -439,7 +439,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 }
                 amrex::Abort("ERF terminated before the driver reached a valid coupled macro-step boundary.");
             }
-            enforce_dt("ERF", m_dt_atm, dt_used, ocean_step, substep);
+            enforce_dt("ERF", m_erf_dt, dt_used, ocean_step, substep);
 
             ++m_atm_tick;
         }

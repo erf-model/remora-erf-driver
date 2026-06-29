@@ -136,7 +136,7 @@ Run:
 
 ---
 
-### `PaperReproducers/inputs_perlin_ERF_REMORA`
+### `Upwelling/inputs_perlin_ERF_REMORA`
 
 Purpose:
 
@@ -145,7 +145,7 @@ Purpose:
 Run:
 
 ```bash
-cd Exec/PaperReproducer
+cd Exec/Upwelling
 ../../build/erf-remora-driver inputs_perlin_ERF_REMORA
 ```
                                                        

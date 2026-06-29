@@ -87,6 +87,7 @@ erf.rad_t_sfc              = 300.
 
 erf.start_datetime         = "2025-06-25 12:00:00"
 erf.radiation_model        = "RRTMGP"
+erf.radiation_model        = None
 erf.rad.datalog            = "radiation"
 erf.profile_rad_int        = 100
 erf.rad_freq_in_steps      = 80

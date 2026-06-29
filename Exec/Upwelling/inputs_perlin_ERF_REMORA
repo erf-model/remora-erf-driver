@@ -12,9 +12,9 @@
 #   bathymetry must be edited in the imported ERF/REMORA base decks.
 #
 # Requires:
-#   REMORA source: Exec/CoupleToERF/inputs
-#   ERF source: .Exec_dev/RemoraCoupling/inputs_shear_two_way
-#   ERF source: .Exec_dev/RemoraCoupling/input_sounding
+#   REMORA source: ./inputs_REMORA
+#   ERF source: ./inputs_ERF
+#   ERF source: ./input_sounding_for_ERF
 
 FILE = inputs_REMORA
 FILE = inputs_ERF
@@ -56,7 +56,6 @@ erf.plot_int_1 = 3000
 erf.check_file = erfchk
 erf.check_int = 3000
 
-# REMORA: CoupleToERF IC, SST packed into cache each ocean step for ERF OceanSurf injection.
 # Set flat_bathymetry=false in the REMORA deck and provide the coastal slope there.
 remora.flat_bathymetry = false
 

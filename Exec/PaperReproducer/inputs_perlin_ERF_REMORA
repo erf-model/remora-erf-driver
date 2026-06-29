@@ -20,7 +20,7 @@ FILE = inputs_REMORA
 FILE = inputs_ERF
 
 amrex.fpe_trap_invalid = 0
-erf.input_sounding_file = new_sounding4
+erf.input_sounding_file = input_sounding_for_ERF
 
 # Driver-owned topology (matched horizontal footprint).
 driver.atm.prob_lo     = 0.0 0.0 0.0

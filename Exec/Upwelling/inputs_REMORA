@@ -1,8 +1,6 @@
 # ------------------  INPUTS TO MAIN PROGRAM  -------------------
 remora.max_step = 1000
 
-remora.omp_tile_size = 1024 1024 1024
-
 # PROBLEM SIZE & GEOMETRY
 remora.prob_lo     =      0.     0.    -300.
 remora.prob_hi     =  50000. 20000.       0.

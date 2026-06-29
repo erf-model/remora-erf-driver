@@ -20,6 +20,8 @@ FILE = inputs_REMORA
 FILE = inputs_ERF
 
 amrex.fpe_trap_invalid = 0
+fabarray.mfiter_tile_size = 1024 1024 1024
+
 erf.input_sounding_file = input_sounding_for_ERF
 
 # Driver-owned topology (matched horizontal footprint).
@@ -41,6 +43,7 @@ driver.atm_substeps_per_ocean_step = 100
 
 # 1 (REMORA) step at 300s/step = 5 minutes ... 72 hours = 72*60=4320 minutes = 864 steps
 max_step = 100
+max_step = 1
 
 erf.fixed_dt = 3
 remora.fixed_dt = 300

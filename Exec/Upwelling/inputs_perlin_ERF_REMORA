@@ -38,11 +38,11 @@ driver.synthetic_only = 0
 driver.coupling_direction = two_way
 # driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt
 # must match so each solver takes exactly one step per coupled advance.
-driver.dt_atm = 3
+driver.erf_dt = 3
 driver.atm_substeps_per_ocean_step = 100
 
 # 1 (REMORA) step at 300s/step = 5 minutes ... 72 hours = 72*60=4320 minutes = 864 steps
-max_step = 100
+max_step = 864
 max_step = 1
 
 erf.fixed_dt = 3

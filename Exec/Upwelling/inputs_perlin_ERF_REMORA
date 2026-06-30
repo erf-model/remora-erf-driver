@@ -27,7 +27,7 @@ erf.input_sounding_file = input_sounding_for_ERF
 # Driver-owned topology (matched horizontal footprint).
 driver.atm.prob_lo     = 0.0 0.0 0.0
 driver.atm.prob_hi     = 50000 20000 9000
-driver.atm.n_cell      = 50 20 48 
+driver.atm.n_cell      = 50 20 48
 driver.atm.is_periodic = 0 1 0
 
 driver.ocn.prob_lo     = 0.0 0.0 -300.0
@@ -36,14 +36,14 @@ driver.ocn.n_cell      = 50 20 40
 
 driver.synthetic_only = 0
 driver.coupling_direction = two_way
-# driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt
-# must match so each solver takes exactly one step per coupled advance.
+## driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt
+## must match so each solver takes exactly one step per coupled advance.
 driver.erf_dt = 3
 driver.atm_substeps_per_ocean_step = 100
 
 # 1 (REMORA) step at 300s/step = 5 minutes ... 72 hours = 72*60=4320 minutes = 864 steps
 max_step = 864
-max_step = 1
+#stop_time = 100000
 
 erf.fixed_dt = 3
 remora.fixed_dt = 300

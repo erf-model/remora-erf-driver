@@ -1,5 +1,6 @@
 # ------------------  INPUTS TO MAIN PROGRAM  -------------------
-remora.max_step = 1000
+
+remora.prob_name = UpwellingCoupling
 
 # PROBLEM SIZE & GEOMETRY
 remora.prob_lo     =      0.     0.    -300.
@@ -31,7 +32,7 @@ remora.sum_interval  = 1       # timesteps between integrated/max quantities, if
 remora.v             = 0       # verbosity in REMORA.cpp (0: none, 1: integrated quantities, etc, 2: print boxes)
 
 # PLOTFILES
-remora.plot_vars_3d  = salt temp x_velocity y_velocity z_velocity 
+remora.plot_vars_3d  = salt temp x_velocity y_velocity z_velocity
 remora.plot_vars_2d  = h svstr stflux
 remora.plotfile_type = amrex
 
@@ -55,4 +56,4 @@ remora.coriolis_type = beta_plane
 remora.coriolis_f0 = 1e-4
 remora.coriolis_beta = 0.0
 
-remora.bulk_fluxes = 1 
+remora.bulk_fluxes = 1

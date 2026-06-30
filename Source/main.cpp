@@ -31,7 +31,6 @@ main (int argc, char* argv[])
         std::string coupling_direction;
 
         pp_driver.query("max_grid_size", max_grid_size);
-        const bool has_driver_ocean_steps = pp_driver.query("ocean_steps", ocean_steps);
 
         pp_driver.query("synthetic_only", synthetic_only);
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
@@ -56,13 +55,16 @@ main (int argc, char* argv[])
 
         int atm_substeps_per_ocean_step = static_cast<int>(ocean_macro_dt / erf_dt);
         if (atm_substeps_per_ocean_step * erf_dt != ocean_macro_dt) {
-            amrex::Print() << "ERF    dt " << erf_dt << std::endl; 
-            amrex::Print() << "REMORA dt " << ocean_macro_dt << std::endl; 
+            amrex::Print() << "ERF    dt " << erf_dt << std::endl;
+            amrex::Print() << "REMORA dt " << ocean_macro_dt << std::endl;
             amrex::Abort("Ocean dt is not a multiple of atmosphere dt");
         }
 
         amrex::Real stop_time = -1.0;
         const bool has_stop_time = amrex::ParmParse().query("stop_time", stop_time);
+        const int stop_time_macro_steps = static_cast<int>(stop_time / ocean_macro_dt);
+        int top_level_max_step = -1;
+        const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
 
         if (pp_driver.contains("coupled_one_step")) {
             amrex::Print() << "WARNING: driver.coupled_one_step is deprecated and ignored; "
@@ -75,33 +77,27 @@ main (int argc, char* argv[])
             return value;
         };
 
-        int top_level_max_step = ocean_steps;
-        const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
+        if (has_stop_time) {
+            amrex::Print() << "stop_time = " << stop_time << "s, corresponding to " << stop_time_macro_steps << " steps" << std::endl;
+        }
         if (has_top_level_max_step) {
-            if (has_driver_ocean_steps && top_level_max_step != ocean_steps) {
-                amrex::Print() << "WARNING: both max_step (" << top_level_max_step
-                               << ") and driver.ocean_steps (" << ocean_steps
-                               << ") are set; using max_step for ocean macro-step count.\n";
-            }
+            amrex::Print() << "max_step = " << top_level_max_step << std::endl;
+        }
+        if (has_stop_time && has_top_level_max_step) {
+            ocean_steps = std::min(stop_time_macro_steps, top_level_max_step);
+            amrex::Print() << "Clipping to minimum of stop_time steps and max_step = " << ocean_steps << std::endl;
+        } else if (has_stop_time && !has_top_level_max_step) {
+            ocean_steps = stop_time_macro_steps;
+        } else if (!has_stop_time && has_top_level_max_step) {
             ocean_steps = top_level_max_step;
+        } else {
+            amrex::Abort("Either stop_time or max_step must be specified");
         }
 
         if (has_stop_time) {
-            const int stop_time_macro_steps =
-                static_cast<int>(stop_time / ocean_macro_dt);
-            if (stop_time_macro_steps < ocean_steps) {
-                if (amrex::ParallelDescriptor::IOProcessor()) {
-                    amrex::Print() << "Clipping coupled ocean_steps from " << ocean_steps
-                                   << " to " << stop_time_macro_steps
-                                   << " so the driver stops cleanly at stop_time="
-                                   << stop_time << ".\n";
-                }
-                ocean_steps = stop_time_macro_steps;
-            }
             const amrex::Real clipped_stop_time =
                 ocean_macro_dt * static_cast<amrex::Real>(stop_time_macro_steps);
-            if (amrex::ParallelDescriptor::IOProcessor() &&
-                stop_time_macro_steps >= 0 &&
+            if (stop_time_macro_steps >= 0 &&
                 stop_time > clipped_stop_time) {
                 amrex::Print() << "WARNING: coupled driver only stops on ocean macro-step boundaries;"
                                << " stop_time=" << stop_time
@@ -112,24 +108,18 @@ main (int argc, char* argv[])
 
         const amrex::Real expected_run_time = erf_dt * static_cast<amrex::Real>(atm_substeps_per_ocean_step)
                                              * static_cast<amrex::Real>(ocean_steps);
-        if (amrex::ParallelDescriptor::IOProcessor()) {
-            amrex::Print() << "Coupled run plan:"
-                           << " expected_run_time=" << expected_run_time
-                           << " erf_dt=" << erf_dt
-                           << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
-                           << " ocean_steps=" << ocean_steps;
-            if (has_stop_time) {
-                amrex::Print() << " stop_time=" << stop_time
-                               << " (either stop_time or max_step may terminate the run first)";
-            } else {
-                amrex::Print() << " stop_time=<unset>";
-            }
-            amrex::Print() << "\n";
+        amrex::Print() << "Coupled run plan:"
+                       << " expected_run_time=" << expected_run_time
+                       << " erf_dt=" << erf_dt
+                       << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
+                       << " ocean_steps=" << ocean_steps;
+        if (has_stop_time) {
+            amrex::Print() << " stop_time=" << stop_time
+                           << " (either stop_time or max_step may terminate the run first)";
+        } else {
+            amrex::Print() << " stop_time=<unset>";
         }
-
-        if (pp_driver.contains("ocean_step") && !pp_driver.contains("ocean_steps")) {
-            amrex::Print() << "WARNING: found driver.ocean_step, but driver.ocean_steps is the supported key; ignoring driver.ocean_step.\n";
-        }
+        amrex::Print() << "\n";
 
         erf_remora::coupling::AtmosToOceanContract atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::StatePassing;
         if (atm2ocn_mode == "state") {
@@ -229,7 +219,7 @@ main (int argc, char* argv[])
             container.InitializeBlocks();
             container.InitializeSolvers();
             container.PrefillAtmosToOceanFallbacks();
-            
+
             amrex::ParmParse().remove("amr.check_int");
             amrex::ParmParse().remove("amr.check_per");
             amrex::ParmParse().remove("amr.check_int_time");

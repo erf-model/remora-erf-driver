@@ -25,20 +25,41 @@ main (int argc, char* argv[])
         amrex::ParmParse pp_driver("driver");
 
         int max_grid_size = 32;
-        amrex::Real erf_dt = 10.0; // Replaced dt_atm with erf_dt
-        int atm_substeps_per_ocean_step = 6;
         int ocean_steps = 2;
         int synthetic_only = 1;
         std::string atm2ocn_mode = "state";
         std::string coupling_direction;
 
         pp_driver.query("max_grid_size", max_grid_size);
-        pp_driver.query("erf_dt", erf_dt);
-        pp_driver.query("atm_substeps_per_ocean_step", atm_substeps_per_ocean_step);
         const bool has_driver_ocean_steps = pp_driver.query("ocean_steps", ocean_steps);
+
         pp_driver.query("synthetic_only", synthetic_only);
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
         const bool has_coupling_direction = pp_driver.query("coupling_direction", coupling_direction);
+
+        amrex::ParmParse pp_erf("erf");
+        amrex::ParmParse pp_rem("remora");
+
+        amrex::Real erf_dt;
+        if (has_coupling_direction) {
+            pp_erf.get("fixed_dt", erf_dt);
+        } else {
+            pp_driver.get("erf_dt", erf_dt);
+        }
+
+        amrex::Real ocean_macro_dt;
+        if (has_coupling_direction) {
+            pp_rem.get("fixed_dt", ocean_macro_dt);
+        } else {
+            pp_driver.get("ocean_dt", ocean_macro_dt);
+        }
+
+        int atm_substeps_per_ocean_step = static_cast<int>(ocean_macro_dt / erf_dt);
+        if (atm_substeps_per_ocean_step * erf_dt != ocean_macro_dt) {
+            amrex::Print() << "ERF    dt " << erf_dt << std::endl; 
+            amrex::Print() << "REMORA dt " << ocean_macro_dt << std::endl; 
+            amrex::Abort("Ocean dt is not a multiple of atmosphere dt");
+        }
 
         amrex::Real stop_time = -1.0;
         const bool has_stop_time = amrex::ParmParse().query("stop_time", stop_time);
@@ -65,8 +86,6 @@ main (int argc, char* argv[])
             ocean_steps = top_level_max_step;
         }
 
-        const amrex::Real ocean_macro_dt =
-            erf_dt * static_cast<amrex::Real>(atm_substeps_per_ocean_step);
         if (has_stop_time) {
             const int stop_time_macro_steps =
                 static_cast<int>(stop_time / ocean_macro_dt);
@@ -124,9 +143,8 @@ main (int argc, char* argv[])
         if (has_coupling_direction) {
             const std::string coupling_direction_lc = lowercase(coupling_direction);
             if (!synthetic_only) {
-                amrex::ParmParse pp_erf("erf");
-                pp_erf.get("fixed_dt", erf_dt);
                 std::string land_surface_model;
+                amrex::ParmParse pp_erf("erf");
                 const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
                 const std::string land_surface_model_lc = lowercase(land_surface_model);
 

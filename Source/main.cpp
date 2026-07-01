@@ -7,6 +7,8 @@
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 #include <AMReX_RealBox.H>
+#include <Kokkos_Core.hpp>
+#include "ERF_Kokkos.H"
 
 #include <algorithm>
 #include <cctype>
@@ -116,6 +118,15 @@ int
 main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
+
+#ifdef ERF_USE_KOKKOS
+    // Initialize kokkos
+    if (!Kokkos::is_initialized()) {
+        Kokkos::initialize(Kokkos::InitializationSettings()
+                           .set_device_id(amrex::Gpu::Device::deviceId()));
+    }
+#endif
+
     {
         // The driver owns the combined ParmParse environment, so drop
         // the prefixed alias; the canonical max_step/stop_time keys remain.

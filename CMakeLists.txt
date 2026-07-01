@@ -95,6 +95,7 @@ target_link_libraries(
     AMReX::amrex
     erf_api
     remora_api
+    Kokkos::kokkos
 )
 
 install(

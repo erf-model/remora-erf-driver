@@ -20,9 +20,11 @@ xhi.type = "Outflow"
 
 zlo.type = "surface_layer"
 erf.surface_layer.flux_type = "bulk_coeff"
+
 erf.most.Cd  = 0.0 # ustar
 erf.most.Ch  = 0.0 # theta flux
 erf.most.Cq  = 0.0 # qv    flux
+
 erf.most.surf_temp  = 289.0
 erf.most.surf_moist = 0.0
 erf.most.z0     = 0.1
@@ -34,7 +36,7 @@ zhi.type = "SlipWall"
 erf.substepping_type = Implicit
 
 # DIAGNOSTICS & VERBOSITY
-erf.sum_interval   = 1       # timesteps between computing mass
+erf.sum_interval   = 1200    # timesteps between computing mass
 erf.v              = 1       # verbosity in ERF.cpp
 amr.v              = 1       # verbosity in Amr.cpp
 
@@ -82,10 +84,9 @@ erf.rad_t_sfc              = 300.
 
 erf.start_datetime         = "2025-06-25 12:00:00"
 erf.radiation_model        = "RRTMGP"
-erf.radiation_model        = None
-erf.rad.datalog            = "radiation"
-erf.profile_rad_int        = 100
-erf.rad_freq_in_steps      = 80
+erf.rad.datalog            = "radiation_datalog"
+erf.profile_rad_int        = -100
+erf.rad_freq_in_steps      = 600
 erf.rad_do_subcol_sampling = false
 erf.rad_write_fluxes       = false
 erf.co2vmr                 = 0.00036
@@ -100,7 +101,6 @@ erf.nlwbands               = 16
 erf.nswgpts                = 224
 erf.nlwgpts                = 256
 erf.rrtmgp_file_path       = /home/feranmi/data-files
-#erf.rrtmgp_file_path       = /home/almgren/GitCode/data-files
 erf.rrtmgp_coeffs_sw       = rrtmgp-data-sw-g224-2018-12-04.nc
 erf.rrtmgp_coeffs_lw       = rrtmgp-data-lw-g256-2018-12-04.nc
 erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc

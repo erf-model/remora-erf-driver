@@ -121,7 +121,7 @@ private:
     amrex::Real m_erf_dt;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
-    int m_plot_int_exchange = 0;
+    int m_plot_int_exchange = -1;
     std::string m_plot_file_exchange_o2a = "exchange_o2a";
     std::string m_plot_file_exchange_a2o = "exchange_a2o";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;

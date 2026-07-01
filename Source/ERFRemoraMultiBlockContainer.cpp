@@ -76,9 +76,6 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("plot_int_exchange", m_plot_int_exchange);
     pp_driver.query("plot_file_exchange_o2a", m_plot_file_exchange_o2a);
     pp_driver.query("plot_file_exchange_a2o", m_plot_file_exchange_a2o);
-    if (m_plot_int_exchange < 0) {
-        amrex::Abort("driver.plot_int_exchange must be >= 0.");
-    }
 }
 
 void
@@ -162,12 +159,10 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     AllocateCaches();
     FillSyntheticData();
 
-    if (amrex::ParallelDescriptor::IOProcessor()) {
-        amrex::Print() << "Atmos->ocean contract mode: "
+    amrex::Print() << "Atmos->ocean contract mode: "
                        << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
                        << " (" << static_cast<int>(m_atmos_to_ocean_active_indices.size())
                        << " active layers)\n";
-    }
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
@@ -429,15 +424,13 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     const amrex::Real abs_tol = 1.0e-12;
     const amrex::Real rel_tol = 1.0e-8;
 
-    if (amrex::ParallelDescriptor::IOProcessor()) {
-        amrex::Print() << "Coupled cadence plan:"
+    amrex::Print() << "Coupled cadence plan:"
                        << " ocean_steps=" << ocean_steps
                        << " starting_atm_tick=" << starting_atm_tick
                        << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
                        << " target_atm_tick=" << expected_atm_ticks
                        << " expected_run_time=" << (dt_ocn_request * static_cast<amrex::Real>(ocean_steps))
                        << std::endl;
-    }
 
     auto enforce_dt = [&] (const char* solver_name, amrex::Real dt_request, amrex::Real dt_used,
                            int ocean_step, int substep) {
@@ -469,11 +462,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
         bool stop_coupling = false;
         if (m_atm_tick >= expected_atm_ticks) {
-            if (amrex::ParallelDescriptor::IOProcessor()) {
-                amrex::Print() << "Reached expected coupled end time before ocean_step "
-                               << ocean_step << "; stopping cleanly at atmosphere tick "
-                               << m_atm_tick << " of " << expected_atm_ticks << std::endl;
-            }
+            amrex::Print() << "Reached expected coupled end time before ocean_step "
+                                << ocean_step << "; stopping cleanly at atmosphere tick "
+                                << m_atm_tick << " of " << expected_atm_ticks << std::endl;
             break;
         }
         const amrex::Real ocean_time = m_atm_tick * m_erf_dt;
@@ -488,18 +479,17 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
         apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
 
+
         // Initial architecture note: this passes instantaneous slabs at the macro-step boundary.
         // Future update: use old/new cached states and time interpolation during this
         // loop (same temporal pattern as erf-amrwind-driver boundary ingestion in
         // Source/wind_energy/ABLReadERF.cpp) to avoid stepwise forcing artifacts.
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
-                if (amrex::ParallelDescriptor::IOProcessor()) {
-                    amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="
-                                   << ocean_step << " substep=" << substep
-                                   << "; skipping remaining substeps and exiting cleanly."
-                                   << std::endl;
-                }
+                amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="
+                                    << ocean_step << " substep=" << substep
+                                    << "; skipping remaining substeps and exiting cleanly."
+                                    << std::endl;
                 stop_coupling = true;
                 break;
             }
@@ -509,15 +499,13 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
             const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_erf_dt);
             if (dt_used == amrex::Real(0.0)) {
-                if (amrex::ParallelDescriptor::IOProcessor()) {
-                    amrex::Print() << "ERF returned dt=0 before the driver completed the planned"
-                                   << " atmosphere subcycling schedule."
-                                   << " ocean_step=" << ocean_step
-                                   << " substep=" << substep
-                                   << " atm_tick=" << m_atm_tick
-                                   << " expected_atm_ticks=" << expected_atm_ticks
-                                   << std::endl;
-                }
+                amrex::Print() << "ERF returned dt=0 before the driver completed the planned"
+                                    << " atmosphere subcycling schedule."
+                                    << " ocean_step=" << ocean_step
+                                    << " substep=" << substep
+                                    << " atm_tick=" << m_atm_tick
+                                    << " expected_atm_ticks=" << expected_atm_ticks
+                                    << std::endl;
                 amrex::Abort("ERF terminated before the driver reached a valid coupled macro-step boundary.");
             }
             enforce_dt("ERF", m_erf_dt, dt_used, ocean_step, substep);
@@ -531,22 +519,18 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 
         const amrex::Real ocn_dt_used = REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request);
         if (ocn_dt_used == amrex::Real(0.0)) {
-            if (amrex::ParallelDescriptor::IOProcessor()) {
-                amrex::Print() << "REMORA returned dt=0 before the driver completed the planned"
-                               << " ocean macro-step schedule."
-                               << " ocean_step=" << ocean_step
-                               << " atm_tick=" << m_atm_tick
-                               << " expected_atm_ticks=" << expected_atm_ticks
-                               << std::endl;
-            }
+            amrex::Print() << "REMORA returned dt=0 before the driver completed the planned"
+                                << " ocean macro-step schedule."
+                                << " ocean_step=" << ocean_step
+                                << " atm_tick=" << m_atm_tick
+                                << " expected_atm_ticks=" << expected_atm_ticks
+                                << std::endl;
             amrex::Abort("REMORA terminated before the driver reached a valid coupled macro-step boundary.");
         }
         enforce_dt("REMORA", dt_ocn_request, ocn_dt_used, ocean_step, -1);
 
-        if (amrex::ParallelDescriptor::IOProcessor()) {
-            amrex::Print() << "Completed ocean step " << ocean_step
+        amrex::Print() << "Completed ocean step " << ocean_step
                            << " at atmosphere tick " << m_atm_tick << "\n";
-        }
 
         PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
         PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);

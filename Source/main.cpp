@@ -42,12 +42,11 @@ WarnIfDtChanged (const char* solver_name,
                  amrex::Real checkpoint_dt,
                  amrex::Real configured_dt)
 {
-    if (!NearlyEqual(checkpoint_dt, configured_dt) &&
-        amrex::ParallelDescriptor::IOProcessor()) {
+    if (!NearlyEqual(checkpoint_dt, configured_dt)) {
         amrex::Print() << "WARNING: " << solver_name
-                       << " checkpoint dt=" << checkpoint_dt
-                       << " differs from configured dt=" << configured_dt
-                       << "; continuing because checkpoint time aligns with the configured coupled cadence.\n";
+                        << " checkpoint dt=" << checkpoint_dt
+                        << " differs from configured dt=" << configured_dt
+                        << "; continuing because checkpoint time aligns with the configured coupled cadence.\n";
     }
 }
 
@@ -237,13 +236,11 @@ main (int argc, char* argv[])
         }
 
         if (restart_state.active) {
-            if (amrex::ParallelDescriptor::IOProcessor()) {
-                amrex::Print() << "Restored coupled restart state:"
-                               << " time=" << restart_state.restored_time
-                               << " atm_tick=" << restart_state.atm_tick
-                               << " completed_ocean_steps=" << restart_state.completed_ocean_steps
-                               << std::endl;
-            }
+            amrex::Print() << "Restored coupled restart state:"
+                                << " time=" << restart_state.restored_time
+                                << " atm_tick=" << restart_state.atm_tick
+                                << " completed_ocean_steps=" << restart_state.completed_ocean_steps
+                                << std::endl;
             const int requested_ocean_steps = ocean_steps;
             ocean_steps = requested_ocean_steps - restart_state.completed_ocean_steps;
             if (ocean_steps < 0) {

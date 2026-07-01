@@ -232,10 +232,6 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
                              const amrex::Vector<amrex::MultiFab*>& fields,
                              const amrex::Vector<std::string>& names) const
 {
-    if (!amrex::ParallelDescriptor::IOProcessor()) {
-        return;
-    }
-
     amrex::Print() << label << "\n";
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
         const auto min_val = fields[idx]->min(0);
@@ -317,7 +313,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 if (mf) {
                     // We use a simple check: if any value is non-finite, abort.
                     // In a production environment, we'd use a reduction.
-                    if (mf->min(0) != mf->min(0) || mf->max(0) != mf->max(0)) {
+                    const amrex::Real mn = mf->min(0);
+                    const amrex::Real mx = mf->max(0);
+                    if (mn != mn || mx != mx) {
                         amrex::Abort("Non-finite value detected in PackSurfaceState output.");
                     }
                 }
@@ -343,14 +341,15 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                     }
                     const bool is_cloud_lane = (idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()) &&
                                                 m_atmos_to_ocean_active_indices[idx] == coupling::Cloud);
-                    if (is_cloud_lane && amrex::ParallelDescriptor::IOProcessor() &&
-                        cloud_warn_count < cloud_warn_limit) {
+                    if (is_cloud_lane && cloud_warn_count < cloud_warn_limit) {
                         const amrex::Real cmin = mf->min(0);
                         const amrex::Real cmax = mf->max(0);
-                        if (cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) {
-                            ++cloud_warn_count;
-                            amrex::Print() << "WARNING: packed cloud lane outside tolerance [-1e-6,1+1e-6]: min="
-                                           << cmin << " max=" << cmax << "\n";
+                        if (amrex::ParallelDescriptor::IOProcessor()) {
+                            if (cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) {
+                                ++cloud_warn_count;
+                                amrex::Print() << "WARNING: packed cloud lane outside tolerance [-1e-6,1+1e-6]: min="
+                                                << cmin << " max=" << cmax << "\n";
+                            }
                         }
                     }
                 }
@@ -381,10 +380,12 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
             }
         },
         [] (const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
-            if (amrex::ParallelDescriptor::IOProcessor() && !states.empty() && states[0] != nullptr) {
+            if (!states.empty() && states[0] != nullptr) {
                 const amrex::Real sample = states[0]->min(0);
-                amrex::Print() << "Synthetic ApplyAtmosphericStates time=" << time
-                               << " sample_atmos_field0=" << sample << "\n";
+                if (amrex::ParallelDescriptor::IOProcessor()) {
+                    amrex::Print() << "Synthetic ApplyAtmosphericStates time=" << time
+                                   << " sample_atmos_field0=" << sample << "\n";
+                }
             }
         },
         ocean_steps);

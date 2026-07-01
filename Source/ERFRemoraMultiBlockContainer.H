@@ -57,6 +57,7 @@ public:
     void InitializeBlocks();
     void InitializeSolvers();
     void PrefillAtmosToOceanFallbacks();
+    void SetAtmosphereTick(long long atm_tick);
     void AdvanceBlocks(int ocean_steps);
     void AdvanceBlocksSynthetic(int ocean_steps);
     amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();
@@ -89,6 +90,13 @@ private:
     void PrintDiagnostics(const char* label,
                           const amrex::Vector<amrex::MultiFab*>& fields,
                           const amrex::Vector<std::string>& names) const;
+    void WriteExchangePlotfiles(amrex::Real time, long long ocean_step) const;
+    void WriteExchangePlotfile(const std::string& prefix,
+                               const amrex::Vector<amrex::MultiFab*>& fields,
+                               const amrex::Vector<std::string>& names,
+                               const amrex::Geometry& geom,
+                               amrex::Real time,
+                               long long ocean_step) const;
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;
@@ -108,10 +116,14 @@ private:
     // Ocean-resolution interface slab; may differ from m_ba when grids are non-matching.
     amrex::BoxArray m_ba_ocn;
     amrex::DistributionMapping m_dm_ocn;
+    amrex::Geometry m_geom_ocn;
 
     amrex::Real m_erf_dt;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
+    int m_plot_int_exchange = 0;
+    std::string m_plot_file_exchange_o2a = "exchange_o2a";
+    std::string m_plot_file_exchange_a2o = "exchange_a2o";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
 
     // Atmosphere -> ocean cache slab vector.

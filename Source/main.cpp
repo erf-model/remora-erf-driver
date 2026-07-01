@@ -1,16 +1,116 @@
 #include "ERFRemoraMultiBlockContainer.H"
+#include "CoupledRestartUtils.H"
 #include "StandaloneSolverRuns.H"
 
 #include <AMReX.H>
+#include <AMReX_Math.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 #include <AMReX_RealBox.H>
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <string>
 
 std::string inputs_name = "erf-remora-driver.synthetic";
+
+namespace
+{
+struct RestartState
+{
+    bool active = false;
+    long long atm_tick = 0;
+    int completed_ocean_steps = 0;
+    amrex::Real restored_time = amrex::Real(0.0);
+};
+
+bool
+NearlyEqual (amrex::Real lhs, amrex::Real rhs,
+             amrex::Real abs_tol = amrex::Real(1.0e-12),
+             amrex::Real rel_tol = amrex::Real(1.0e-8))
+{
+    const amrex::Real err = amrex::Math::abs(lhs - rhs);
+    const amrex::Real scale = amrex::max(amrex::Math::abs(lhs), amrex::Math::abs(rhs));
+    return err <= amrex::max(abs_tol, rel_tol * scale);
+}
+
+void
+WarnIfDtChanged (const char* solver_name,
+                 amrex::Real checkpoint_dt,
+                 amrex::Real configured_dt)
+{
+    if (!NearlyEqual(checkpoint_dt, configured_dt) &&
+        amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "WARNING: " << solver_name
+                       << " checkpoint dt=" << checkpoint_dt
+                       << " differs from configured dt=" << configured_dt
+                       << "; continuing because checkpoint time aligns with the configured coupled cadence.\n";
+    }
+}
+
+long long
+RequireIntegralTick (const char* label, amrex::Real time, amrex::Real dt)
+{
+    if (dt <= amrex::Real(0.0)) {
+        amrex::Abort(std::string("Non-positive dt while restoring coupled restart state for ") + label);
+    }
+
+    const amrex::Real raw_tick = time / dt;
+    const long long tick = static_cast<long long>(std::llround(raw_tick));
+    if (!NearlyEqual(static_cast<amrex::Real>(tick) * dt, time)) {
+        amrex::Abort(std::string("Restored ") + label +
+                     " time does not align with the configured coupled cadence:"
+                     " time=" + std::to_string(time) +
+                     " dt=" + std::to_string(dt));
+    }
+
+    return tick;
+}
+
+void
+RequireCheckpointSelfConsistency (const erf_remora::restart::CheckpointHeaderMetadata& meta)
+{
+    const amrex::Real reconstructed_time =
+        static_cast<amrex::Real>(meta.step) * meta.dt;
+    if (!NearlyEqual(reconstructed_time, meta.time)) {
+        amrex::Abort(std::string("Restart header for ") + erf_remora::restart::SolverKindName(meta.solver) +
+                     " is internally inconsistent:"
+                     " istep[0]=" + std::to_string(meta.step) +
+                     " dt[0]=" + std::to_string(meta.dt) +
+                     " t_new[0]=" + std::to_string(meta.time));
+    }
+}
+
+RestartState
+BuildRestartState (const erf_remora::restart::CheckpointHeaderMetadata& erf_meta,
+                   const erf_remora::restart::CheckpointHeaderMetadata& rem_meta,
+                   amrex::Real erf_dt,
+                   amrex::Real ocean_macro_dt)
+{
+    RequireCheckpointSelfConsistency(erf_meta);
+    RequireCheckpointSelfConsistency(rem_meta);
+
+    if (!NearlyEqual(erf_meta.time, rem_meta.time)) {
+        amrex::Abort("ERF and REMORA restart checkpoints do not represent the same coupled time.");
+    }
+
+    const long long restored_atm_tick =
+        RequireIntegralTick("ERF", erf_meta.time, erf_dt);
+    const long long restored_ocean_tick =
+        RequireIntegralTick("REMORA", rem_meta.time, ocean_macro_dt);
+
+    WarnIfDtChanged("ERF", erf_meta.dt, erf_dt);
+    WarnIfDtChanged("REMORA", rem_meta.dt, ocean_macro_dt);
+
+    RestartState state;
+    state.active = true;
+    state.atm_tick = restored_atm_tick;
+    state.completed_ocean_steps = static_cast<int>(restored_ocean_tick);
+    state.restored_time = erf_meta.time;
+    return state;
+}
+}
 
 int
 main (int argc, char* argv[])
@@ -66,6 +166,25 @@ main (int argc, char* argv[])
         int top_level_max_step = -1;
         const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
 
+        std::string erf_restart_path;
+        std::string remora_restart_path;
+        const bool has_erf_restart = pp_erf.query("restart", erf_restart_path);
+        const bool has_remora_restart = pp_rem.query("restart", remora_restart_path);
+        if (has_erf_restart != has_remora_restart) {
+            amrex::Abort("Coupled restart requires both erf.restart and remora.restart to be set together.");
+        }
+
+        RestartState restart_state;
+        if (has_erf_restart) {
+            const auto erf_meta =
+                erf_remora::restart::ReadCheckpointHeaderMetadata(
+                    erf_restart_path, erf_remora::restart::SolverKind::ERF);
+            const auto rem_meta =
+                erf_remora::restart::ReadCheckpointHeaderMetadata(
+                    remora_restart_path, erf_remora::restart::SolverKind::REMORA);
+            restart_state = BuildRestartState(erf_meta, rem_meta, erf_dt, ocean_macro_dt);
+        }
+
         if (pp_driver.contains("coupled_one_step")) {
             amrex::Print() << "WARNING: driver.coupled_one_step is deprecated and ignored; "
                            << "use deck naming plus driver.coupling_direction instead.\n";
@@ -106,13 +225,36 @@ main (int argc, char* argv[])
             }
         }
 
-        const amrex::Real expected_run_time = erf_dt * static_cast<amrex::Real>(atm_substeps_per_ocean_step)
-                                             * static_cast<amrex::Real>(ocean_steps);
+        if (restart_state.active) {
+            if (amrex::ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "Restored coupled restart state:"
+                               << " time=" << restart_state.restored_time
+                               << " atm_tick=" << restart_state.atm_tick
+                               << " completed_ocean_steps=" << restart_state.completed_ocean_steps
+                               << std::endl;
+            }
+            const int requested_ocean_steps = ocean_steps;
+            ocean_steps = requested_ocean_steps - restart_state.completed_ocean_steps;
+            if (ocean_steps < 0) {
+                amrex::Abort("Restarted coupled run has already advanced beyond the requested max_step/stop_time target.");
+            }
+        } else {
+            // Cold-start path keeps the original max_step/stop_time logic above.
+        }
+
+        const amrex::Real expected_run_time =
+            ocean_macro_dt * static_cast<amrex::Real>(ocean_steps);
         amrex::Print() << "Coupled run plan:"
                        << " expected_run_time=" << expected_run_time
                        << " erf_dt=" << erf_dt
                        << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
                        << " ocean_steps=" << ocean_steps;
+        if (restart_state.active) {
+            amrex::Print() << " restored_time=" << restart_state.restored_time
+                           << " completed_ocean_steps=" << restart_state.completed_ocean_steps
+                           << " final_target_ocean_steps="
+                           << (ocean_steps + restart_state.completed_ocean_steps);
+        }
         if (has_stop_time) {
             amrex::Print() << " stop_time=" << stop_time
                            << " (either stop_time or max_step may terminate the run first)";
@@ -217,6 +359,9 @@ main (int argc, char* argv[])
                 max_grid_size, erf_dt, atm_substeps_per_ocean_step,
                 atm2ocn_contract);
             container.InitializeBlocks();
+            if (restart_state.active) {
+                container.SetAtmosphereTick(restart_state.atm_tick);
+            }
             container.InitializeSolvers();
             container.PrefillAtmosToOceanFallbacks();
 

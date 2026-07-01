@@ -5,6 +5,8 @@
 #include <AMReX_BLProfiler.H>
 #include <AMReX_Math.H>
 #include <AMReX_ParmParse.H>
+#include <AMReX_PlotFileUtil.H>
+#include <AMReX_String.H>
 
 #include <string>
 
@@ -62,8 +64,21 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
                             {atm_rb.hi(0), atm_rb.hi(1), dz_atm});
     m_geom.define(domain, &slab_rb, amrex::CoordSys::cartesian, is_periodic.data());
 
+    amrex::Real dz_ocn = (ocn_rb.hi(2) - ocn_rb.lo(2)) / n_cell_ocn[2];
+    amrex::RealBox ocn_slab_rb({ocn_rb.lo(0), ocn_rb.lo(1), 0.0},
+                                {ocn_rb.hi(0), ocn_rb.hi(1), dz_ocn});
+    m_geom_ocn.define(ocn_domain, &ocn_slab_rb, amrex::CoordSys::cartesian, is_periodic.data());
+
     m_atmos_to_ocean_active_indices = coupling::AtmosToOceanActiveIndices(m_atmos_to_ocean_contract);
     m_atmos_to_ocean_active_names = coupling::AtmosToOceanNames(m_atmos_to_ocean_contract);
+
+    amrex::ParmParse pp_driver("driver");
+    pp_driver.query("plot_int_exchange", m_plot_int_exchange);
+    pp_driver.query("plot_file_exchange_o2a", m_plot_file_exchange_o2a);
+    pp_driver.query("plot_file_exchange_a2o", m_plot_file_exchange_a2o);
+    if (m_plot_int_exchange < 0) {
+        amrex::Abort("driver.plot_int_exchange must be >= 0.");
+    }
 }
 
 void
@@ -129,6 +144,15 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
             break;
         }
     }
+}
+
+void
+ERFRemoraMultiBlockContainer::SetAtmosphereTick (long long atm_tick)
+{
+    if (atm_tick < 0) {
+        amrex::Abort("Cannot restore a negative atmosphere tick in the coupled driver.");
+    }
+    m_atm_tick = atm_tick;
 }
 
 void
@@ -221,6 +245,53 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
             amrex::Print() << "  *** WARNING: implausibly large rain values detected! ***\n";
         }
     }
+}
+
+void
+ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real time, long long ocean_step) const
+{
+    WriteExchangePlotfile(m_plot_file_exchange_o2a,
+                          m_ocean_to_atmos,
+                          coupling::OceanToAtmosNames(),
+                          m_geom,
+                          time,
+                          ocean_step);
+    WriteExchangePlotfile(m_plot_file_exchange_a2o,
+                          m_atmos_to_ocean_active,
+                          m_atmos_to_ocean_active_names,
+                          m_geom_ocn,
+                          time,
+                          ocean_step);
+}
+
+void
+ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
+    const std::string& prefix,
+    const amrex::Vector<amrex::MultiFab*>& fields,
+    const amrex::Vector<std::string>& names,
+    const amrex::Geometry& geom,
+    amrex::Real time,
+    long long ocean_step) const
+{
+    if (fields.empty()) {
+        return;
+    }
+    if (fields.size() != names.size()) {
+        amrex::Abort("Exchange plotfile field/name count mismatch.");
+    }
+
+    const int ncomp = static_cast<int>(fields.size());
+    amrex::MultiFab plot_mf(fields[0]->boxArray(), fields[0]->DistributionMap(), ncomp, 0);
+    for (int comp = 0; comp < ncomp; ++comp) {
+        if (fields[comp] == nullptr) {
+            amrex::Abort("Cannot write exchange plotfile with a null field.");
+        }
+        amrex::MultiFab::Copy(plot_mf, *fields[comp], 0, comp, 1, 0);
+    }
+
+    const std::string plotfilename = amrex::Concatenate(prefix, static_cast<int>(ocean_step), 5);
+    amrex::WriteSingleLevelPlotfile(plotfilename, plot_mf, names, geom, time,
+                                    static_cast<int>(ocean_step));
 }
 
 void
@@ -350,7 +421,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     //   macro-step O(10^2-10^3 s).
     // We therefore hold one ocean macro-state while subcycling atmosphere updates.
     const amrex::Real dt_ocn_request = m_erf_dt * static_cast<amrex::Real>(m_atm_substeps_per_ocean_step);
-    const long long expected_atm_ticks = static_cast<long long>(ocean_steps) *
+    const long long starting_atm_tick = m_atm_tick;
+    const long long expected_atm_ticks = starting_atm_tick +
+                                         static_cast<long long>(ocean_steps) *
                                          static_cast<long long>(m_atm_substeps_per_ocean_step);
     const amrex::Real abs_tol = 1.0e-12;
     const amrex::Real rel_tol = 1.0e-8;
@@ -358,8 +431,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     if (amrex::ParallelDescriptor::IOProcessor()) {
         amrex::Print() << "Coupled cadence plan:"
                        << " ocean_steps=" << ocean_steps
+                       << " starting_atm_tick=" << starting_atm_tick
                        << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
-                       << " expected_atm_ticks=" << expected_atm_ticks
+                       << " target_atm_tick=" << expected_atm_ticks
                        << " expected_run_time=" << (dt_ocn_request * static_cast<amrex::Real>(ocean_steps))
                        << std::endl;
     }
@@ -402,9 +476,15 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             break;
         }
         const amrex::Real ocean_time = m_atm_tick * m_erf_dt;
+        const long long global_ocean_step =
+            m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
         pack_surface_state(m_ocean_to_atmos, ocean_time);
         FillOceanToAtmosGhosts();
         pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
+        if (m_plot_int_exchange > 0 &&
+            (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
+            WriteExchangePlotfiles(ocean_time, global_ocean_step);
+        }
         apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
 
         // Initial architecture note: this passes instantaneous slabs at the macro-step boundary.

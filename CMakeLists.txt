@@ -75,6 +75,7 @@ add_subdirectory(Submodules/REMORA remora-build)
 add_executable(
   erf-remora-driver
   Source/main.cpp
+  Source/CoupledRestartUtils.cpp
   Source/ERFRemoraMultiBlockContainer.cpp
   Source/RunERFStandalone.cpp
   Source/RunREMORAStandalone.cpp

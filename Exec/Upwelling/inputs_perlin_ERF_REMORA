@@ -54,10 +54,10 @@ erf.land_surface_model = OceanSurf
 erf.is_land = 0
 
 erf.plot_file_1 = erfplt
-erf.plot_int_1 = 3000
+erf.plot_int_1 = 1000
 
 erf.check_file = erfchk
-erf.check_int = 3000
+erf.check_int = 1000
 
 # Set flat_bathymetry=false in the REMORA deck and provide the coastal slope there.
 remora.flat_bathymetry = false

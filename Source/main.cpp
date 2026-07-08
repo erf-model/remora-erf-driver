@@ -157,16 +157,30 @@ main (int argc, char* argv[])
 
         amrex::ParmParse pp_driver("driver");
 
-        int max_grid_size = 32;
+        int max_grid_size = default_max_grid_size;
         int ocean_steps = 2;
         int synthetic_only = 1;
         std::string atm2ocn_mode = "state";
         std::string coupling_direction;
 
-        pp_driver.query("max_grid_size", max_grid_size);
+        // The coupled interface layout is a horizontal z=0 slab, so the
+        // divisibility constraint that motivated the AMR fallback is really an
+        // x/y concern. We still inherit all three AMR max-grid knobs here so
+        // driver.max_grid_size[_x/_y/_z] behaves like a normal override of the
+        // canonical AMR defaults.
+        pp_amr.query("max_grid_size", max_grid_size);
         int max_grid_size_x = max_grid_size;
         int max_grid_size_y = max_grid_size;
         int max_grid_size_z = max_grid_size;
+        pp_amr.query("max_grid_size_x", max_grid_size_x);
+        pp_amr.query("max_grid_size_y", max_grid_size_y);
+        pp_amr.query("max_grid_size_z", max_grid_size_z);
+        const bool has_driver_max_grid_size = pp_driver.query("max_grid_size", max_grid_size);
+        if (has_driver_max_grid_size) {
+            max_grid_size_x = max_grid_size;
+            max_grid_size_y = max_grid_size;
+            max_grid_size_z = max_grid_size;
+        }
         pp_driver.query("max_grid_size_x", max_grid_size_x);
         pp_driver.query("max_grid_size_y", max_grid_size_y);
         pp_driver.query("max_grid_size_z", max_grid_size_z);

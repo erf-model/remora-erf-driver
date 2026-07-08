@@ -21,7 +21,7 @@ xhi.type = "Outflow"
 zlo.type = "surface_layer"
 erf.surface_layer.flux_type = "bulk_coeff"
 
-erf.most.Cd  = 0.0 # ustar
+erf.most.Cd  = 0.0014 # ustar
 erf.most.Ch  = 0.0 # theta flux
 erf.most.Cq  = 0.0 # qv    flux
 
@@ -82,9 +82,10 @@ erf.input_sounding_file = input_sounding_for_ERF
 
 erf.rad_t_sfc              = 300.
 
-erf.start_datetime         = "2025-06-25 12:00:00"
 erf.radiation_model        = "RRTMGP"
 erf.rad.datalog            = "radiation_datalog"
+erf.rad_cons_lat           = 42
+erf.rad_cons_lon           = -124
 erf.profile_rad_int        = -100
 erf.rad_freq_in_steps      = 600
 erf.rad_do_subcol_sampling = false

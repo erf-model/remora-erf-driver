@@ -127,6 +127,29 @@ main (int argc, char* argv[])
 #endif
 
     {
+        amrex::ParmParse pp_amr("amr");
+        if (!pp_amr.contains("refine_grid_layout_x")) {
+            pp_amr.add("refine_grid_layout_x", 1);
+        }
+        if (!pp_amr.contains("refine_grid_layout_y")) {
+            pp_amr.add("refine_grid_layout_y", 1);
+        }
+        if (!pp_amr.contains("refine_grid_layout_z")) {
+            pp_amr.add("refine_grid_layout_z", 0);
+        }
+
+        // Match the standalone ERF/REMORA entry points: keep the default AMR
+        // max-grid size large so any additional splitting for rank count happens
+        // in x/y only, unless the user explicitly overrides AMR grid sizes.
+        int default_max_grid_size = 2048;
+        pp_amr.queryAdd("max_grid_size", default_max_grid_size);
+
+        int default_blocking_factor = 1;
+        pp_amr.queryAdd("blocking_factor", default_blocking_factor);
+
+        int default_n_proper = 2;
+        pp_amr.queryAdd("n_proper", default_n_proper);
+
         // The driver owns the combined ParmParse environment, so drop
         // the prefixed alias; the canonical max_step/stop_time keys remain.
         amrex::ParmParse().remove("remora.max_step");
@@ -141,6 +164,13 @@ main (int argc, char* argv[])
         std::string coupling_direction;
 
         pp_driver.query("max_grid_size", max_grid_size);
+        int max_grid_size_x = max_grid_size;
+        int max_grid_size_y = max_grid_size;
+        int max_grid_size_z = max_grid_size;
+        pp_driver.query("max_grid_size_x", max_grid_size_x);
+        pp_driver.query("max_grid_size_y", max_grid_size_y);
+        pp_driver.query("max_grid_size_z", max_grid_size_z);
+        const amrex::IntVect driver_max_grid_size(max_grid_size_x, max_grid_size_y, max_grid_size_z);
 
         pp_driver.query("synthetic_only", synthetic_only);
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
@@ -256,7 +286,8 @@ main (int argc, char* argv[])
                        << " expected_run_time=" << expected_run_time
                        << " erf_dt=" << erf_dt
                        << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
-                       << " ocean_steps=" << ocean_steps;
+                       << " ocean_steps=" << ocean_steps
+                       << " driver_max_grid_size=" << driver_max_grid_size;
         if (restart_state.active) {
             amrex::Print() << " restored_time=" << restart_state.restored_time
                            << " completed_ocean_steps=" << restart_state.completed_ocean_steps
@@ -355,7 +386,7 @@ main (int argc, char* argv[])
             erf_remora::ERFRemoraMultiBlockContainer container(
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,
-                max_grid_size, erf_dt, atm_substeps_per_ocean_step,
+                driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
                 atm2ocn_contract);
             container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
@@ -364,7 +395,7 @@ main (int argc, char* argv[])
             erf_remora::ERFRemoraMultiBlockContainer container(
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,
-                max_grid_size, erf_dt, atm_substeps_per_ocean_step,
+                driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
                 atm2ocn_contract);
             container.InitializeBlocks();
             if (restart_state.active) {

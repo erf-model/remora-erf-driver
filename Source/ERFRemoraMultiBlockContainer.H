@@ -48,7 +48,7 @@ public:
                                   int coord,
                                   const amrex::Vector<amrex::IntVect>& ref_ratio,
                                   const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
-                                  int max_grid_size,
+                                  const amrex::IntVect& max_grid_size,
                                   amrex::Real erf_dt,
                                   int atm_substeps_per_ocean_step,
                                   coupling::AtmosToOceanContract atm2ocn_contract);
@@ -90,6 +90,11 @@ private:
     void PrintDiagnostics(const char* label,
                           const amrex::Vector<amrex::MultiFab*>& fields,
                           const amrex::Vector<std::string>& names) const;
+    void ValidateFields(const char* label,
+                        const amrex::Vector<amrex::MultiFab*>& fields,
+                        const amrex::Vector<std::string>& names,
+                        amrex::Real time,
+                        long long ocean_step) const;
     void WriteExchangePlotfiles(amrex::Real time, long long ocean_step) const;
     void WriteExchangePlotfile(const std::string& prefix,
                                const amrex::Vector<amrex::MultiFab*>& fields,

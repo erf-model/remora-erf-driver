@@ -8,10 +8,135 @@
 #include <AMReX_PlotFileUtil.H>
 #include <AMReX_String.H>
 
+#include <cmath>
 #include <string>
 
 namespace erf_remora
 {
+namespace
+{
+bool
+PrintCouplingLayouts ()
+{
+    static bool initialized = false;
+    static bool enabled = false;
+    if (!initialized) {
+        int flag = 0;
+        amrex::ParmParse("driver").query("print_coupling_layouts", flag);
+        enabled = (flag != 0);
+        initialized = true;
+    }
+    return enabled;
+}
+
+void
+PrintDistributionMap (const amrex::DistributionMapping& dm)
+{
+    const auto& pmap = dm.ProcessorMap();
+    amrex::Print() << " pmap=[";
+    for (int i = 0; i < static_cast<int>(pmap.size()); ++i) {
+        amrex::Print() << (i == 0 ? "" : ",") << pmap[i];
+    }
+    amrex::Print() << "]";
+}
+
+void
+PrintBoxArrayLayout (const char* label,
+                     const amrex::BoxArray& ba,
+                     const amrex::DistributionMapping& dm)
+{
+    if (!PrintCouplingLayouts()) { return; }
+    amrex::Print() << "[coupling-layout] " << label
+                   << " boxes=" << ba.size()
+                   << " domain=" << ba.minimalBox();
+    PrintDistributionMap(dm);
+    amrex::Print() << "\n" << ba << "\n";
+}
+
+void
+PrintMultiFabLayout (const char* label, const amrex::MultiFab& mf)
+{
+    if (!PrintCouplingLayouts()) { return; }
+    amrex::Print() << "[coupling-layout] " << label
+                   << " ncomp=" << mf.nComp()
+                   << " ngrow=" << mf.nGrowVect();
+    PrintDistributionMap(mf.DistributionMap());
+    for (int comp = 0; comp < mf.nComp(); ++comp) {
+        amrex::Print() << " c" << comp
+                       << "_min=" << mf.min(comp)
+                       << " c" << comp
+                       << "_max=" << mf.max(comp);
+    }
+    amrex::Print() << "\n";
+    PrintBoxArrayLayout(label, mf.boxArray(), mf.DistributionMap());
+}
+
+void
+ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
+                        const amrex::DistributionMapping& fine_dm,
+                        const amrex::BoxArray& coarse_ba,
+                        const amrex::DistributionMapping& coarse_dm,
+                        const amrex::IntVect& ratio,
+                        const char* label)
+{
+    const amrex::IntVect fine_len = fine_ba.minimalBox().length();
+    const amrex::IntVect coarse_len = coarse_ba.minimalBox().length();
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "[coupling-layout] " << label
+                       << " fine_boxes=" << fine_ba.size()
+                       << " coarse_boxes=" << coarse_ba.size()
+                       << " ratio=" << ratio
+                       << " validation=checking\n";
+    }
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        fine_ba.size() == fine_dm.size(),
+        (std::string(label) + ": fine BA/DM size mismatch.").c_str());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        coarse_ba.size() == coarse_dm.size(),
+        (std::string(label) + ": coarse BA/DM size mismatch.").c_str());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        fine_ba.ixType() == coarse_ba.ixType(),
+        (std::string(label) + ": fine/coarse BoxArray index types differ.").c_str());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        fine_ba.minimalBox().smallEnd(0) == coarse_ba.minimalBox().smallEnd(0) &&
+        fine_ba.minimalBox().smallEnd(1) == coarse_ba.minimalBox().smallEnd(1),
+        (std::string(label) + ": fine/coarse slab origins are not aligned.").c_str());
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        fine_len[2] == 1 && coarse_len[2] == 1,
+        "ValidateCouplingLayout: coupling slabs must remain one-cell thick in z.");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        fine_len[0] == coarse_len[0] * ratio[0] &&
+        fine_len[1] == coarse_len[1] * ratio[1],
+        "ValidateCouplingLayout: fine/coarse slab lengths do not match the requested ratio.");
+
+    amrex::BoxArray coarsened_fine = fine_ba;
+    for (int i = 0; i < coarsened_fine.size(); ++i) {
+        const amrex::Box original = coarsened_fine[i];
+        amrex::Box coarsened = original;
+        coarsened.coarsen(ratio);
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            coarsened.refine(ratio) == original,
+            (std::string(label) +
+             ": fine box not evenly coarsenable by ratio at index " +
+             std::to_string(i) +
+             ". Direct average_down across this coupling layout is unsafe.").c_str());
+    }
+    coarsened_fine.coarsen(ratio);
+
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        coarsened_fine == coarse_ba,
+        (std::string(label) +
+         ": coarsen(fine_ba, ratio) does not match coarse_ba. "
+         "Direct average_down is unsafe and helper-required layouts are disallowed.").c_str());
+
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "[coupling-layout] " << label
+                       << " ratio=" << ratio
+                       << " direct_average_down_safe=yes\n";
+    }
+}
+}
+
 ERFRemoraMultiBlockContainer::~ERFRemoraMultiBlockContainer()
 {
     if (m_erf != nullptr) {
@@ -33,7 +158,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     int coord,
     const amrex::Vector<amrex::IntVect>& ref_ratio,
     const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
-    int max_grid_size,
+    const amrex::IntVect& max_grid_size,
     amrex::Real erf_dt,
     int atm_substeps_per_ocean_step,
     coupling::AtmosToOceanContract atm2ocn_contract)
@@ -45,19 +170,30 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
       m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
       m_atmos_to_ocean_contract(atm2ocn_contract)
 {
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        n_cell_atm[0] % n_cell_ocn[0] == 0 &&
+        n_cell_atm[1] % n_cell_ocn[1] == 0,
+        "Driver constructor requires integer x/y refinement ratio between atmosphere and ocean slabs.");
+    const amrex::IntVect horiz_ratio(n_cell_atm[0] / n_cell_ocn[0],
+                                     n_cell_atm[1] / n_cell_ocn[1], 1);
+
     // Interface slab: horizontal extent of the atmosphere at z = 0.
     amrex::Box domain(amrex::IntVect(0, 0, 0),
                       amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
     m_ba.define(domain);
     m_ba.maxSize(max_grid_size);
     m_dm.define(m_ba);
+    PrintBoxArrayLayout("Driver constructor ocean->atmos slab", m_ba, m_dm);
 
-    // Ocean-resolution slab for atm->ocn fields.
-    amrex::Box ocn_domain(amrex::IntVect(0, 0, 0),
-                          amrex::IntVect(n_cell_ocn[0]-1, n_cell_ocn[1]-1, 0));
-    m_ba_ocn.define(ocn_domain);
-    m_ba_ocn.maxSize(max_grid_size);
+    // Enforce structural compatibility by deriving the ocean slab directly
+    // from the atmosphere slab decomposition.
+    m_ba_ocn = m_ba;
+    m_ba_ocn.coarsen(horiz_ratio);
     m_dm_ocn.define(m_ba_ocn);
+    PrintBoxArrayLayout("Driver constructor atmos->ocean slab", m_ba_ocn, m_dm_ocn);
+    ValidateCouplingLayout(m_ba, m_dm, m_ba_ocn, m_dm_ocn,
+                           horiz_ratio,
+                           "ERF->REMORA horizontal coupling");
 
     amrex::Real dz_atm = (atm_rb.hi(2) - atm_rb.lo(2)) / n_cell_atm[2];
     amrex::RealBox slab_rb({atm_rb.lo(0), atm_rb.lo(1), 0.0},
@@ -67,7 +203,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     amrex::Real dz_ocn = (ocn_rb.hi(2) - ocn_rb.lo(2)) / n_cell_ocn[2];
     amrex::RealBox ocn_slab_rb({ocn_rb.lo(0), ocn_rb.lo(1), 0.0},
                                 {ocn_rb.hi(0), ocn_rb.hi(1), dz_ocn});
-    m_geom_ocn.define(ocn_domain, &ocn_slab_rb, amrex::CoordSys::cartesian, is_periodic.data());
+    m_geom_ocn.define(m_ba_ocn.minimalBox(), &ocn_slab_rb, amrex::CoordSys::cartesian, is_periodic.data());
 
     m_atmos_to_ocean_active_indices = coupling::AtmosToOceanActiveIndices(m_atmos_to_ocean_contract);
     m_atmos_to_ocean_active_names = coupling::AtmosToOceanNames(m_atmos_to_ocean_contract);
@@ -177,8 +313,11 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
     // Runtime coupling modes can then swap active layer views by index without
     // changing memory ownership or reallocating cache slabs.
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
-    for (auto& mf_ptr : m_atmos_to_ocean_storage) {
+    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean_storage.size()); ++idx) {
+        auto& mf_ptr = m_atmos_to_ocean_storage[idx];
         mf_ptr = std::make_unique<amrex::MultiFab>(m_ba_ocn, m_dm_ocn, 1, 0);
+        const std::string label = "Driver AllocateCaches atmos->ocean[" + std::to_string(idx) + "]";
+        PrintMultiFabLayout(label.c_str(), *mf_ptr);
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
     m_atmos_to_ocean_active.resize(m_atmos_to_ocean_active_indices.size());
@@ -189,8 +328,11 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
 
     m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
     const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
-    for (auto& mf_ptr : m_ocean_to_atmos_storage) {
+    for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
+        auto& mf_ptr = m_ocean_to_atmos_storage[idx];
         mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+        const std::string label = "Driver AllocateCaches ocean->atmos[" + std::to_string(idx) + "]";
+        PrintMultiFabLayout(label.c_str(), *mf_ptr);
     }
     m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
 }
@@ -239,8 +381,51 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
 }
 
 void
+ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
+                                              const amrex::Vector<amrex::MultiFab*>& fields,
+                                              const amrex::Vector<std::string>& names,
+                                              amrex::Real time,
+                                              long long ocean_step) const
+{
+    if (fields.size() != names.size()) {
+        amrex::Abort("ValidateFields field/name count mismatch.");
+    }
+
+    for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
+        const auto* mf = fields[idx];
+        if (mf == nullptr) {
+            amrex::Abort(std::string(label) + ": null field at index " + std::to_string(idx));
+        }
+
+        const amrex::Real min_val = mf->min(0);
+        const amrex::Real max_val = mf->max(0);
+
+        if (amrex::ParallelDescriptor::IOProcessor()) {
+            amrex::Print() << label
+                           << " ocean_step=" << ocean_step
+                           << " time=" << time
+                           << " field=" << names[idx]
+                           << " nboxes=" << mf->boxArray().size()
+                           << " min=" << min_val
+                           << " max=" << max_val
+                           << "\n";
+        }
+
+        if (!std::isfinite(min_val) || !std::isfinite(max_val)) {
+            amrex::Abort(std::string(label) + ": non-finite extrema in field '" +
+                         names[idx] + "' at ocean_step=" + std::to_string(ocean_step));
+        }
+    }
+}
+
+void
 ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real time, long long ocean_step) const
 {
+    ValidateFields("Exchange validation ocean->atmos",
+                   m_ocean_to_atmos, coupling::OceanToAtmosNames(), time, ocean_step);
+    ValidateFields("Exchange validation atmos->ocean",
+                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, time, ocean_step);
+
     WriteExchangePlotfile(m_plot_file_exchange_o2a,
                           m_ocean_to_atmos,
                           coupling::OceanToAtmosNames(),
@@ -349,10 +534,20 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                     }
                 }
             }
+            const long long ocean_step =
+                m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
+            ValidateFields("Post-pack atmos->ocean validation",
+                           states, m_atmos_to_ocean_active_names, time, ocean_step);
         },
         [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
             BL_PROFILE("Driver::Apply_Atmos");
+            const long long ocean_step =
+                m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
+            ValidateFields("Pre-apply atmos->ocean validation",
+                           states, m_atmos_to_ocean_active_names, time, ocean_step);
             REMORAApplyAtmosphericStates(m_remora, states, time);
+            ValidateFields("Post-apply atmos->ocean validation",
+                           states, m_atmos_to_ocean_active_names, time, ocean_step);
         },
         ocean_steps);
 }

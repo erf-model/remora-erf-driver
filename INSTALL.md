@@ -1,161 +1,293 @@
 # Installation and Reproducer Guide
 
 ## Quick Start
+
 ```bash
 git clone --recursive git@github.com:erf-model/remora-erf-driver
 cd remora-erf-driver
-cmake -S . -B build && cmake --build build -j4 --target erf-remora-driver
+cmake -S . -B build
+cmake --build build -j 8 --target erf-remora-driver
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF max_step=10
 ```
 
-## Coupled ABL Reproducer
+## Prerequisites
+
+### RRTMGP data files
+
+ERF cases that activate radiation require the RRTMGP coefficient data files at
+runtime. Set `RRTMGP_DIR` before running any ERF-based case that turns radiation on:
+
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_ABL
+export RRTMGP_DIR=/path/to/rrtmgp-data-files
 ```
+
+> **Build note:** `erf.rrtmgp_file_path` is only meaningful when ERF is built
+> with RRTMGP support. In this coupled driver repository **MPI and RRTMGP are
+> enabled by default** in the top-level CMake configuration. When you build ERF
+> using cmake these are the additional flags needed for radiation
+> `-DERF_ENABLE_RRTMGP=ON -DERF_ENABLE_NETCDF=ON -DERF_ENABLE_HDF5=ON` to be
+> set in that build.
+
+### `fcompare` executable
+
+The superbuild **does not build `fcompare`** (`ERF_ENABLE_FCOMPARE` and
+`REMORA_ENABLE_FCOMPARE` are both force-disabled at the top level). Provide
+an existing `fcompare` binary via the environment:
+
+```bash
+export FCOMPARE_EXE=/path/to/fcompare
+```
+
+If `FCOMPARE_EXE` is not set, the verification scripts fall back to
+`command -v fcompare` and will fail if no `fcompare` is on `PATH`.
+
+### Known limitations
+
+- `driver.atm2ocn_mode = state` is the only validated coupling path.
+  `driver.atm2ocn_mode = flux` is present in the driver but is **not** a
+  documented or validated workflow.
+- REMORA does not currently support vertical refinement in the z-direction in
+  coupled mode; the z refinement ratio must be 1.
+
+---
 
 ## Build
 
+### 1. MPI-only build (default)
 
-
-From repository root:
+From the repository root:
 
 ```bash
 cmake -S . -B build
-cmake --build build -j4 --target erf-remora-driver
+cmake --build build -j 8 --target erf-remora-driver
 ```
 
-If you configure with `-DERF_REMORA_ENABLE_TESTS=ON`, the following CTest
-labels are registered:
+If configured with `-DERF_REMORA_ENABLE_TESTS=ON`, the following CTest labels
+are registered (`ERF_REMORA_ENABLE_TESTS` is a driver-repo CMake flag, not an
+upstream ERF or REMORA flag):
 
 ```bash
 ctest --test-dir build -L compile
 ctest --test-dir build -L reproducer
 ```
 
-If you update files in the ERF or REMORA source trees used by this build,
-rebuild the same target:
+### 2. MPI + OpenMP build
+
+Use a separate build directory to preserve the MPI-only build.
+
+`ERF_REMORA_ENABLE_OPENMP` is a **driver-repo CMake flag**. When set to `ON`
+the top-level `CMakeLists.txt` automatically force-enables
+`Kokkos_ENABLE_OPENMP=ON` and `Kokkos_ENABLE_SERIAL=ON` alongside the
+per-solver OpenMP flags, so you do not need to pass those Kokkos flags
+manually:
 
 ```bash
-cmake --build build -j4 --target erf-remora-driver
+cmake -S . -B build_omp \
+  -DCMAKE_C_COMPILER=mpicc \
+  -DCMAKE_CXX_COMPILER=mpicxx \
+  -DCMAKE_Fortran_COMPILER=mpif90 \
+  -DERF_REMORA_ENABLE_OPENMP=ON
+cmake --build build_omp -j 8 --target erf-remora-driver
 ```
+
+---
 
 ## Ordered Reproducer Set
 
-### Reproducer A: Coupling infrastructure-only control (`driver.synthetic_only = 1`)
+### Reproducer A — Coupling infrastructure control (`driver.synthetic_only = 1`)
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check
 ```
 
-Scientific intent:
+Scientific intent: verify coupling cadence and subcycling bookkeeping; verify
+cache slab ownership and update path without solver-physics confounders.
 
-- verify stable atmosphere/ocean coupling cadence and subcycling bookkeeping,
-- verify cache slab ownership/update path without solver-physics confounders,
-- establish a clean control case for subsequent physical coupling runs.
-
-### Reproducer B: One-step standalone solver initialization (`driver.synthetic_only = 0`)
+### Reproducer B — One-step standalone solver initialization (`driver.synthetic_only = 0`)
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
+./build/erf-remora-driver \
+  Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
   max_step=1
 ```
 
-Scientific intent:
+Scientific intent: verify both solvers initialize and advance prognostic state
+in the shared executable; separate initialization issues from coupling-path
+issues.
 
-- verify both solvers can initialize and advance prognostic state in the shared executable,
-- separate initialization/stability issues from coupling-path issues.
-
-### Reproducer C: `ERFtoREMORA` state-exchange baseline
+### Reproducer C — `ERFtoREMORA` state-exchange baseline
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF
 ```
 
-Scientific intent:
+Scientific intent: verify atmosphere-state transfer and ocean application at
+each coupled step; establish baseline coupled behavior before enabling SST
+feedback.
 
-- verify atmosphere-state transfer and ocean application at each coupled step,
-- establish baseline coupled behavior before enabling SST feedback into ERF.
-
-### Reproducer D: `two_way` SST feedback into ERF (`OceanSurf` active)
-
-Use the dedicated OceanSurf deck plus longer runtime:
+### Reproducer D — `two_way` SST feedback into ERF (`OceanSurf` active)
 
 ```bash
 ./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_coupleToERF \
   max_step=600
 ```
 
-Scientific intent:
+Scientific intent: verify SST from REMORA is injected into ERF `OceanSurf`
+`t_surf`; verify ERF surface-layer fluxes respond to ocean state (`Cd`, `Ch`,
+`Cq` nonzero); produce measurable thermodynamic response in `temp` and `theta`
+over long windows.
 
-- verify SST from REMORA is injected into persistent ERF OceanSurf `t_surf` (K),
-- verify ERF surface-layer fluxes respond to ocean state (`Cd`, `Ch`, `Cq` nonzero),
-- produce measurable thermodynamic response in ERF (`temp`, `theta`) over long windows.
+---
 
-### Quick validation diagnostics
+## Verification Runs
+
+These runs assume you are in the repository root and that `RRTMGP_DIR` and
+`FCOMPARE_EXE` are set (see Prerequisites above).
+
+### 1. Upwelling smoke test
+
+Runs one coupled ocean step using the Perlin upwelling case:
 
 ```bash
-~/codes/ERF/tools/fcompare_serial -d temp plt00000 plt00600
-~/codes/ERF/tools/fcompare_serial -d theta plt00000 plt00600
+mpirun -n 1 ./build/erf-remora-driver Exec/Upwelling/inputs_perlin_ERF_REMORA \
+  max_step=1 \
+  erf.rrtmgp_file_path="${RRTMGP_DIR}"
 ```
 
-Interpretation:
+### 2. Upwelling MPI rank comparison
 
-- machine-zero drift in `temp/theta` suggests negligible SST-to-ERF feedback,
-- O(1e-1 K) scale over 600 s (case-dependent) indicates feedback is dynamically active.
+The equal-spacing configuration uses `Exec/Upwelling/inputs_perlin_ERF_REMORA`:
 
-### Dependency notes
+- `driver.atm.n_cell = 50 20 48`
+- `driver.ocn.n_cell = 50 20 40`
 
-Coupled decks require:
+Create output directories:
 
-- REMORA source: `Exec/CoupleToERF/inputs`
-- ERF source: `.Exec_dev/RemoraCoupling/inputs_shear_ERFtoREMORA` or
-  `.Exec_dev/RemoraCoupling/inputs_shear_two_way`
-- ERF source: `.Exec_dev/RemoraCoupling/input_sounding`
+```bash
+mkdir -p /tmp/upwelling_mpi/n1 /tmp/upwelling_mpi/n2 \
+         /tmp/upwelling_mpi/n4 /tmp/upwelling_mpi/n6 /tmp/upwelling_mpi/n8
+```
 
-`driver.atm2ocn_mode=state` is the validated mode. `driver.atm2ocn_mode=flux`
-is still disabled in this driver.
+Run at each MPI size. Shown for `n=1`; repeat with `-n 2`, `-n 4`, `-n 6`,
+`-n 8`, changing only the output directory:
+
+```bash
+mpirun -n 1 ./build/erf-remora-driver Exec/Upwelling/inputs_perlin_ERF_REMORA \
+  max_step=10 erf.rrtmgp_file_path="${RRTMGP_DIR}" \
+  erf.plot_file_1=/tmp/upwelling_mpi/n1/erfplt \
+  remora.plot_file=/tmp/upwelling_mpi/n1/remoraplt \
+  driver.plot_file_exchange_a2o=/tmp/upwelling_mpi/n1/exchange_a2o \
+  driver.plot_file_exchange_o2a=/tmp/upwelling_mpi/n1/exchange_o2a
+```
+
+Compare each run against the `n=1` baseline:
+
+```bash
+"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n2/remoraplt00010
+"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n4/remoraplt00010
+"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n6/remoraplt00010
+"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n8/remoraplt00010
+```
+
+Expected result for the equal-spacing configuration: `PLOTFILE AGREE`.
+
+For the complete rank-matrix automation see
+`scripts/run_rank_matrix_and_fcompare.sh`.
+
+### 3. Upwelling OpenMP comparison
+
+```bash
+export OMP_NUM_THREADS=4
+mpirun -n 1 ./build_omp/erf-remora-driver Exec/Upwelling/inputs_perlin_ERF_REMORA \
+  max_step=10 erf.rrtmgp_file_path="${RRTMGP_DIR}"
+```
+
+To compare the MPI-only and OpenMP results:
+
+```bash
+"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 \
+                     /tmp/upwelling_omp/n1/remoraplt00010
+```
+
+### 4. Restart validation
+
+The restart test checks whether a cold-start run and a restarted run produce
+the same solution at a later step.
+
+Cold-start run:
+
+```bash
+mpirun -n 1 ./build/erf-remora-driver \
+  Exec/Upwelling/inputs_debug_cold_start_substep \
+  erf.rrtmgp_file_path="${RRTMGP_DIR}"
+```
+
+Restarted run (uses `erf.restart` to resume from the checkpoint written by the
+cold-start run):
+
+```bash
+mpirun -n 1 ./build/erf-remora-driver \
+  Exec/Upwelling/inputs_debug_restart_substep \
+  erf.rrtmgp_file_path="${RRTMGP_DIR}"
+```
+
+Compare the final plotfiles:
+
+```bash
+cd Exec/Upwelling
+"${FCOMPARE_EXE}" -a cold_remoraplt00002  remoraplt00002
+"${FCOMPARE_EXE}" -a cold_erfplt00020     restart_erfplt00020
+```
+
+Expected behavior:
+
+- REMORA plotfiles agree exactly (bitwise).
+- ERF plotfiles agree to floating-point roundoff; very small differences in
+  fields such as velocity or pressure are normal and expected.
+
+---
 
 ## Unified Inputs Example
 
-AMReX `ParmParse` allows one inputs file to provide parameters for the driver
- and both solver libraries.
+AMReX `ParmParse` allows one inputs file to supply parameters to the driver and
+both solver libraries simultaneously.
 
-How keys are consumed:
+Key dispatch:
 
-- `driver.*` keys are read by `erf-remora-driver`.
-- `erf.*` (and shared mesh keys like `amr.*`, `geometry.*`) are read by ERF.
-- `remora.*` (and shared mesh keys like `amr.*`, `geometry.*`) are read by REMORA.
+- `driver.*` — consumed by `erf-remora-driver`
+- `erf.*` and shared mesh keys (`amr.*`, `geometry.*`) — consumed by ERF
+- `remora.*` and shared mesh keys (`amr.*`, `geometry.*`) — consumed by REMORA
 
-Example mixed inputs file:
+Example inputs file:
 
 ```text
 # Driver control
-driver.synthetic_only = 0
-driver.coupling_direction = two_way
-driver.atm2ocn_mode = state
-driver.dt_atm = 2.0
+driver.synthetic_only              = 0
+driver.coupling_direction          = two_way
+driver.atm2ocn_mode                = state
+driver.dt_atm                      = 2.0
 driver.atm_substeps_per_ocean_step = 5
-driver.ocean_steps = 1
+driver.ocean_steps                 = 1
 
-# Driver topology controls
-driver.atm.prob_lo = 0.0 0.0 0.0
-driver.atm.prob_hi = 1.0 1.0 1.0
-driver.atm.n_cell = 32 32 32
+# Driver domain topology
+driver.atm.prob_lo = 0.0 0.0  0.0
+driver.atm.prob_hi = 1.0 1.0  1.0
+driver.atm.n_cell  = 32 32 32
 driver.ocn.prob_lo = 0.0 0.0 -1.0
-driver.ocn.prob_hi = 1.0 1.0 0.0
-driver.ocn.n_cell = 32 32 10
-amr.max_level = 0
-amr.max_grid_size = 32
+driver.ocn.prob_hi = 1.0 1.0  0.0
+driver.ocn.n_cell  = 32 32 10
+amr.max_level      = 0
+amr.max_grid_size  = 32
 
 # ERF controls
-erf.fixed_dt = 0.5
-erf.les_type = None
+erf.fixed_dt    = 0.5
+erf.les_type    = None
 erf.use_gravity = false
 
 # REMORA controls
-remora.ic_type = analytic
+remora.ic_type         = analytic
 remora.grid_scale_type = constant
-remora.sum_interval = -1
+remora.sum_interval    = -1
 ```
 
 Run with:

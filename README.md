@@ -1,77 +1,93 @@
-# ERF-REMORA Driver (Initial Architecture Scaffold)
+# ERF-REMORA Driver
 
-This repository hosts a top-level AMReX superbuild and a driver executable that
-couples ERF and REMORA as libraries. The focus is coupled infrastructure:
-2D `MultiFab` cache ownership, read/write paths, driver-owned multi-rate clock
-stability, and solver advancement through the coupled loop.
+This repository builds a coupled driver that advances ERF (atmosphere) and
+REMORA (ocean) in one executable. The driver owns the coupling clock, the
+interface caches, and the pack/apply calls used to exchange state between the
+two solvers.
+
+For build and run instructions see [INSTALL.md](INSTALL.md).
+
+## Architectural Rule
+
+ERF and REMORA do not call each other directly. The driver owns:
+
+- the coupling clock,
+- the interface caches (`Vector<MultiFab*>`),
+- and the orchestration of pack/apply callbacks.
+
+This mirrors the conductor pattern used in AMReX multiblock coupling work and
+keeps solver-core changes minimal.
+
+## Coupling Contract
+
+### Validated mode
+
+`driver.atm2ocn_mode = state` is the only validated coupling path. In this
+mode REMORA consumes atmospheric state variables and computes surface fluxes
+internally via its bulk-physics path.
+
+### Known limitations
+
+- `driver.atm2ocn_mode = flux` is present in the driver but is **not** a
+  documented or validated workflow.
+- REMORA does not currently support vertical refinement in the z-direction in
+  coupled mode; the z refinement ratio must be 1.
+- Spatial remapping between non-matching horizontal grids is not yet
+  implemented; the current baseline uses level-0, matched horizontal grids.
+
+### Exchanged fields (COAWST state-passing baseline)
+
+Atmosphere → ocean:
+`Uwind`, `Vwind`, `Patm`, `Qair`, `Tair`, `cloud`, `rain`, `SWrad`, `LWrad`
+
+Ocean → atmosphere:
+`SST`
+
+The atmosphere -> ocean cache is allocated as a superset layer vector that also
+reserves direct-flux layers (`tau_x`, `tau_y`, `SHflux`, `LHflux`, `evap`)
+for a future flux-passing mode without changing the driver-owned allocation
+model.
+
+## Test Problems
+
+### CouplingReproducers
+
+`Exec/CouplingReproducers` contains small coupled test cases for checking
+driver behavior, state exchange, and two-way SST feedback:
+
+- `inputs_coupling_infrastructure_check`
+- `inputs_one_step_solver_initialization_check`
+- `inputs_ERFtoREMORA_coupleToERF`
+- `inputs_two_way_coupleToERF`
+
+### Upwelling
+
+`Exec/Upwelling` contains the coastal Perlin/upwelling problem used validation testing as well as for MPI
+rank, OpenMP, and restart verification:
+
+- `inputs_perlin_ERF_REMORA`
+- `inputs_debug_cold_start_substep`
+- `inputs_debug_restart_substep`
+- `inputs_debug_cold_start`
+- `inputs_debug_restart`
 
 ## Coupling Roadmap
 
-### Initial Architecture: Legacy COAWST State-Passing
+### Current implementation
 
-The current interface contract follows the legacy COAWST state exchange defined in:
+The current interface contract follows the legacy COAWST state exchange
+(Warner et al. 2010, Fig. 5 Block B semantics). Validated behavior includes
+driver-owned coupled stepping, state-passing exchange at each coupled step,
+and 1:1 cadence smoke tests with `driver.dt_atm = 1` and
+`remora.fixed_dt = 1`.
 
-- Warner et al. (2010), *Development of a Coupled Ocean-Atmosphere-Wave-Sediment
-  Transport (COAWST) Modeling System*, Fig. 5 (Block B semantics).
+### Planned extensions
 
-Current atmosphere -> ocean state list:
+- Runtime toggle between state-passing and direct flux-passing modes.
+- Wave-mediated coupling terms (Stokes-drift, wave-roughness-aware fluxes).
+- Conservative area-weighted spatial remapping for non-matching grids.
 
-- `Uwind`, `Vwind` (10-m winds)
-- `Patm`, `RH`, `Tair`, `cloud`, `rain`
-- `SWrad`, `LWrad`
-
-Current ocean -> atmosphere state list:
-
-- `SST`
-
-Note: REMORA does not currently support vertical refinement; the refinement ratio in the z-direction must be set to 1.
-
-The current coupled implementation is validated in state-passing mode:
-REMORA consumes atmospheric state variables and computes surface fluxes
-internally via its bulk-physics path.
-
-Validated behavior:
-
-- driver-owned coupled stepping with ERF and REMORA advancing in the same run,
-- state-passing exchange at each coupled step,
-- 1:1 cadence smoke tests with `driver.dt_atm = 1` and `remora.fixed_dt = 1`,
-- `driver.atm2ocn_mode = flux` is disabled in the driver.
-
-Deferred / future work:
-
-- direct flux-passing,
-- wave-mediated extensions,
-- mismatched-grid spatial remapping.
-
-Implementation note:
-
-- The atmosphere -> ocean cache is now allocated as a superset layer vector
-  (`Vector<MultiFab*>`) containing legacy state layers plus reserved direct-flux
-  layers (`tau_x`, `tau_y`, `SHflux`, `LHflux`, `evap`).
-- Coupling modes can swap active layer sets by index without changing the
-  driver-owned cache allocation/ownership model.
-
-### Spatial Remapping
-
-The current baseline uses level-0, matched horizontal grids.
-
-The design remains agnostic about the remapping mechanism so we can evaluate
-native AMReX multi-block capabilities (`ParallelCopy`, `MultiBlockCommMetaData`)
-before deciding whether an external topological engine is required for
-conservative area-weighted flux accounting.
-
-### Flux-Passing + Wave Mediation
-
-Planned extensions:
-
-- Add a runtime coupling-mode toggle (e.g., `ParmParse`) to switch between:
-  - state-passing (legacy COAWST-like), and
-  - direct flux-passing (ERF-computed stresses/heat/moisture fluxes).
-- Extend exchanged fields for wave-mediated coupling (e.g., Stokes-drift-aware
-  and wave-roughness-aware terms) when extended coupling physics is activated.
-
-Primary scientific references for this transition:
-
+Primary references: 
 - Warner et al. (2010), COAWST baseline and stated need for consistent flux coupling.
 - Zambon et al. (2014), COAWST hurricane application with direct stress/heat exchange.
 - COAWST implementation anchors:
@@ -81,103 +97,22 @@ Primary scientific references for this transition:
 - Lattanzi et al. (ERF model papers, 2024/2025).
 - Klion et al. (REMORA model paper, 2025).
 
-## Architectural Rule
+## Integration Mitigations
 
-ERF and REMORA do not call each other directly. The driver owns:
+When ERF and REMORA are linked into one executable, two hazard classes arise:
 
-- the coupling clock,
-- the interface caches (`Vector<MultiFab*>`),
-- and orchestration of pack/apply callbacks.
+1. **Header/translation-unit collisions** — globally named symbols present in
+   both solver public headers (utility functions, structs, enums with identical
+   names).
+2. **Link-time symbol collisions** — duplicate global definitions.
 
-This mirrors the conductor pattern used in prior AMReX multiblock coupling work
-and keeps solver-core changes minimal.
+Current mitigations:
 
-## Integration Mitigation Paths
-
-When ERF and REMORA are linked into one executable, there are two practical
-integration hazards:
-
-- Header/translation-unit collisions from globally named symbols in public
-  solver headers (for example utility functions, structs, and enums with the
-  same names in both codebases).
-- Link-time symbol collisions from duplicate global definitions.
-
-Current mitigation path in this driver:
-
-- Do not include both solver top-level headers in the same translation unit.
-- Keep ERF-only and REMORA-only includes in separate `.cpp` files.
-- Keep cross-solver exchange at a driver-owned API boundary (`Pack*`/`Apply*`).
-- Keep duplicate global symbols file-local (`static`) where needed in solver
-  repos for single-binary link safety.
-- In library-only mode, isolate solver-specific `amrex_probinit` entry points.
-  ERF and REMORA both declare this symbol as weak; in one executable, letting
-  them share one global can route one solver to the wrong problem initializer.
-- This repository now enforces explicit symbol prefixing in superbuild mode:
-  - `ERFProblem`, `ERFProblemBase`, `ERFSolverChoice`, `erf_probinit`
-  - `REMORAProblem`, `REMORAProblemBase`, `REMORASolverChoice`, `remora_probinit`
-
-Policy details and PR-splitting guidance are documented in:
-
-- `Docs/symbol-isolation.md`
-
-Deferred/long-term mitigation path:
-
-- Upstream namespace hygiene and broader symbol-scope cleanup in ERF/REMORA.
-  This is intentionally deferred because it is high-impact and not required for
-  initial architecture and one-step testing validation.
-
-## How To Run (Reviewer Reproducers)
-
-For detailed build and run instructions, including ordered reproducer profiles
-(infrastructure control, standalone initialization, `ERFtoREMORA` state-passing
-baseline, and `two_way` SST-feedback experiments),
-see [INSTALL.md](INSTALL.md).
-
-## Unified Inputs Example
-
-AMReX `ParmParse` allows one inputs file to provide parameters for the driver
- and both solver libraries.
-
-How keys are consumed:
-
-- `driver.*` keys are read by `erf-remora-driver`.
-- `erf.*` (and shared mesh keys like `amr.*`, `geometry.*`) are read by ERF.
-- `remora.*` (and shared mesh keys like `amr.*`, `geometry.*`) are read by REMORA.
-
-Example mixed inputs file:
-
-```text
-# Driver control
-driver.synthetic_only = 0
-driver.coupling_direction = two_way
-driver.atm2ocn_mode = state
-driver.dt_atm = 2.0
-driver.atm_substeps_per_ocean_step = 5
-driver.ocean_steps = 1
-
-# Driver topology controls
-driver.atm.prob_lo = 0.0 0.0 0.0
-driver.atm.prob_hi = 1.0 1.0 1.0
-driver.atm.n_cell = 32 32 32
-driver.ocn.prob_lo = 0.0 0.0 -1.0
-driver.ocn.prob_hi = 1.0 1.0 0.0
-driver.ocn.n_cell = 32 32 10
-amr.max_level = 0
-amr.max_grid_size = 32
-
-# ERF controls
-erf.fixed_dt = 0.5
-erf.les_type = None
-erf.use_gravity = false
-
-# REMORA controls
-remora.ic_type = analytic
-remora.grid_scale_type = constant
-remora.sum_interval = -1
-```
-
-Run with:
-
-```bash
-./build/erf-remora-driver /path/to/inputs
-```
+- ERF-only and REMORA-only includes are kept in separate translation units.
+- Cross-solver exchange is confined to a driver-owned API boundary
+  (`Pack*`/`Apply*`).
+- Duplicate global symbols are made file-local (`static`) in solver repos
+  where needed.
+- `amrex_probinit` entry points are explicitly prefixed:
+  `erf_probinit` / `remora_probinit`.
+- Problem and solver-choice types are handled appropriately

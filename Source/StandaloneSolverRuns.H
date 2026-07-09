@@ -37,6 +37,9 @@ void REMORAPackSurfaceState(void* remora_handle,
 void REMORAApplyAtmosphericStates(void* remora_handle,
                                   const amrex::Vector<amrex::MultiFab*>& states,
                                   amrex::Real time);
+void REMORAApplyAtmosphericFluxes(void* remora_handle,
+                                  const amrex::Vector<amrex::MultiFab*>& states,
+                                  amrex::Real time);
 amrex::Real REMORAEvolveOneStep(void* remora_handle, amrex::Real time, amrex::Real dt_request);
 void REMORAWriteAtFinalTime(void* remora_handle);
 

@@ -15,6 +15,44 @@ namespace erf_remora
 {
 namespace
 {
+void
+ValidateFluxActiveViewOrAbort (const amrex::Vector<amrex::MultiFab*>& active_view,
+                               const amrex::Vector<std::string>& active_names)
+{
+    static const amrex::Vector<std::string> expected_names {
+        "tau_x", "tau_y", "SHflux", "LHflux", "SWrad", "LWrad", "rain", "evap"
+    };
+
+    if (active_view.size() != expected_names.size()) {
+        amrex::Abort("Flux contract active-view size mismatch: expected 8 active lanes.");
+    }
+    if (active_names.size() != expected_names.size()) {
+        amrex::Abort("Flux contract active-name count mismatch: expected 8 names.");
+    }
+
+    for (int idx = 0; idx < static_cast<int>(expected_names.size()); ++idx) {
+        if (active_view[idx] == nullptr) {
+            amrex::Abort("Flux contract active-view contains a null lane pointer.");
+        }
+        if (active_names[idx] != expected_names[idx]) {
+            amrex::Abort("Flux contract active-name order mismatch.");
+        }
+    }
+}
+
+std::string
+JoinLaneNames (const amrex::Vector<std::string>& names)
+{
+    std::string joined;
+    for (int idx = 0; idx < static_cast<int>(names.size()); ++idx) {
+        if (idx != 0) {
+            joined += ", ";
+        }
+        joined += names[idx];
+    }
+    return joined;
+}
+
 bool
 PrintCouplingLayouts ()
 {
@@ -267,11 +305,26 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
         case coupling::Rain:
             mf->setVal(rain_val);  // rain rate [kg m-2 s-1]
             break;
+        case coupling::TauX:
+            mf->setVal(0.0);       // surface stress [Pa]: reset each macro-step
+            break;
+        case coupling::TauY:
+            mf->setVal(0.0);       // surface stress [Pa]: reset each macro-step
+            break;
+        case coupling::SHflux:
+            mf->setVal(0.0);       // sensible heat flux [W m-2]
+            break;
+        case coupling::LHflux:
+            mf->setVal(0.0);       // latent heat flux [W m-2]
+            break;
         case coupling::SWrad:
             mf->setVal(0.0);       // shortwave [W m-2]: no radiation fallback
             break;
         case coupling::LWrad:
             mf->setVal(0.0);       // longwave  [W m-2]: no radiation fallback
+            break;
+        case coupling::Evap:
+            mf->setVal(0.0);       // evaporation rate [kg m-2 s-1]
             break;
         default:
             break;
@@ -295,10 +348,16 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     AllocateCaches();
     FillSyntheticData();
 
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        ValidateFluxActiveViewOrAbort(m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+    }
+
     amrex::Print() << "Atmos->ocean contract mode: "
                        << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
                        << " (" << static_cast<int>(m_atmos_to_ocean_active_indices.size())
-                       << " active layers)\n";
+                       << " active layers)\n"
+                       << "Atmos->ocean active lanes: "
+                       << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
@@ -545,7 +604,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
             ValidateFields("Pre-apply atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
-            REMORAApplyAtmosphericStates(m_remora, states, time);
+            if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+                REMORAApplyAtmosphericFluxes(m_remora, states, time);
+            } else {
+                REMORAApplyAtmosphericStates(m_remora, states, time);
+            }
             ValidateFields("Post-apply atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
         },

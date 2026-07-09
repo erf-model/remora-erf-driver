@@ -53,6 +53,14 @@ REMORAApplyAtmosphericStates(void* remora_handle,
     static_cast<REMORA*>(remora_handle)->ApplyAtmosphericStates(states, time);
 }
 
+void
+REMORAApplyAtmosphericFluxes(void* remora_handle,
+                             const amrex::Vector<amrex::MultiFab*>& states,
+                             amrex::Real time)
+{
+    static_cast<REMORA*>(remora_handle)->ApplyAtmosphericFluxes(states, time);
+}
+
 amrex::Real
 REMORAEvolveOneStep(void* remora_handle, amrex::Real time, amrex::Real dt_request)
 {

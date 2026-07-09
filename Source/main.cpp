@@ -320,7 +320,7 @@ main (int argc, char* argv[])
         if (atm2ocn_mode == "state") {
             atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::StatePassing;
         } else if (atm2ocn_mode == "flux") {
-            amrex::Abort("driver.atm2ocn_mode=flux is disabled for V1 infrastructure. Only 'state' mode is supported.");
+            atm2ocn_contract = erf_remora::coupling::AtmosToOceanContract::FluxPassing;
         } else {
             amrex::Abort("Unknown driver.atm2ocn_mode. Valid values: state, flux.");
         }

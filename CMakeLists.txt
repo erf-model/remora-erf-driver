@@ -146,6 +146,10 @@ if(ERF_REMORA_ENABLE_TESTS)
   set(ERF_REMORA_TEST_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_reproducer.cmake")
   set(ERF_REMORA_RESTART_TEST_SCRIPT
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_restart_reproducer.cmake")
+  set(ERF_REMORA_MPI_SMOKE_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_mpi_upwelling_smoke.cmake")
+  set(ERF_REMORA_MPI_COMPARE_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_mpi_upwelling_compare.cmake")
 
   add_test(
     NAME compile_erf_remora_driver
@@ -271,5 +275,52 @@ if(ERF_REMORA_ENABLE_TESTS)
     message(STATUS
       "Skipping top-level restart reproducer test registration because "
       "FCOMPARE_EXE or ERF_REMORA_RRTMGP_DIR is unset")
+  endif()
+
+  if(ERF_REMORA_ENABLE_MPI
+     AND MPIEXEC_EXECUTABLE
+     AND FCOMPARE_EXE
+     AND ERF_REMORA_RRTMGP_DIR)
+    add_test(
+      NAME parallel_upwelling_np2_smoke
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+        -P "${ERF_REMORA_MPI_SMOKE_TEST_SCRIPT}"
+    )
+    set_tests_properties(parallel_upwelling_np2_smoke
+      PROPERTIES
+        LABELS "parallel"
+        PROCESSORS 2
+    )
+
+    add_test(
+      NAME parallel_upwelling_np2_compare_to_np1
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DFCOMPARE_EXE=${FCOMPARE_EXE}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+        -P "${ERF_REMORA_MPI_COMPARE_TEST_SCRIPT}"
+    )
+    set_tests_properties(parallel_upwelling_np2_compare_to_np1
+      PROPERTIES
+        LABELS "parallel"
+        PROCESSORS 2
+    )
+  else()
+    message(STATUS
+      "Skipping top-level MPI upwelling test registration because "
+      "ERF_REMORA_ENABLE_MPI is OFF or MPIEXEC_EXECUTABLE, FCOMPARE_EXE, "
+      "or ERF_REMORA_RRTMGP_DIR is unset")
   endif()
 endif()

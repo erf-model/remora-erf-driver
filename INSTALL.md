@@ -30,16 +30,20 @@ export RRTMGP_DIR=/path/to/rrtmgp-data-files
 
 ### `fcompare` executable
 
-The superbuild **does not build `fcompare`** (`ERF_ENABLE_FCOMPARE` and
-`REMORA_ENABLE_FCOMPARE` are both force-disabled at the top level). Provide
-an existing `fcompare` binary via the environment:
+The superbuild can build `fcompare` when `ERF_REMORA_ENABLE_FCOMPARE=ON`
+(this is the default when `ERF_REMORA_ENABLE_TESTS=ON`). After configure, the
+top-level build populates `FCOMPARE_EXE` to the superbuild-owned
+`amrex_fcompare` path.
+
+If you want to use a different `fcompare` binary for manual workflows, provide
+it via the environment:
 
 ```bash
 export FCOMPARE_EXE=/path/to/fcompare
 ```
 
-If `FCOMPARE_EXE` is not set, the verification scripts fall back to
-`command -v fcompare` and will fail if no `fcompare` is on `PATH`.
+If `FCOMPARE_EXE` is not set for the helper script, it falls back to
+`command -v fcompare` and fails if no `fcompare` is on `PATH`.
 
 ### Known limitations
 

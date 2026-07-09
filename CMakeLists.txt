@@ -11,6 +11,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ERF_REMORA_ENABLE_MPI "Enable MPI across AMReX/ERF/REMORA" ON)
 option(ERF_REMORA_ENABLE_OPENMP "Enable OpenMP across AMReX/ERF/REMORA" OFF)
 option(ERF_REMORA_ENABLE_TESTS "Enable top-level tests" OFF)
+set(_erf_remora_enable_fcompare_default OFF)
+if(ERF_REMORA_ENABLE_TESTS)
+  set(_erf_remora_enable_fcompare_default ON)
+endif()
+option(ERF_REMORA_ENABLE_FCOMPARE
+       "Enable fcompare build for top-level regression tests"
+       ${_erf_remora_enable_fcompare_default})
+set(ERF_REMORA_TEST_FCOMPARE_RTOL "2.0e-10" CACHE STRING
+    "Relative tolerance for top-level ERF fcompare-based regression checks")
+set(ERF_REMORA_TEST_FCOMPARE_ATOL "2.0e-10" CACHE STRING
+    "Absolute tolerance for top-level ERF fcompare-based regression checks")
+set(ERF_REMORA_RRTMGP_DIR "" CACHE PATH
+    "Path to RRTMGP data directory for top-level restart regression tests")
 message(STATUS "ERF-REMORA symbol policy: prefixed (fixed)")
 
 if(ERF_REMORA_ENABLE_OPENMP)
@@ -28,7 +41,7 @@ set(AMReX_FORTRAN_INTERFACES OFF CACHE BOOL "" FORCE)
 set(AMReX_AMRDATA OFF CACHE BOOL "" FORCE)
 set(AMReX_PARTICLES ON CACHE BOOL "" FORCE)
 set(AMReX_LINEAR_SOLVERS ON CACHE BOOL "" FORCE)
-set(AMReX_PLOTFILE_TOOLS OFF CACHE BOOL "" FORCE)
+set(AMReX_PLOTFILE_TOOLS ${ERF_REMORA_ENABLE_FCOMPARE} CACHE BOOL "" FORCE)
 set(AMReX_INSTALL OFF CACHE BOOL "" FORCE)
 set(AMReX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(AMReX_ASSERTIONS ON CACHE BOOL "" FORCE)
@@ -52,7 +65,7 @@ set(ERF_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(ERF_ENABLE_DOCUMENTATION OFF CACHE BOOL "" FORCE)
 set(ERF_ENABLE_HDF5 OFF CACHE BOOL "" FORCE)
 set(ERF_ENABLE_PARTICLES OFF CACHE BOOL "" FORCE)
-set(ERF_ENABLE_FCOMPARE OFF CACHE BOOL "" FORCE)
+set(ERF_ENABLE_FCOMPARE ${ERF_REMORA_ENABLE_FCOMPARE} CACHE BOOL "" FORCE)
 set(ERF_PRECISION DOUBLE CACHE STRING "" FORCE)
 set(ERF_BUILD_LIBRARY_ONLY ON CACHE BOOL "" FORCE)
 set(ERF_ENABLE_MULTIBLOCK ON CACHE BOOL "" FORCE)
@@ -77,6 +90,19 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Submodules/ERF/CMake"
 add_subdirectory(Submodules/ERF erf-build)
 add_subdirectory(Submodules/REMORA remora-build)
 
+if(ERF_REMORA_ENABLE_FCOMPARE)
+  if(WIN32)
+    set(FCOMPARE_EXE
+        "${CMAKE_BINARY_DIR}/amrex-build/Tools/Plotfile/*/amrex_fcompare.exe"
+        CACHE STRING "Path to fcompare executable for regression tests" FORCE)
+  else()
+    set(FCOMPARE_EXE
+        "${CMAKE_BINARY_DIR}/amrex-build/Tools/Plotfile/amrex_fcompare"
+        CACHE STRING "Path to fcompare executable for regression tests" FORCE)
+  endif()
+  message(STATUS "Top-level fcompare executable: ${FCOMPARE_EXE}")
+endif()
+
 add_executable(
   erf-remora-driver
   Source/main.cpp
@@ -100,8 +126,13 @@ target_link_libraries(
     AMReX::amrex
     erf_api
     remora_api
-    Kokkos::kokkos
 )
+
+if(TARGET Kokkos::kokkos)
+  target_link_libraries(erf-remora-driver PRIVATE Kokkos::kokkos)
+elseif(TARGET kokkoscore)
+  target_link_libraries(erf-remora-driver PRIVATE kokkoscore)
+endif()
 
 install(
   TARGETS erf-remora-driver
@@ -113,6 +144,8 @@ if(ERF_REMORA_ENABLE_TESTS)
 
   set(ERF_REMORA_DRIVER_EXE "$<TARGET_FILE:erf-remora-driver>")
   set(ERF_REMORA_TEST_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_reproducer.cmake")
+  set(ERF_REMORA_RESTART_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_restart_reproducer.cmake")
 
   add_test(
     NAME compile_erf_remora_driver
@@ -215,4 +248,28 @@ if(ERF_REMORA_ENABLE_TESTS)
     PROPERTIES
       LABELS "reproducer"
   )
+
+  if(FCOMPARE_EXE AND ERF_REMORA_RRTMGP_DIR)
+    add_test(
+      NAME reproducer_restart_substep
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DFCOMPARE_EXE=${FCOMPARE_EXE}
+        -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
+        -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -P "${ERF_REMORA_RESTART_TEST_SCRIPT}"
+    )
+    set_tests_properties(reproducer_restart_substep
+      PROPERTIES
+        LABELS "reproducer"
+        PROCESSORS 1
+    )
+  else()
+    message(STATUS
+      "Skipping top-level restart reproducer test registration because "
+      "FCOMPARE_EXE or ERF_REMORA_RRTMGP_DIR is unset")
+  endif()
 endif()

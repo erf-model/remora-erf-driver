@@ -102,6 +102,8 @@ private:
                                const amrex::Geometry& geom,
                                amrex::Real time,
                                long long ocean_step) const;
+    coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
+    void SelectAtmosToOceanActiveView(long long ocean_step);
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;
@@ -137,6 +139,12 @@ private:
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;
+    amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_state_active;
+    amrex::Vector<int> m_atmos_to_ocean_state_active_indices;
+    amrex::Vector<std::string> m_atmos_to_ocean_state_active_names;
+    amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_flux_active;
+    amrex::Vector<int> m_atmos_to_ocean_flux_active_indices;
+    amrex::Vector<std::string> m_atmos_to_ocean_flux_active_names;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_active;
     amrex::Vector<int> m_atmos_to_ocean_active_indices;
     amrex::Vector<std::string> m_atmos_to_ocean_active_names;

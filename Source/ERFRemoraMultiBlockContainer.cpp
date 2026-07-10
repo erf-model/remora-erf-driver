@@ -243,8 +243,14 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
                                 {ocn_rb.hi(0), ocn_rb.hi(1), dz_ocn});
     m_geom_ocn.define(m_ba_ocn.minimalBox(), &ocn_slab_rb, amrex::CoordSys::cartesian, is_periodic.data());
 
-    m_atmos_to_ocean_active_indices = coupling::AtmosToOceanActiveIndices(m_atmos_to_ocean_contract);
-    m_atmos_to_ocean_active_names = coupling::AtmosToOceanNames(m_atmos_to_ocean_contract);
+    m_atmos_to_ocean_state_active_indices =
+        coupling::AtmosToOceanActiveIndices(coupling::AtmosToOceanContract::StatePassing);
+    m_atmos_to_ocean_state_active_names =
+        coupling::AtmosToOceanNames(coupling::AtmosToOceanContract::StatePassing);
+    m_atmos_to_ocean_flux_active_indices =
+        coupling::AtmosToOceanActiveIndices(coupling::AtmosToOceanContract::FluxPassing);
+    m_atmos_to_ocean_flux_active_names =
+        coupling::AtmosToOceanNames(coupling::AtmosToOceanContract::FluxPassing);
 
     amrex::ParmParse pp_driver("driver");
     pp_driver.query("plot_int_exchange", m_plot_int_exchange);
@@ -289,13 +295,13 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
     pp_rem.query("cloud", cloud_val);
     pp_rem.query("rain",  rain_val);
 
-    for (int local = 0; local < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local) {
-        auto* mf = m_atmos_to_ocean_active[local];
+    for (int global_idx = 0; global_idx < static_cast<int>(m_atmos_to_ocean.size()); ++global_idx) {
+        auto* mf = m_atmos_to_ocean[global_idx];
         if (mf == nullptr) {
             continue;
         }
 
-        switch (m_atmos_to_ocean_active_indices[local]) {
+        switch (global_idx) {
         case coupling::Qair:
             mf->setVal(humidity_val); // RH fallback [0-1] for REMORA bulk fluxes
             break;
@@ -346,18 +352,26 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
 {
     m_atm_tick = 0;
     AllocateCaches();
+    SelectAtmosToOceanActiveView(/*ocean_step=*/0);
     FillSyntheticData();
 
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        ValidateFluxActiveViewOrAbort(m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+        ValidateFluxActiveViewOrAbort(m_atmos_to_ocean_flux_active, m_atmos_to_ocean_flux_active_names);
     }
 
     amrex::Print() << "Atmos->ocean contract mode: "
                        << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
-                       << " (" << static_cast<int>(m_atmos_to_ocean_active_indices.size())
-                       << " active layers)\n"
-                       << "Atmos->ocean active lanes: "
+                       << " (" << coupling::NumAtmosToOceanActiveLayers(m_atmos_to_ocean_contract)
+                       << " active layers)\n";
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        amrex::Print() << "Atmos->ocean bootstrap lanes (ocean_step=0): "
+                       << JoinLaneNames(m_atmos_to_ocean_state_active_names) << "\n"
+                       << "Atmos->ocean steady-state lanes (ocean_step>=1): "
+                       << JoinLaneNames(m_atmos_to_ocean_flux_active_names) << "\n";
+    } else {
+        amrex::Print() << "Atmos->ocean active lanes: "
                        << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
+    }
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
@@ -379,10 +393,15 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
         PrintMultiFabLayout(label.c_str(), *mf_ptr);
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
-    m_atmos_to_ocean_active.resize(m_atmos_to_ocean_active_indices.size());
-    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
-        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
-        m_atmos_to_ocean_active[local_idx] = m_atmos_to_ocean[global_idx];
+    m_atmos_to_ocean_state_active.resize(m_atmos_to_ocean_state_active_indices.size());
+    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_state_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_state_active_indices[local_idx];
+        m_atmos_to_ocean_state_active[local_idx] = m_atmos_to_ocean[global_idx];
+    }
+    m_atmos_to_ocean_flux_active.resize(m_atmos_to_ocean_flux_active_indices.size());
+    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_flux_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_flux_active_indices[local_idx];
+        m_atmos_to_ocean_flux_active[local_idx] = m_atmos_to_ocean[global_idx];
     }
 
     m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
@@ -604,7 +623,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
             ValidateFields("Pre-apply atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
-            if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+            if (ActiveAtmosToOceanContract(ocean_step) == coupling::AtmosToOceanContract::FluxPassing) {
                 REMORAApplyAtmosphericFluxes(m_remora, states, time);
             } else {
                 REMORAApplyAtmosphericStates(m_remora, states, time);
@@ -654,6 +673,31 @@ const amrex::Vector<std::string>&
 ERFRemoraMultiBlockContainer::AtmosToOceanActiveNames () const
 {
     return m_atmos_to_ocean_active_names;
+}
+
+coupling::AtmosToOceanContract
+ERFRemoraMultiBlockContainer::ActiveAtmosToOceanContract (long long ocean_step) const
+{
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing &&
+        ocean_step == 0) {
+        return coupling::AtmosToOceanContract::StatePassing;
+    }
+    return m_atmos_to_ocean_contract;
+}
+
+void
+ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView (long long ocean_step)
+{
+    const auto active_contract = ActiveAtmosToOceanContract(ocean_step);
+    if (active_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        m_atmos_to_ocean_active = m_atmos_to_ocean_flux_active;
+        m_atmos_to_ocean_active_indices = m_atmos_to_ocean_flux_active_indices;
+        m_atmos_to_ocean_active_names = m_atmos_to_ocean_flux_active_names;
+    } else {
+        m_atmos_to_ocean_active = m_atmos_to_ocean_state_active;
+        m_atmos_to_ocean_active_indices = m_atmos_to_ocean_state_active_indices;
+        m_atmos_to_ocean_active_names = m_atmos_to_ocean_state_active_names;
+    }
 }
 
 void
@@ -728,6 +772,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const amrex::Real ocean_time = m_atm_tick * m_erf_dt;
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
+        SelectAtmosToOceanActiveView(global_ocean_step);
         pack_surface_state(m_ocean_to_atmos, ocean_time);
         FillOceanToAtmosGhosts();
         pack_atmos_states(m_atmos_to_ocean_active, ocean_time);

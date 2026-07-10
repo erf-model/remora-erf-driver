@@ -47,9 +47,11 @@ If `FCOMPARE_EXE` is not set for the helper script, it falls back to
 
 ### Known limitations
 
-- `driver.atm2ocn_mode = state` is the only validated coupling path.
-  `driver.atm2ocn_mode = flux` is present in the driver but is **not** a
-  documented or validated workflow.
+- `driver.atm2ocn_mode = flux` now has a validated startup bootstrap:
+  `ocean_step = 0` uses state lanes and later steps use imported flux lanes.
+  For the Upwelling debug deck, use nonzero `erf.most.Cd`, `erf.most.Ch`,
+  and `erf.most.Cq` so ERF produces live surface stress and heat/moisture
+  fluxes.
 - REMORA does not currently support vertical refinement in the z-direction in
   coupled mode; the z refinement ratio must be 1.
 
@@ -248,6 +250,32 @@ Expected behavior:
 - REMORA plotfiles agree exactly (bitwise).
 - ERF plotfiles agree to floating-point roundoff; very small differences in
   fields such as velocity or pressure are normal and expected.
+
+### 5. Flux-coupling debug run
+
+This short run exercises `driver.atm2ocn_mode=flux` on the Upwelling debug
+deck. The coefficient overrides below are important for this setup because the
+base `inputs_ERF` file sets `erf.most.Cd = 0`, `erf.most.Ch = 0`, and
+`erf.most.Cq = 0`, which suppresses ERF surface stress and heat/moisture
+fluxes.
+
+```bash
+mpirun -n 1 ./build/erf-remora-driver \
+  Exec/Upwelling/inputs_debug_cold_start_substep \
+  driver.atm2ocn_mode=flux \
+  driver.plot_int_exchange=1 \
+  erf.rrtmgp_file_path="${RRTMGP_DIR}" \
+  erf.most.Cd=0.0014 \
+  erf.most.Ch=0.0012 \
+  erf.most.Cq=0.0012
+```
+
+Expected behavior:
+
+- step 0 bootstraps REMORA from ERF state lanes
+- step 1 exports live flux lanes including stress, sensible heat, latent heat,
+  longwave radiation, and evaporation
+- the driver writes exchange diagnostics when `driver.plot_int_exchange=1`
 
 ---
 

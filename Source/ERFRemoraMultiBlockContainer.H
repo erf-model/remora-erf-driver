@@ -87,6 +87,7 @@ private:
     void AllocateCaches();
     void FillSyntheticData();
     void FillOceanToAtmosGhosts();
+    void FillAtmosToOceanGhosts();
     void PrintDiagnostics(const char* label,
                           const amrex::Vector<amrex::MultiFab*>& fields,
                           const amrex::Vector<std::string>& names) const;

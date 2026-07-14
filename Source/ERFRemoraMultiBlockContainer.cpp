@@ -37,6 +37,16 @@ ValidateFluxActiveViewOrAbort (const amrex::Vector<amrex::MultiFab*>& active_vie
         if (active_names[idx] != expected_names[idx]) {
             amrex::Abort("Flux contract active-name order mismatch.");
         }
+        const amrex::IntVect ixtype = active_view[idx]->boxArray().ixType().toIntVect();
+        if (idx == 0 && ixtype != amrex::IntVect(1,0,0)) {
+            amrex::Abort("Flux contract tau_x lane must be x-face centered.");
+        }
+        if (idx == 1 && ixtype != amrex::IntVect(0,1,0)) {
+            amrex::Abort("Flux contract tau_y lane must be y-face centered.");
+        }
+        if (idx >= 2 && ixtype != amrex::IntVect::TheCellVector()) {
+            amrex::Abort("Flux contract scalar flux lanes must remain cell-centered.");
+        }
     }
 }
 
@@ -171,6 +181,61 @@ ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
         amrex::Print() << "[coupling-layout] " << label
                        << " ratio=" << ratio
                        << " direct_average_down_safe=yes\n";
+    }
+}
+
+amrex::BoxArray
+AtmosToOceanBoxArray (const amrex::BoxArray& ba_ocn, int idx)
+{
+    if (idx == coupling::TauX) {
+        return amrex::convert(ba_ocn, amrex::IntVect(1,0,0));
+    }
+    if (idx == coupling::TauY) {
+        return amrex::convert(ba_ocn, amrex::IntVect(0,1,0));
+    }
+    return ba_ocn;
+}
+
+amrex::IntVect
+AtmosToOceanNGrow (int idx)
+{
+    // Flux ingestion in REMORA reads grown tiles around the valid region, so the
+    // direct-flux lanes need ghost cells that match REMORA's current 2D stencil width.
+    static constexpr amrex::IntVect flux_ngrow(2, 2, 0);
+    if (idx >= coupling::TauX) {
+        return flux_ngrow;
+    }
+    return amrex::IntVect(0, 0, 0);
+}
+
+void
+CopyFieldToCellCenteredPlot (amrex::MultiFab& plot_mf, int comp, const amrex::MultiFab& field)
+{
+    using namespace amrex;
+
+    const IntVect ixtype = field.boxArray().ixType().toIntVect();
+    if (ixtype == IntVect::TheCellVector()) {
+        MultiFab::Copy(plot_mf, field, 0, comp, 1, 0);
+        return;
+    }
+
+    for (MFIter mfi(plot_mf, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
+        Box bx = mfi.validbox();
+        bx.makeSlab(2,0);
+        auto const& src = field.const_array(mfi);
+        auto dst = plot_mf.array(mfi, comp);
+
+        if (ixtype == IntVect(1,0,0)) {
+            ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) {
+                dst(i,j,k) = amrex::Real(0.5) * (src(i,j,k) + src(i+1,j,k));
+            });
+        } else if (ixtype == IntVect(0,1,0)) {
+            ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) {
+                dst(i,j,k) = amrex::Real(0.5) * (src(i,j,k) + src(i,j+1,k));
+            });
+        } else {
+            amrex::Abort("Unsupported non-cell-centered field in exchange plotfile writer.");
+        }
     }
 }
 }
@@ -388,7 +453,8 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
     for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean_storage.size()); ++idx) {
         auto& mf_ptr = m_atmos_to_ocean_storage[idx];
-        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba_ocn, m_dm_ocn, 1, 0);
+        mf_ptr = std::make_unique<amrex::MultiFab>(
+            AtmosToOceanBoxArray(m_ba_ocn, idx), m_dm_ocn, 1, AtmosToOceanNGrow(idx));
         const std::string label = "Driver AllocateCaches atmos->ocean[" + std::to_string(idx) + "]";
         PrintMultiFabLayout(label.c_str(), *mf_ptr);
     }
@@ -438,6 +504,22 @@ ERFRemoraMultiBlockContainer::FillOceanToAtmosGhosts ()
     for (auto* mf : m_ocean_to_atmos) {
         if (mf != nullptr) {
             mf->FillBoundary(m_geom.periodicity());
+        }
+    }
+}
+
+void
+ERFRemoraMultiBlockContainer::FillAtmosToOceanGhosts ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_geom_ocn.isPeriodic(0) == static_cast<bool>(m_is_periodic[0]) &&
+        m_geom_ocn.isPeriodic(1) == static_cast<bool>(m_is_periodic[1]) &&
+        m_geom_ocn.isPeriodic(2) == static_cast<bool>(m_is_periodic[2]),
+        "Driver ocean-slab geometry lost the requested periodic flags.");
+
+    for (auto* mf : m_atmos_to_ocean) {
+        if (mf != nullptr && mf->nGrowVect().max() > 0) {
+            mf->FillBoundary(m_geom_ocn.periodicity());
         }
     }
 }
@@ -535,12 +617,16 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
     }
 
     const int ncomp = static_cast<int>(fields.size());
-    amrex::MultiFab plot_mf(fields[0]->boxArray(), fields[0]->DistributionMap(), ncomp, 0);
+    amrex::BoxArray plot_ba = amrex::convert(fields[0]->boxArray(), amrex::IntVect::TheCellVector());
+    amrex::MultiFab plot_mf(plot_ba, fields[0]->DistributionMap(), ncomp, 0);
     for (int comp = 0; comp < ncomp; ++comp) {
         if (fields[comp] == nullptr) {
             amrex::Abort("Cannot write exchange plotfile with a null field.");
         }
-        amrex::MultiFab::Copy(plot_mf, *fields[comp], 0, comp, 1, 0);
+        if (amrex::convert(fields[comp]->boxArray(), amrex::IntVect::TheCellVector()) != plot_ba) {
+            amrex::Abort("Exchange plotfile writer requires a common enclosed-cell slab layout.");
+        }
+        CopyFieldToCellCenteredPlot(plot_mf, comp, *fields[comp]);
     }
 
     const std::string plotfilename = amrex::Concatenate(prefix, static_cast<int>(ocean_step), 5);
@@ -780,6 +866,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
             WriteExchangePlotfiles(ocean_time, global_ocean_step);
         }
+        FillAtmosToOceanGhosts();
         apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
 
 

@@ -14,6 +14,12 @@ namespace erf_remora
 void RunERFStandalone();
 void RunREMORAStandalone();
 
+const amrex::BoxArray&
+ERF_Grids(void* erf_handle) noexcept;
+
+const amrex::DistributionMapping&
+ERF_DMap(void* erf_handle) noexcept;
+
 // Persistent coupled-mode shims. Opaque handles keep ERF.H and REMORA.H out of
 // driver container translation units.
 void* CreateERFSolver(const ERFRemoraMultiBlockContainer& container);

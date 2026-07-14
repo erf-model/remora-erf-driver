@@ -24,6 +24,21 @@ CreateERFSolver(const ERFRemoraMultiBlockContainer& container)
                                       "erf"));
 }
 
+const amrex::BoxArray&
+ERF_Grids(void* erf_handle) noexcept
+{
+    ERF* my_erf = (ERF*)(erf_handle);
+    return my_erf->boxArray(0);
+}
+
+const amrex::DistributionMapping&
+ERF_DMap(void* erf_handle) noexcept
+{
+    ERF* my_erf = (ERF*)(erf_handle);
+    return my_erf->DistributionMap(0);
+}
+
+
 void
 DestroyERFSolver(void* erf_handle) noexcept
 {

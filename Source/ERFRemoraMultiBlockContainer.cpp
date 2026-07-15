@@ -16,6 +16,27 @@ namespace erf_remora
 namespace
 {
 void
+DriverPrintHeader (int driver_verbose,
+                   const char* title,
+                   const char* detail = nullptr)
+{
+    if (driver_verbose < 2 || !amrex::ParallelDescriptor::IOProcessor()) { return; }
+    amrex::Print() << "========================================================\n"
+                   << "[driver] " << title << "\n";
+    if (detail != nullptr && detail[0] != '\0') {
+        amrex::Print() << detail << "\n";
+    }
+    amrex::Print() << "========================================================\n";
+}
+
+void
+DriverPrintLine (int driver_verbose, const std::string& line)
+{
+    if (driver_verbose < 2 || !amrex::ParallelDescriptor::IOProcessor()) { return; }
+    amrex::Print() << "[driver] " << line << "\n";
+}
+
+void
 ValidateFluxActiveViewOrAbort (const amrex::Vector<amrex::MultiFab*>& active_view,
                                const amrex::Vector<std::string>& active_names)
 {
@@ -320,35 +341,67 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
         coupling::AtmosToOceanNames(coupling::AtmosToOceanContract::FluxPassing);
 
     amrex::ParmParse pp_driver("driver");
+    pp_driver.query("v", m_driver_verbose);
     pp_driver.query("plot_int_exchange", m_plot_int_exchange);
     pp_driver.query("plot_file_exchange_o2a", m_plot_file_exchange_o2a);
     pp_driver.query("plot_file_exchange_a2o", m_plot_file_exchange_a2o);
+
+    DriverPrintHeader(
+        m_driver_verbose,
+        "Construct ERFRemoraMultiBlockContainer",
+        "Driver topology parsed; base slab geometry and contract metadata are being recorded.");
+    DriverPrintLine(
+        m_driver_verbose,
+        std::string("configured_atm2ocn_mode=") +
+            coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) +
+            " two_way=" + (m_use_two_way_coupling ? "1" : "0"));
 }
 
 void
 ERFRemoraMultiBlockContainer::InitializeSolvers ()
 {
+    DriverPrintHeader(
+        m_driver_verbose,
+        "Initialize Solvers",
+        "Phase 1: construct ERF and REMORA objects. Phase 2: inject driver atm2ocn metadata before InitData. Phase 3: call InitData on both solvers.");
+
     if (m_erf != nullptr) {
+        DriverPrintLine(m_driver_verbose, "destroying previous ERF solver handle");
         DestroyERFSolver(m_erf);
         m_erf = nullptr;
     }
     if (m_remora != nullptr) {
+        DriverPrintLine(m_driver_verbose, "destroying previous REMORA solver handle");
         DestroyREMORASolver(m_remora);
         m_remora = nullptr;
     }
 
+    DriverPrintLine(m_driver_verbose, "constructing ERF solver from driver-owned atmosphere topology");
     m_erf = CreateERFSolver(*this);
+    DriverPrintLine(m_driver_verbose, "ERF constructor complete");
+    DriverPrintLine(m_driver_verbose, "constructing REMORA solver from driver-owned ocean topology");
     m_remora = CreateREMORASolver(*this);
+    DriverPrintLine(m_driver_verbose, "REMORA constructor complete");
 
     const bool bootstrap_uses_state_contract =
         (ActiveAtmosToOceanContract(/*ocean_step=*/0) == coupling::AtmosToOceanContract::StatePassing);
+    DriverPrintLine(
+        m_driver_verbose,
+        std::string("injecting pre-InitData atm2ocn metadata: bootstrap_contract=") +
+            (bootstrap_uses_state_contract ? "state" : "flux") +
+            " configured_mode=" + coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) +
+            " two_way=" + (m_use_two_way_coupling ? "1" : "0"));
     ConfigureERFDriverAtmosToOceanCoupling(
         m_erf, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
     ConfigureREMORADriverAtmosToOceanCoupling(
         m_remora, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
 
+    DriverPrintLine(m_driver_verbose, "calling ERF InitData (enters ERF InitData_pre -> ERF InitData_post)");
     InitERFSolver(m_erf);
+    DriverPrintLine(m_driver_verbose, "ERF InitData complete");
+    DriverPrintLine(m_driver_verbose, "calling REMORA InitData");
     InitREMORASolver(m_remora);
+    DriverPrintLine(m_driver_verbose, "REMORA InitData complete");
 }
 
 void
@@ -424,12 +477,28 @@ ERFRemoraMultiBlockContainer::SetAtmosphereTick (long long atm_tick)
 void
 ERFRemoraMultiBlockContainer::InitializeBlocks ()
 {
+    DriverPrintHeader(
+        m_driver_verbose,
+        "Initialize Coupling Caches",
+        "Phase 4: query finalized post-InitData solver layouts. Phase 5: allocate driver-owned caches from solver layouts. Phase 6: seed bootstrap state and select active atm2ocn view.");
     m_atm_tick = 0;
+    DriverPrintLine(m_driver_verbose, "resetting driver atmosphere tick to 0");
     AllocateCaches();
+    DriverPrintLine(m_driver_verbose, "selecting bootstrap active atm2ocn cache view for ocean_step=0");
     SelectAtmosToOceanActiveView(/*ocean_step=*/0);
-    FillSyntheticData();
+    if (m_erf != nullptr && m_remora != nullptr) {
+        if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
+            DriverPrintLine(m_driver_verbose, "packing REMORA surface state into ocean->atmos bootstrap cache");
+            REMORAPackSurfaceState(m_remora, m_ocean_to_atmos, amrex::Real(0.0));
+            FillOceanToAtmosGhosts();
+        }
+    } else {
+        DriverPrintLine(m_driver_verbose, "synthetic-only path: filling synthetic coupling cache values");
+        FillSyntheticData();
+    }
 
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        DriverPrintLine(m_driver_verbose, "validating steady-state flux active view shape and centering");
         ValidateFluxActiveViewOrAbort(m_atmos_to_ocean_flux_active, m_atmos_to_ocean_flux_active_names);
     }
 
@@ -457,8 +526,10 @@ void
 ERFRemoraMultiBlockContainer::AllocateCaches ()
 {
     if (m_erf != nullptr && m_remora != nullptr) {
+        DriverPrintLine(m_driver_verbose, "allocating caches from solver-reported post-InitData layouts");
         AllocateCachesFromSolverLayouts();
     } else {
+        DriverPrintLine(m_driver_verbose, "allocating synthetic fallback caches from driver-derived layouts");
         AllocateSyntheticCaches();
     }
 }
@@ -474,6 +545,7 @@ ERFRemoraMultiBlockContainer::AllocateSyntheticCaches ()
         auto& mf_ptr = m_atmos_to_ocean_storage[idx];
         mf_ptr = std::make_unique<amrex::MultiFab>(
             AtmosToOceanBoxArray(m_ba_ocn, idx), m_dm_ocn, 1, AtmosToOceanNGrow(idx));
+        mf_ptr->setVal(0.0);
         const std::string label = "Driver AllocateCaches atmos->ocean[" + std::to_string(idx) + "]";
         PrintMultiFabLayout(label.c_str(), *mf_ptr);
     }
@@ -495,6 +567,7 @@ ERFRemoraMultiBlockContainer::AllocateSyntheticCaches ()
         for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
             auto& mf_ptr = m_ocean_to_atmos_storage[idx];
             mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+            mf_ptr->setVal(0.0);
             const std::string label = "Driver AllocateCaches ocean->atmos[" + std::to_string(idx) + "]";
             PrintMultiFabLayout(label.c_str(), *mf_ptr);
         }
@@ -507,6 +580,7 @@ ERFRemoraMultiBlockContainer::AllocateSyntheticCaches ()
 void
 ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
 {
+    DriverPrintLine(m_driver_verbose, "querying REMORA rho/u/v atm2ocn interface layouts");
     amrex::BoxArray remora_rho_ba;
     amrex::DistributionMapping remora_rho_dm;
     amrex::BoxArray remora_u_ba;
@@ -519,6 +593,7 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     REMORAGetAtmosToOceanVFaceLayout(m_remora, remora_v_ba, remora_v_dm);
 
     if (m_use_two_way_coupling) {
+        DriverPrintLine(m_driver_verbose, "querying ERF ocean-surface layout for ocean->atmos cache allocation");
         ERFGetOceanToAtmosSurfaceLayout(m_erf, m_ba, m_dm);
     }
 
@@ -535,6 +610,7 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
                                      {m_ocn_rb.hi(0), m_ocn_rb.hi(1), dz_ocn});
     m_geom_ocn.define(m_ba_ocn.minimalBox(), &ocn_slab_rb, amrex::CoordSys::cartesian, m_is_periodic.data());
 
+    DriverPrintLine(m_driver_verbose, "validating solver-reported coupling layouts against integer-ratio driver assumptions");
     ValidateCouplingLayoutsFromSolvers();
 
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
@@ -550,6 +626,7 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
             lane_dm = &remora_v_dm;
         }
         mf_ptr = std::make_unique<amrex::MultiFab>(*lane_ba, *lane_dm, 1, AtmosToOceanNGrow(idx));
+        mf_ptr->setVal(0.0);
         const std::string label = "Driver AllocateCachesFromSolverLayouts atmos->ocean[" + std::to_string(idx) + "]";
         PrintMultiFabLayout(label.c_str(), *mf_ptr);
     }
@@ -572,6 +649,7 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
             auto& mf_ptr = m_ocean_to_atmos_storage[idx];
             mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+            mf_ptr->setVal(0.0);
             const std::string label = "Driver AllocateCachesFromSolverLayouts ocean->atmos[" + std::to_string(idx) + "]";
             PrintMultiFabLayout(label.c_str(), *mf_ptr);
         }
@@ -1012,18 +1090,48 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         SelectAtmosToOceanActiveView(global_ocean_step);
         const bool use_state_contract =
             (ActiveAtmosToOceanContract(global_ocean_step) == coupling::AtmosToOceanContract::StatePassing);
+        if (global_ocean_step == 0 && amrex::ParallelDescriptor::IOProcessor()) {
+            amrex::Print() << "Bootstrap atm2ocn contract at ocean_step=0: "
+                           << (use_state_contract ? "state" : "flux")
+                           << " (configured mode="
+                           << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
+                           << ")\n";
+        }
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " set ERF atm2ocn contract to " + (use_state_contract ? "state" : "flux"));
         SetERFDriverAtmosToOceanStateContract(m_erf, use_state_contract);
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " set REMORA atm2ocn contract to " + (use_state_contract ? "state" : "flux"));
         SetREMORADriverAtmosToOceanStateContract(m_remora, use_state_contract);
         if (m_use_two_way_coupling) {
+            DriverPrintLine(
+                m_driver_verbose,
+                std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                    " pack ocean->atmos surface state from REMORA at time=" +
+                    std::to_string(ocean_time));
             pack_surface_state(m_ocean_to_atmos, ocean_time);
             FillOceanToAtmosGhosts();
         }
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                " from ERF at time=" + std::to_string(ocean_time));
         pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
         if (m_plot_int_exchange > 0 &&
             (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
             WriteExchangePlotfiles(ocean_time, global_ocean_step);
         }
         FillAtmosToOceanGhosts();
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " apply atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                " to REMORA at time=" + std::to_string(ocean_time));
         apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
 
 
@@ -1044,6 +1152,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 
             BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
             if (m_use_two_way_coupling) {
+                DriverPrintLine(
+                    m_driver_verbose,
+                    std::string("atm_tick=") + std::to_string(m_atm_tick) +
+                        " apply ocean->atmos surface state to ERF at time=" +
+                        std::to_string(atm_time));
                 apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
             }
             const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_erf_dt);

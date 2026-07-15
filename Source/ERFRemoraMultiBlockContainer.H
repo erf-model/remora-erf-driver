@@ -138,6 +138,7 @@ private:
     std::string m_plot_file_exchange_a2o = "exchange_a2o";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
+    int m_driver_verbose = 0;
 
     // Atmosphere -> ocean cache slab vector.
     // TODO(initial-temporal-interpolation): add old/new temporal copies for interpolation

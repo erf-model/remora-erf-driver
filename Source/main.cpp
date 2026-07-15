@@ -192,6 +192,8 @@ main (int argc, char* argv[])
 
         amrex::ParmParse pp_erf("erf");
         amrex::ParmParse pp_rem("remora");
+        int driver_verbose = 0;
+        pp_driver.query("v", driver_verbose);
 
         amrex::Real erf_dt;
         if (has_coupling_direction) {
@@ -414,6 +416,13 @@ main (int argc, char* argv[])
             container.AdvanceBlocksSynthetic(ocean_steps);
         } else {
             amrex::Print() << "Running coupled ERF <-> REMORA path\n";
+            if (driver_verbose >= 2 && amrex::ParallelDescriptor::IOProcessor()) {
+                amrex::Print()
+                    << "========================================================\n"
+                    << "[driver] Enter Coupled ERF <-> REMORA Execution\n"
+                    << "main.cpp is handing control to the coupled driver container.\n"
+                    << "========================================================\n";
+            }
             erf_remora::ERFRemoraMultiBlockContainer container(
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,

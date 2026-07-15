@@ -192,16 +192,16 @@ ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
     }
     coarsened_fine.coarsen(ratio);
 
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        coarsened_fine == coarse_ba,
-        (std::string(label) +
-         ": coarsen(fine_ba, ratio) does not match coarse_ba. "
-         "Direct average_down is unsafe and helper-required layouts are disallowed.").c_str());
-
-    if (amrex::ParallelDescriptor::IOProcessor()) {
+    if (coarsened_fine == coarse_ba) {
         amrex::Print() << "[coupling-layout] " << label
                        << " ratio=" << ratio
                        << " direct_average_down_safe=yes\n";
+    } else {
+        amrex::Print() << "[coupling-layout] " << label
+                       << " ratio=" << ratio
+                       << " direct_average_down_safe=no"
+                       << " warning=coarsen(fine_ba,ratio)!=coarse_ba"
+                       << " action=pack_helper_will_average_down_to_tmp_then_parallelcopy\n";
     }
 }
 

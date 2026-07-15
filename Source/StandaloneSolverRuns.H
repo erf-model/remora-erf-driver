@@ -24,7 +24,16 @@ ERF_DMap(void* erf_handle) noexcept;
 // driver container translation units.
 void* CreateERFSolver(const ERFRemoraMultiBlockContainer& container);
 void DestroyERFSolver(void* erf_handle) noexcept;
+void ConfigureERFDriverAtmosToOceanCoupling(void* erf_handle,
+                                            bool use_coupling_driver,
+                                            bool use_two_way_coupling,
+                                            bool use_state_contract);
+void SetERFDriverAtmosToOceanStateContract(void* erf_handle,
+                                           bool use_state_contract);
 void InitERFSolver(void* erf_handle);
+void ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
+                                     amrex::BoxArray& ba,
+                                     amrex::DistributionMapping& dm);
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time);
@@ -36,7 +45,22 @@ void ERFWriteAtFinalTime(void* erf_handle);
 
 void* CreateREMORASolver(const ERFRemoraMultiBlockContainer& container);
 void DestroyREMORASolver(void* remora_handle) noexcept;
+void ConfigureREMORADriverAtmosToOceanCoupling(void* remora_handle,
+                                               bool use_coupling_driver,
+                                               bool use_two_way_coupling,
+                                               bool use_state_contract);
+void SetREMORADriverAtmosToOceanStateContract(void* remora_handle,
+                                              bool use_state_contract);
 void InitREMORASolver(void* remora_handle);
+void REMORAGetAtmosToOceanRhoLayout(void* remora_handle,
+                                    amrex::BoxArray& ba,
+                                    amrex::DistributionMapping& dm);
+void REMORAGetAtmosToOceanUFaceLayout(void* remora_handle,
+                                      amrex::BoxArray& ba,
+                                      amrex::DistributionMapping& dm);
+void REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
+                                      amrex::BoxArray& ba,
+                                      amrex::DistributionMapping& dm);
 void REMORAPackSurfaceState(void* remora_handle,
                             amrex::Vector<amrex::MultiFab*>& state,
                             amrex::Real time);

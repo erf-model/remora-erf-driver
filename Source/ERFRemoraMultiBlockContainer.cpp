@@ -264,14 +264,16 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     const amrex::IntVect& max_grid_size,
     amrex::Real erf_dt,
     int atm_substeps_per_ocean_step,
-    coupling::AtmosToOceanContract atm2ocn_contract)
+    coupling::AtmosToOceanContract atm2ocn_contract,
+    bool use_two_way_coupling)
     : m_atm_rb(atm_rb), m_atm_n_cell(n_cell_atm),
       m_ocn_rb(ocn_rb), m_ocn_n_cell(n_cell_ocn),
       m_max_level(max_level), m_coord(coord),
       m_ref_ratio(ref_ratio), m_is_periodic(is_periodic),
       m_erf_dt(erf_dt),
       m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
-      m_atmos_to_ocean_contract(atm2ocn_contract)
+      m_atmos_to_ocean_contract(atm2ocn_contract),
+      m_use_two_way_coupling(use_two_way_coupling)
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
         n_cell_atm[0] % n_cell_ocn[0] == 0 &&
@@ -336,9 +338,16 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
     }
 
     m_erf = CreateERFSolver(*this);
-    InitERFSolver(m_erf);
-
     m_remora = CreateREMORASolver(*this);
+
+    const bool bootstrap_uses_state_contract =
+        (ActiveAtmosToOceanContract(/*ocean_step=*/0) == coupling::AtmosToOceanContract::StatePassing);
+    ConfigureERFDriverAtmosToOceanCoupling(
+        m_erf, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+    ConfigureREMORADriverAtmosToOceanCoupling(
+        m_remora, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+
+    InitERFSolver(m_erf);
     InitREMORASolver(m_remora);
 }
 
@@ -447,6 +456,16 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
 void
 ERFRemoraMultiBlockContainer::AllocateCaches ()
 {
+    if (m_erf != nullptr && m_remora != nullptr) {
+        AllocateCachesFromSolverLayouts();
+    } else {
+        AllocateSyntheticCaches();
+    }
+}
+
+void
+ERFRemoraMultiBlockContainer::AllocateSyntheticCaches ()
+{
     // Allocate a superset layer vector once (legacy state + optional flux layers).
     // Runtime coupling modes can then swap active layer views by index without
     // changing memory ownership or reallocating cache slabs.
@@ -470,15 +489,139 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
         m_atmos_to_ocean_flux_active[local_idx] = m_atmos_to_ocean[global_idx];
     }
 
-    m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
-    const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
-    for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
-        auto& mf_ptr = m_ocean_to_atmos_storage[idx];
-        mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
-        const std::string label = "Driver AllocateCaches ocean->atmos[" + std::to_string(idx) + "]";
-        PrintMultiFabLayout(label.c_str(), *mf_ptr);
+    if (m_use_two_way_coupling) {
+        m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
+        const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
+        for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
+            auto& mf_ptr = m_ocean_to_atmos_storage[idx];
+            mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+            const std::string label = "Driver AllocateCaches ocean->atmos[" + std::to_string(idx) + "]";
+            PrintMultiFabLayout(label.c_str(), *mf_ptr);
+        }
+    } else {
+        m_ocean_to_atmos_storage.clear();
     }
     m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
+}
+
+void
+ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
+{
+    amrex::BoxArray remora_rho_ba;
+    amrex::DistributionMapping remora_rho_dm;
+    amrex::BoxArray remora_u_ba;
+    amrex::DistributionMapping remora_u_dm;
+    amrex::BoxArray remora_v_ba;
+    amrex::DistributionMapping remora_v_dm;
+
+    REMORAGetAtmosToOceanRhoLayout(m_remora, remora_rho_ba, remora_rho_dm);
+    REMORAGetAtmosToOceanUFaceLayout(m_remora, remora_u_ba, remora_u_dm);
+    REMORAGetAtmosToOceanVFaceLayout(m_remora, remora_v_ba, remora_v_dm);
+
+    if (m_use_two_way_coupling) {
+        ERFGetOceanToAtmosSurfaceLayout(m_erf, m_ba, m_dm);
+    }
+
+    m_ba_ocn = remora_rho_ba;
+    m_dm_ocn = remora_rho_dm;
+
+    const amrex::Real dz_atm = (m_atm_rb.hi(2) - m_atm_rb.lo(2)) / m_atm_n_cell[2];
+    const amrex::RealBox atm_slab_rb({m_atm_rb.lo(0), m_atm_rb.lo(1), 0.0},
+                                     {m_atm_rb.hi(0), m_atm_rb.hi(1), dz_atm});
+    m_geom.define(m_ba.minimalBox(), &atm_slab_rb, amrex::CoordSys::cartesian, m_is_periodic.data());
+
+    const amrex::Real dz_ocn = (m_ocn_rb.hi(2) - m_ocn_rb.lo(2)) / m_ocn_n_cell[2];
+    const amrex::RealBox ocn_slab_rb({m_ocn_rb.lo(0), m_ocn_rb.lo(1), 0.0},
+                                     {m_ocn_rb.hi(0), m_ocn_rb.hi(1), dz_ocn});
+    m_geom_ocn.define(m_ba_ocn.minimalBox(), &ocn_slab_rb, amrex::CoordSys::cartesian, m_is_periodic.data());
+
+    ValidateCouplingLayoutsFromSolvers();
+
+    m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
+    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean_storage.size()); ++idx) {
+        auto& mf_ptr = m_atmos_to_ocean_storage[idx];
+        const amrex::BoxArray* lane_ba = &remora_rho_ba;
+        const amrex::DistributionMapping* lane_dm = &remora_rho_dm;
+        if (idx == coupling::TauX) {
+            lane_ba = &remora_u_ba;
+            lane_dm = &remora_u_dm;
+        } else if (idx == coupling::TauY) {
+            lane_ba = &remora_v_ba;
+            lane_dm = &remora_v_dm;
+        }
+        mf_ptr = std::make_unique<amrex::MultiFab>(*lane_ba, *lane_dm, 1, AtmosToOceanNGrow(idx));
+        const std::string label = "Driver AllocateCachesFromSolverLayouts atmos->ocean[" + std::to_string(idx) + "]";
+        PrintMultiFabLayout(label.c_str(), *mf_ptr);
+    }
+    m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
+
+    m_atmos_to_ocean_state_active.resize(m_atmos_to_ocean_state_active_indices.size());
+    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_state_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_state_active_indices[local_idx];
+        m_atmos_to_ocean_state_active[local_idx] = m_atmos_to_ocean[global_idx];
+    }
+    m_atmos_to_ocean_flux_active.resize(m_atmos_to_ocean_flux_active_indices.size());
+    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_flux_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_flux_active_indices[local_idx];
+        m_atmos_to_ocean_flux_active[local_idx] = m_atmos_to_ocean[global_idx];
+    }
+
+    if (m_use_two_way_coupling) {
+        m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
+        const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
+        for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
+            auto& mf_ptr = m_ocean_to_atmos_storage[idx];
+            mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+            const std::string label = "Driver AllocateCachesFromSolverLayouts ocean->atmos[" + std::to_string(idx) + "]";
+            PrintMultiFabLayout(label.c_str(), *mf_ptr);
+        }
+    } else {
+        m_ocean_to_atmos_storage.clear();
+    }
+    m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
+}
+
+void
+ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
+{
+    const amrex::IntVect horiz_ratio(m_atm_n_cell[0] / m_ocn_n_cell[0],
+                                     m_atm_n_cell[1] / m_ocn_n_cell[1], 1);
+
+    amrex::BoxArray remora_rho_ba;
+    amrex::DistributionMapping remora_rho_dm;
+    amrex::BoxArray remora_u_ba;
+    amrex::DistributionMapping remora_u_dm;
+    amrex::BoxArray remora_v_ba;
+    amrex::DistributionMapping remora_v_dm;
+    REMORAGetAtmosToOceanRhoLayout(m_remora, remora_rho_ba, remora_rho_dm);
+    REMORAGetAtmosToOceanUFaceLayout(m_remora, remora_u_ba, remora_u_dm);
+    REMORAGetAtmosToOceanVFaceLayout(m_remora, remora_v_ba, remora_v_dm);
+
+    if (m_use_two_way_coupling) {
+        amrex::BoxArray erf_surface_ba;
+        amrex::DistributionMapping erf_surface_dm;
+        ERFGetOceanToAtmosSurfaceLayout(m_erf, erf_surface_ba, erf_surface_dm);
+        ValidateCouplingLayout(erf_surface_ba, erf_surface_dm,
+                               remora_rho_ba, remora_rho_dm,
+                               horiz_ratio,
+                               "ERF surface <-> REMORA rho coupling");
+
+        const amrex::BoxArray erf_xface_ba = amrex::convert(erf_surface_ba, amrex::IntVect(1,0,0));
+        const amrex::BoxArray erf_yface_ba = amrex::convert(erf_surface_ba, amrex::IntVect(0,1,0));
+        ValidateCouplingLayout(erf_xface_ba, erf_surface_dm,
+                               remora_u_ba, remora_u_dm,
+                               horiz_ratio,
+                               "ERF x-face <-> REMORA u-face coupling");
+        ValidateCouplingLayout(erf_yface_ba, erf_surface_dm,
+                               remora_v_ba, remora_v_dm,
+                               horiz_ratio,
+                               "ERF y-face <-> REMORA v-face coupling");
+    } else {
+        ValidateCouplingLayout(m_ba, m_dm,
+                               remora_rho_ba, remora_rho_dm,
+                               horiz_ratio,
+                               "Driver atmosphere slab <-> REMORA rho coupling");
+    }
 }
 
 void
@@ -488,8 +631,10 @@ ERFRemoraMultiBlockContainer::FillSyntheticData ()
         m_atmos_to_ocean[idx]->setVal(10.0 + static_cast<amrex::Real>(idx));
     }
 
-    m_ocean_to_atmos[coupling::SST]->setVal(300.0);
-    FillOceanToAtmosGhosts();
+    if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
+        m_ocean_to_atmos[coupling::SST]->setVal(300.0);
+        FillOceanToAtmosGhosts();
+    }
 }
 
 void
@@ -581,17 +726,21 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
 void
 ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real time, long long ocean_step) const
 {
-    ValidateFields("Exchange validation ocean->atmos",
-                   m_ocean_to_atmos, coupling::OceanToAtmosNames(), time, ocean_step);
+    if (m_use_two_way_coupling) {
+        ValidateFields("Exchange validation ocean->atmos",
+                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), time, ocean_step);
+    }
     ValidateFields("Exchange validation atmos->ocean",
                    m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, time, ocean_step);
 
-    WriteExchangePlotfile(m_plot_file_exchange_o2a,
-                          m_ocean_to_atmos,
-                          coupling::OceanToAtmosNames(),
-                          m_geom,
-                          time,
-                          ocean_step);
+    if (m_use_two_way_coupling) {
+        WriteExchangePlotfile(m_plot_file_exchange_o2a,
+                              m_ocean_to_atmos,
+                              coupling::OceanToAtmosNames(),
+                              m_geom,
+                              time,
+                              ocean_step);
+    }
     WriteExchangePlotfile(m_plot_file_exchange_a2o,
                           m_atmos_to_ocean_active,
                           m_atmos_to_ocean_active_names,
@@ -794,7 +943,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                                                            int ocean_steps)
 {
     BL_PROFILE("Driver::Build_Comm_Metadata"); // V1 Baseline marker
-    PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+    if (m_use_two_way_coupling) {
+        PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+    }
     PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
 
 
@@ -859,8 +1010,14 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
         SelectAtmosToOceanActiveView(global_ocean_step);
-        pack_surface_state(m_ocean_to_atmos, ocean_time);
-        FillOceanToAtmosGhosts();
+        const bool use_state_contract =
+            (ActiveAtmosToOceanContract(global_ocean_step) == coupling::AtmosToOceanContract::StatePassing);
+        SetERFDriverAtmosToOceanStateContract(m_erf, use_state_contract);
+        SetREMORADriverAtmosToOceanStateContract(m_remora, use_state_contract);
+        if (m_use_two_way_coupling) {
+            pack_surface_state(m_ocean_to_atmos, ocean_time);
+            FillOceanToAtmosGhosts();
+        }
         pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
         if (m_plot_int_exchange > 0 &&
             (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
@@ -886,7 +1043,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             const amrex::Real atm_time = m_atm_tick * m_erf_dt;
 
             BL_PROFILE("Driver::Time_Interpolate"); // V1 Stub region
-            apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
+            if (m_use_two_way_coupling) {
+                apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
+            }
             const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_erf_dt);
             if (dt_used == amrex::Real(0.0)) {
                 amrex::Print() << "ERF returned dt=0 before the driver completed the planned"
@@ -922,7 +1081,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         amrex::Print() << "Completed ocean step " << ocean_step
                            << " at atmosphere tick " << m_atm_tick << "\n";
 
-        PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+        if (m_use_two_way_coupling) {
+            PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+        }
         PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
     }
     REMORAWriteAtFinalTime(m_remora);

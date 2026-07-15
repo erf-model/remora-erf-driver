@@ -51,7 +51,8 @@ public:
                                   const amrex::IntVect& max_grid_size,
                                   amrex::Real erf_dt,
                                   int atm_substeps_per_ocean_step,
-                                  coupling::AtmosToOceanContract atm2ocn_contract);
+                                  coupling::AtmosToOceanContract atm2ocn_contract,
+                                  bool use_two_way_coupling);
     ~ERFRemoraMultiBlockContainer();
 
     void InitializeBlocks();
@@ -85,6 +86,8 @@ private:
                                     int ocean_steps);
 
     void AllocateCaches();
+    void AllocateCachesFromSolverLayouts();
+    void AllocateSyntheticCaches();
     void FillSyntheticData();
     void FillOceanToAtmosGhosts();
     void FillAtmosToOceanGhosts();
@@ -103,6 +106,7 @@ private:
                                const amrex::Geometry& geom,
                                amrex::Real time,
                                long long ocean_step) const;
+    void ValidateCouplingLayoutsFromSolvers() const;
     coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
     void SelectAtmosToOceanActiveView(long long ocean_step);
 
@@ -133,6 +137,7 @@ private:
     std::string m_plot_file_exchange_o2a = "exchange_o2a";
     std::string m_plot_file_exchange_a2o = "exchange_a2o";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
+    bool m_use_two_way_coupling = false;
 
     // Atmosphere -> ocean cache slab vector.
     // TODO(initial-temporal-interpolation): add old/new temporal copies for interpolation

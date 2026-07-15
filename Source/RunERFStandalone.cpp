@@ -46,9 +46,34 @@ DestroyERFSolver(void* erf_handle) noexcept
 }
 
 void
+ConfigureERFDriverAtmosToOceanCoupling(void* erf_handle,
+                                       bool use_coupling_driver,
+                                       bool use_two_way_coupling,
+                                       bool use_state_contract)
+{
+    static_cast<ERF*>(erf_handle)->ConfigureDriverAtmosToOceanCoupling(
+        use_coupling_driver, use_two_way_coupling, use_state_contract);
+}
+
+void
+SetERFDriverAtmosToOceanStateContract(void* erf_handle,
+                                      bool use_state_contract)
+{
+    static_cast<ERF*>(erf_handle)->SetDriverAtmosToOceanStateContract(use_state_contract);
+}
+
+void
 InitERFSolver(void* erf_handle)
 {
     static_cast<ERF*>(erf_handle)->InitData();
+}
+
+void
+ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
+                                amrex::BoxArray& ba,
+                                amrex::DistributionMapping& dm)
+{
+    static_cast<ERF*>(erf_handle)->GetOceanToAtmosSurfaceLayout(ba, dm);
 }
 
 void

@@ -32,9 +32,56 @@ DestroyREMORASolver(void* remora_handle) noexcept
 }
 
 void
+ConfigureREMORADriverAtmosToOceanCoupling(void* remora_handle,
+                                          bool use_coupling_driver,
+                                          bool use_two_way_coupling,
+                                          bool use_state_contract)
+{
+    const auto mode = use_state_contract
+        ? REMORA::DriverAtmosForcingMode::State
+        : REMORA::DriverAtmosForcingMode::Flux;
+    static_cast<REMORA*>(remora_handle)->ConfigureDriverAtmosToOceanCoupling(
+        use_coupling_driver, use_two_way_coupling, mode);
+}
+
+void
+SetREMORADriverAtmosToOceanStateContract(void* remora_handle,
+                                         bool use_state_contract)
+{
+    const auto mode = use_state_contract
+        ? REMORA::DriverAtmosForcingMode::State
+        : REMORA::DriverAtmosForcingMode::Flux;
+    static_cast<REMORA*>(remora_handle)->SetDriverAtmosToOceanForcingMode(mode);
+}
+
+void
 InitREMORASolver(void* remora_handle)
 {
     static_cast<REMORA*>(remora_handle)->InitData();
+}
+
+void
+REMORAGetAtmosToOceanRhoLayout(void* remora_handle,
+                               amrex::BoxArray& ba,
+                               amrex::DistributionMapping& dm)
+{
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanRhoLayout(ba, dm);
+}
+
+void
+REMORAGetAtmosToOceanUFaceLayout(void* remora_handle,
+                                 amrex::BoxArray& ba,
+                                 amrex::DistributionMapping& dm)
+{
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanUFaceLayout(ba, dm);
+}
+
+void
+REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
+                                 amrex::BoxArray& ba,
+                                 amrex::DistributionMapping& dm)
+{
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanVFaceLayout(ba, dm);
 }
 
 void

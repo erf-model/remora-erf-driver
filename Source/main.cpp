@@ -325,6 +325,7 @@ main (int argc, char* argv[])
             amrex::Abort("Unknown driver.atm2ocn_mode. Valid values: state, flux.");
         }
 
+        bool use_two_way_coupling = false;
         if (has_coupling_direction) {
             const std::string coupling_direction_lc = lowercase(coupling_direction);
             if (!synthetic_only) {
@@ -334,11 +335,13 @@ main (int argc, char* argv[])
                 const std::string land_surface_model_lc = lowercase(land_surface_model);
 
                 if (coupling_direction_lc == "two_way") {
+                    use_two_way_coupling = true;
                     if (!has_land_surface_model || land_surface_model_lc != "oceansurf") {
                         amrex::Abort("driver.coupling_direction=two_way requires "
                                      "erf.land_surface_model=OceanSurf so REMORA SST feeds back into ERF.");
                     }
                 } else if (coupling_direction_lc == "erftoremora") {
+                    use_two_way_coupling = false;
                     if (has_land_surface_model && land_surface_model_lc == "oceansurf") {
                         amrex::Abort("driver.coupling_direction=ERFtoREMORA is inconsistent with "
                                      "erf.land_surface_model=OceanSurf. Use driver.coupling_direction=two_way instead.");
@@ -350,6 +353,11 @@ main (int argc, char* argv[])
                 amrex::Print() << "WARNING: driver.coupling_direction is ignored when "
                                << "driver.synthetic_only=1.\n";
             }
+        } else if (!synthetic_only) {
+            std::string land_surface_model;
+            const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
+            use_two_way_coupling =
+                has_land_surface_model && lowercase(land_surface_model) == "oceansurf";
         }
 
         // Parse driver-owned topology from input file.
@@ -401,7 +409,7 @@ main (int argc, char* argv[])
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,
                 driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
-                atm2ocn_contract);
+                atm2ocn_contract, use_two_way_coupling);
             container.InitializeBlocks();
             container.AdvanceBlocksSynthetic(ocean_steps);
         } else {
@@ -410,12 +418,12 @@ main (int argc, char* argv[])
                 atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
                 max_level, coord, ref_ratio, is_periodic,
                 driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
-                atm2ocn_contract);
+                atm2ocn_contract, use_two_way_coupling);
+            container.InitializeSolvers();
             container.InitializeBlocks();
             if (restart_state.active) {
                 container.SetAtmosphereTick(restart_state.atm_tick);
             }
-            container.InitializeSolvers();
             container.PrefillAtmosToOceanFallbacks();
 
             amrex::ParmParse().remove("amr.check_int");

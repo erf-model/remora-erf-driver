@@ -75,6 +75,14 @@ prob.T_0 = 100.0
 erf.prob_name = constant_rhotheta_src
 prob.advection_heating_rate =1.1574074e-5
 
+erf.rayleigh_damping_type = SlowExplicit
+erf.rayleigh_zdamp    = 2000.0
+erf.rayleigh_dampcoef = 0.2
+
+erf.rayleigh_damp_U = false
+erf.rayleigh_damp_V = true
+erf.rayleigh_damp_W = true
+
 # INITIALIZATION WITH ATM DATA
 erf.init_type = "input_sounding"
 erf.sounding_type = Ideal

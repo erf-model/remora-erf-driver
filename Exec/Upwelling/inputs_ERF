@@ -44,10 +44,12 @@ amr.v              = 1       # verbosity in Amr.cpp
 amr.max_level       = 0       # maximum level number allowed
 
 # PLOTFILES
-erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys
+erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys Kmv
 
 # SOLVER CHOICE
 erf.use_gravity = true
+
+erf.pbl_type    = MYNN25
 
 erf.les_type          = "None"
 erf.molec_diff_type   = "Constant"

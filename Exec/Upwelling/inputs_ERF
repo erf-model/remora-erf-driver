@@ -44,12 +44,17 @@ amr.v              = 1       # verbosity in Amr.cpp
 amr.max_level       = 0       # maximum level number allowed
 
 # PLOTFILES
-erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys Kmv
+erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys Kmv KE
 
 # SOLVER CHOICE
 erf.use_gravity = true
 
 erf.pbl_type    = MYNN25
+
+# From ABL/inputs_GABLS1_mynn25
+prob.KE_0            = 0.4 # [m2/s2]
+prob.KE_decay_height = 250. # [m]
+prob.KE_decay_order  = 3
 
 erf.les_type          = "None"
 erf.molec_diff_type   = "Constant"
@@ -111,8 +116,8 @@ erf.nswbands               = 14
 erf.nlwbands               = 16
 erf.nswgpts                = 224
 erf.nlwgpts                = 256
-erf.rrtmgp_file_path       = /home/feranmi/data-files
-#erf.rrtmgp_file_path       = /home/almgren/GitCode/data-files
+#erf.rrtmgp_file_path       = /home/feranmi/data-files
+erf.rrtmgp_file_path       = /home/almgren/GitCode/data-files
 erf.rrtmgp_coeffs_sw       = rrtmgp-data-sw-g224-2018-12-04.nc
 erf.rrtmgp_coeffs_lw       = rrtmgp-data-lw-g256-2018-12-04.nc
 erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc

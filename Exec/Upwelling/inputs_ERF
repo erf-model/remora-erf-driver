@@ -28,7 +28,7 @@ erf.most.Cq  = 0.0012 # qv    flux
 erf.most.surf_temp  = 287.15
 erf.most.surf_moist = 0.0
 erf.most.z0     = 0.1
-erf.most.zref   = 50.0
+erf.most.zref   = 25.0
 
 zhi.type = "SlipWall"
 
@@ -37,30 +37,26 @@ erf.substepping_type = Implicit
 
 # DIAGNOSTICS & VERBOSITY
 erf.sum_interval   = 1200    # timesteps between computing mass
-erf.v              = 1       # verbosity in ERF.cpp
+erf.v              = 0       # verbosity in ERF.cpp
 amr.v              = 1       # verbosity in Amr.cpp
 
 # REFINEMENT / REGRIDDING
 amr.max_level       = 0       # maximum level number allowed
 
 # PLOTFILES
-erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys Kmv KE
+erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys Kmv KE qv
 
 # SOLVER CHOICE
 erf.use_gravity = true
 
-erf.pbl_type    = MYNN25
+erf.les_type          = None
+erf.molec_diff_type   = None
+erf.pbl_type          = MYNN25
 
 # From ABL/inputs_GABLS1_mynn25
 prob.KE_0            = 0.4 # [m2/s2]
 prob.KE_decay_height = 250. # [m]
 prob.KE_decay_order  = 3
-
-erf.les_type          = "None"
-erf.molec_diff_type   = "Constant"
-erf.dynamic_viscosity = 5.0
-erf.alpha_T = 0.0
-erf.alpha_C = 0.0
 
 erf.use_coriolis = true
 erf.coriolis_3d = false
@@ -97,7 +93,8 @@ erf.input_sounding_file = input_sounding_for_ERF
 
 erf.rad_t_sfc              = 300.
 
-erf.radiation_model        = "RRTMGP"
+#erf.radiation_model        = "RRTMGP"
+erf.radiation_model        = None
 erf.rad.datalog            = "radiation_datalog"
 erf.rad_cons_lat           = 42
 erf.rad_cons_lon           = -124

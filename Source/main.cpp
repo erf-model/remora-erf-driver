@@ -362,24 +362,61 @@ main (int argc, char* argv[])
                 has_land_surface_model && lowercase(land_surface_model) == "oceansurf";
         }
 
-        // Parse driver-owned topology from input file.
-        // Atmosphere: z >= 0, Ocean: z <= 0.
-        amrex::ParmParse pp_atm("driver.atm");
-        amrex::ParmParse pp_ocn("driver.ocn");
+        amrex::Vector<amrex::Real> atm_lo;
+        amrex::Vector<amrex::Real> atm_hi;
+        amrex::Vector<int> n_cell_atm;
+        amrex::Array<int,AMREX_SPACEDIM> atm_is_periodic{1, 1, 0};
+        amrex::Vector<amrex::Real> ocn_lo;
+        amrex::Vector<amrex::Real> ocn_hi;
+        amrex::Vector<int> n_cell_ocn;
+        amrex::Array<int,AMREX_SPACEDIM> ocn_is_periodic{1, 1, 0};
+        if (synthetic_only) {
+            atm_lo = {0.0, 0.0, 0.0};
+            atm_hi = {1.0, 1.0, 1.0};
+            n_cell_atm = {32, 32, 32};
+            ocn_lo = {0.0, 0.0, -1.0};
+            ocn_hi = {1.0, 1.0, 0.0};
+            n_cell_ocn = {32, 32, 10};
+        } else {
+            if (!pp_erf.queryarr("prob_lo", atm_lo, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: erf.prob_lo");
+            }
+            const bool has_erf_prob_hi = pp_erf.queryarr("prob_hi", atm_hi, 0, AMREX_SPACEDIM);
+            amrex::Vector<amrex::Real> atm_extent;
+            const bool has_erf_prob_extent = pp_erf.queryarr("prob_extent", atm_extent, 0, AMREX_SPACEDIM);
+            if (has_erf_prob_hi == has_erf_prob_extent) {
+                amrex::Abort("ERF topology requires exactly one of erf.prob_hi or erf.prob_extent.");
+            }
+            if (has_erf_prob_extent) {
+                atm_hi.resize(AMREX_SPACEDIM);
+                for (int i = 0; i < AMREX_SPACEDIM; ++i) {
+                    atm_hi[i] = atm_lo[i] + atm_extent[i];
+                }
+            }
+            if (!pp_erf.queryarr("n_cell", n_cell_atm, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: erf.n_cell");
+            }
+            amrex::Vector<int> atm_periodic_vec;
+            if (!pp_erf.queryarr("is_periodic", atm_periodic_vec, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: erf.is_periodic");
+            }
+            atm_is_periodic = {atm_periodic_vec[0], atm_periodic_vec[1], atm_periodic_vec[2]};
 
-        amrex::Vector<amrex::Real> atm_lo = {0.0, 0.0, 0.0};
-        amrex::Vector<amrex::Real> atm_hi = {1.0, 1.0, 1.0};
-        amrex::Vector<int> n_cell_atm = {32, 32, 32};
-        amrex::Vector<amrex::Real> ocn_lo = {0.0, 0.0, -1.0};
-        amrex::Vector<amrex::Real> ocn_hi = {1.0, 1.0,  0.0};
-        amrex::Vector<int> n_cell_ocn = {32, 32, 10};
-
-        pp_atm.queryarr("prob_lo", atm_lo, 0, AMREX_SPACEDIM);
-        pp_atm.queryarr("prob_hi", atm_hi, 0, AMREX_SPACEDIM);
-        pp_atm.queryarr("n_cell",  n_cell_atm, 0, AMREX_SPACEDIM);
-        pp_ocn.queryarr("prob_lo", ocn_lo, 0, AMREX_SPACEDIM);
-        pp_ocn.queryarr("prob_hi", ocn_hi, 0, AMREX_SPACEDIM);
-        pp_ocn.queryarr("n_cell",  n_cell_ocn, 0, AMREX_SPACEDIM);
+            if (!pp_rem.queryarr("prob_lo", ocn_lo, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: remora.prob_lo");
+            }
+            if (!pp_rem.queryarr("prob_hi", ocn_hi, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: remora.prob_hi");
+            }
+            if (!pp_rem.queryarr("n_cell", n_cell_ocn, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: remora.n_cell");
+            }
+            amrex::Vector<int> ocn_periodic_vec;
+            if (!pp_rem.queryarr("is_periodic", ocn_periodic_vec, 0, AMREX_SPACEDIM)) {
+                amrex::Abort("Missing required input: remora.is_periodic");
+            }
+            ocn_is_periodic = {ocn_periodic_vec[0], ocn_periodic_vec[1], ocn_periodic_vec[2]};
+        }
 
         amrex::RealBox atm_rb(atm_lo.data(), atm_hi.data());
         amrex::RealBox ocn_rb(ocn_lo.data(), ocn_hi.data());
@@ -398,13 +435,11 @@ main (int argc, char* argv[])
         int max_level = 0;
         int coord = 0;
         amrex::Vector<amrex::IntVect> ref_ratio(1, amrex::IntVect(2));
-        amrex::Vector<int> is_periodic_vec = {1, 1, 0};
-        const bool have_driver_periodic = pp_atm.queryarr("is_periodic", is_periodic_vec, 0, AMREX_SPACEDIM);
-        if (!have_driver_periodic) {
-            amrex::ParmParse pp_geom("geometry");
-            pp_geom.queryarr("is_periodic", is_periodic_vec, 0, AMREX_SPACEDIM);
-        }
-        amrex::Array<int,AMREX_SPACEDIM> is_periodic{is_periodic_vec[0], is_periodic_vec[1], is_periodic_vec[2]};
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            atm_is_periodic[0] == ocn_is_periodic[0] &&
+            atm_is_periodic[1] == ocn_is_periodic[1],
+            "ERF and REMORA horizontal periodicity must match for coupling.");
+        amrex::Array<int,AMREX_SPACEDIM> is_periodic = atm_is_periodic;
 
         if (synthetic_only) {
             erf_remora::ERFRemoraMultiBlockContainer container(

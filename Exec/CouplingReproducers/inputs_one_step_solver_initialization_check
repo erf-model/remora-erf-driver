@@ -2,15 +2,20 @@
 
 driver.synthetic_only = 0
 
-# Shared AMReX mesh
+# Shared ERF/REMORA mesh
 amr.max_level = 0
-amr.n_cell = 32 32 8
 amr.max_grid_size = 32
 amr.blocking_factor = 8
 
-geometry.prob_lo = 0.0 0.0 0.0
-geometry.prob_hi = 1.0 1.0 1.0
-geometry.is_periodic = 1 1 0
+erf.prob_lo = 0.0 0.0 0.0
+erf.prob_hi = 1.0 1.0 1.0
+erf.n_cell = 32 32 8
+erf.is_periodic = 1 1 0
+
+remora.prob_lo = 0.0 0.0 0.0
+remora.prob_hi = 1.0 1.0 1.0
+remora.n_cell = 32 32 8
+remora.is_periodic = 1 1 0
 
 zlo.type = SlipWall
 zhi.type = SlipWall

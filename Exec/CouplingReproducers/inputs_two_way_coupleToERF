@@ -13,16 +13,6 @@ FILE = Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_two_way
 amrex.fpe_trap_invalid = 0
 erf.input_sounding_file = Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding
 
-# Driver-owned topology (matched horizontal footprint).
-driver.atm.prob_lo     = 0.0 0.0 0.0
-driver.atm.prob_hi     = 1600.0 1600.0 1600.0
-driver.atm.n_cell      = 16 16 16
-driver.atm.is_periodic = 1 1 0
-
-driver.ocn.prob_lo     = 0.0 0.0 -150.0
-driver.ocn.prob_hi     = 1600.0 1600.0 0.0
-driver.ocn.n_cell      = 16 16 16
-
 driver.synthetic_only = 0
 driver.coupling_direction = two_way
 # driver.dt_atm sets the coupled step size; erf.fixed_dt and remora.fixed_dt

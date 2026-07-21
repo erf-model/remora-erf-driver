@@ -9,18 +9,6 @@ FILE = Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_couette
 # Override FPE trap
 amrex.fpe_trap_invalid = 0
 
-# Synchronized Topology (3200m x 3200m)
-# Atmosphere: match ABL domain
-driver.atm.prob_lo     = 0.0 0.0 0.0
-driver.atm.prob_hi     = 3200.0 3200.0 1600.0
-driver.atm.n_cell      = 32 32 16
-driver.atm.is_periodic = 1 1 0
-
-# Ocean: scale up to match ABL atmosphere
-driver.ocn.prob_lo     = 0.0 0.0 -150.0
-driver.ocn.prob_hi     = 3200.0 3200.0 0.0
-driver.ocn.n_cell      = 32 32 32
-
 # Driver Control
 driver.synthetic_only = 0
 driver.coupling_direction = two_way

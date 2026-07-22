@@ -15,7 +15,7 @@
 #include <cmath>
 #include <string>
 
-std::string inputs_name = "erf-remora-driver.synthetic";
+std::string inputs_name;
 
 namespace
 {
@@ -118,6 +118,10 @@ main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
 
+    if (!strchr(argv[1], '=')) {
+      inputs_name = argv[1];
+    }
+
 #ifdef ERF_USE_KOKKOS
     // Initialize kokkos
     if (!Kokkos::is_initialized()) {
@@ -159,7 +163,6 @@ main (int argc, char* argv[])
 
         int max_grid_size = default_max_grid_size;
         int ocean_steps = 2;
-        int synthetic_only = 1;
         std::string atm2ocn_mode = "state";
         std::string coupling_direction;
 
@@ -186,9 +189,8 @@ main (int argc, char* argv[])
         pp_driver.query("max_grid_size_z", max_grid_size_z);
         const amrex::IntVect driver_max_grid_size(max_grid_size_x, max_grid_size_y, max_grid_size_z);
 
-        pp_driver.query("synthetic_only", synthetic_only);
         pp_driver.query("atm2ocn_mode", atm2ocn_mode);
-        const bool has_coupling_direction = pp_driver.query("coupling_direction", coupling_direction);
+        pp_driver.get("coupling_direction", coupling_direction);
 
         amrex::ParmParse pp_erf("erf");
         amrex::ParmParse pp_rem("remora");
@@ -196,18 +198,9 @@ main (int argc, char* argv[])
         pp_driver.query("v", driver_verbose);
 
         amrex::Real erf_dt;
-        if (has_coupling_direction) {
-            pp_erf.get("fixed_dt", erf_dt);
-        } else {
-            pp_driver.get("erf_dt", erf_dt);
-        }
-
         amrex::Real ocean_macro_dt;
-        if (has_coupling_direction) {
-            pp_rem.get("fixed_dt", ocean_macro_dt);
-        } else {
-            pp_driver.get("ocean_dt", ocean_macro_dt);
-        }
+        pp_erf.get("fixed_dt", erf_dt);
+        pp_rem.get("fixed_dt", ocean_macro_dt);
 
         int atm_substeps_per_ocean_step = static_cast<int>(ocean_macro_dt / erf_dt);
         if (atm_substeps_per_ocean_step * erf_dt != ocean_macro_dt) {
@@ -328,38 +321,23 @@ main (int argc, char* argv[])
         }
 
         bool use_two_way_coupling = false;
-        if (has_coupling_direction) {
-            const std::string coupling_direction_lc = lowercase(coupling_direction);
-            if (!synthetic_only) {
-                std::string land_surface_model;
-                amrex::ParmParse pp_erf("erf");
-                const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
-                const std::string land_surface_model_lc = lowercase(land_surface_model);
+        const std::string coupling_direction_lc = lowercase(coupling_direction);
+        std::string land_surface_model;
 
-                if (coupling_direction_lc == "two_way") {
-                    use_two_way_coupling = true;
-                    if (!has_land_surface_model || land_surface_model_lc != "oceansurf") {
-                        amrex::Abort("driver.coupling_direction=two_way requires "
-                                     "erf.land_surface_model=OceanSurf so REMORA SST feeds back into ERF.");
-                    }
-                } else if (coupling_direction_lc == "erftoremora") {
-                    use_two_way_coupling = false;
-                    if (has_land_surface_model && land_surface_model_lc == "oceansurf") {
-                        amrex::Abort("driver.coupling_direction=ERFtoREMORA is inconsistent with "
-                                     "erf.land_surface_model=OceanSurf. Use driver.coupling_direction=two_way instead.");
-                    }
-                } else {
-                    amrex::Abort("Unknown driver.coupling_direction. Valid values: ERFtoREMORA, two_way.");
-                }
-            } else {
-                amrex::Print() << "WARNING: driver.coupling_direction is ignored when "
-                               << "driver.synthetic_only=1.\n";
+        const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
+        const std::string land_surface_model_lc = lowercase(land_surface_model);
+
+        if (coupling_direction_lc == "two_way") {
+            use_two_way_coupling = true;
+            if (!has_land_surface_model) {
+                pp_erf.add("land_surface_model","OceanSurf");
+            } else if (land_surface_model_lc != "oceansurf") {
+                amrex::Abort("In two-way coupling, ERF applies SST through LSM path, so set erf.land_surface_model=OceanSurf or omit the line");
             }
-        } else if (!synthetic_only) {
-            std::string land_surface_model;
-            const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
-            use_two_way_coupling =
-                has_land_surface_model && lowercase(land_surface_model) == "oceansurf";
+        } else if (coupling_direction_lc == "erftoremora") {
+            use_two_way_coupling = false;
+        } else {
+            amrex::Abort("Unknown driver.coupling_direction. Valid values: ERFtoREMORA, two_way.");
         }
 
         amrex::Vector<amrex::Real> atm_lo;
@@ -441,45 +419,35 @@ main (int argc, char* argv[])
             "ERF and REMORA horizontal periodicity must match for coupling.");
         amrex::Array<int,AMREX_SPACEDIM> is_periodic = atm_is_periodic;
 
-        if (synthetic_only) {
-            erf_remora::ERFRemoraMultiBlockContainer container(
-                atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
-                max_level, coord, ref_ratio, is_periodic,
-                driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
-                atm2ocn_contract, use_two_way_coupling);
-            container.InitializeBlocks();
-            container.AdvanceBlocksSynthetic(ocean_steps);
-        } else {
-            amrex::Print() << "Running coupled ERF <-> REMORA path\n";
-            if (driver_verbose >= 2 && amrex::ParallelDescriptor::IOProcessor()) {
-                amrex::Print()
-                    << "========================================================\n"
-                    << "[driver] Enter Coupled ERF <-> REMORA Execution\n"
-                    << "main.cpp is handing control to the coupled driver container.\n"
-                    << "========================================================\n";
-            }
-            erf_remora::ERFRemoraMultiBlockContainer container(
-                atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
-                max_level, coord, ref_ratio, is_periodic,
-                driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
-                atm2ocn_contract, use_two_way_coupling);
-            container.InitializeSolvers();
-            container.InitializeBlocks();
-            if (restart_state.active) {
-                container.SetAtmosphereTick(restart_state.atm_tick);
-            }
-            container.PrefillAtmosToOceanFallbacks();
-
-            amrex::ParmParse().remove("amr.check_int");
-            amrex::ParmParse().remove("amr.check_per");
-            amrex::ParmParse().remove("amr.check_int_time");
-            amrex::ParmParse().remove("amr.restart");
-            amrex::ParmParse().remove("amr.regrid_int");
-            amrex::ParmParse().remove("amr.do_substep");
-            amrex::ParmParse().remove("amr.iterate_grids");
-
-            container.AdvanceBlocks(ocean_steps);
+        amrex::Print() << "Running coupled ERF <-> REMORA\n";
+        if (driver_verbose >= 2 && amrex::ParallelDescriptor::IOProcessor()) {
+            amrex::Print()
+                << "========================================================\n"
+                << "[driver] Enter Coupled ERF <-> REMORA Execution\n"
+                << "main.cpp is handing control to the coupled driver container.\n"
+                << "========================================================\n";
         }
+        erf_remora::ERFRemoraMultiBlockContainer container(
+            atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
+            max_level, coord, ref_ratio, is_periodic,
+            driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
+            atm2ocn_contract, use_two_way_coupling);
+        container.InitializeSolvers();
+        container.InitializeBlocks();
+        if (restart_state.active) {
+            container.SetAtmosphereTick(restart_state.atm_tick);
+        }
+        container.PrefillAtmosToOceanFallbacks();
+
+        amrex::ParmParse().remove("amr.check_int");
+        amrex::ParmParse().remove("amr.check_per");
+        amrex::ParmParse().remove("amr.check_int_time");
+        amrex::ParmParse().remove("amr.restart");
+        amrex::ParmParse().remove("amr.regrid_int");
+        amrex::ParmParse().remove("amr.do_substep");
+        amrex::ParmParse().remove("amr.iterate_grids");
+
+        container.AdvanceBlocks(ocean_steps);
     }
     amrex::Print() << "erf-remora-driver run completed\n";
     amrex::Finalize();

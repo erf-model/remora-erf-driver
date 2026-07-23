@@ -348,53 +348,44 @@ main (int argc, char* argv[])
         amrex::Vector<amrex::Real> ocn_hi;
         amrex::Vector<int> n_cell_ocn;
         amrex::Array<int,AMREX_SPACEDIM> ocn_is_periodic{1, 1, 0};
-        if (synthetic_only) {
-            atm_lo = {0.0, 0.0, 0.0};
-            atm_hi = {1.0, 1.0, 1.0};
-            n_cell_atm = {32, 32, 32};
-            ocn_lo = {0.0, 0.0, -1.0};
-            ocn_hi = {1.0, 1.0, 0.0};
-            n_cell_ocn = {32, 32, 10};
-        } else {
-            if (!pp_erf.queryarr("prob_lo", atm_lo, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: erf.prob_lo");
-            }
-            const bool has_erf_prob_hi = pp_erf.queryarr("prob_hi", atm_hi, 0, AMREX_SPACEDIM);
-            amrex::Vector<amrex::Real> atm_extent;
-            const bool has_erf_prob_extent = pp_erf.queryarr("prob_extent", atm_extent, 0, AMREX_SPACEDIM);
-            if (has_erf_prob_hi == has_erf_prob_extent) {
-                amrex::Abort("ERF topology requires exactly one of erf.prob_hi or erf.prob_extent.");
-            }
-            if (has_erf_prob_extent) {
-                atm_hi.resize(AMREX_SPACEDIM);
-                for (int i = 0; i < AMREX_SPACEDIM; ++i) {
-                    atm_hi[i] = atm_lo[i] + atm_extent[i];
-                }
-            }
-            if (!pp_erf.queryarr("n_cell", n_cell_atm, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: erf.n_cell");
-            }
-            amrex::Vector<int> atm_periodic_vec;
-            if (!pp_erf.queryarr("is_periodic", atm_periodic_vec, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: erf.is_periodic");
-            }
-            atm_is_periodic = {atm_periodic_vec[0], atm_periodic_vec[1], atm_periodic_vec[2]};
-
-            if (!pp_rem.queryarr("prob_lo", ocn_lo, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: remora.prob_lo");
-            }
-            if (!pp_rem.queryarr("prob_hi", ocn_hi, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: remora.prob_hi");
-            }
-            if (!pp_rem.queryarr("n_cell", n_cell_ocn, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: remora.n_cell");
-            }
-            amrex::Vector<int> ocn_periodic_vec;
-            if (!pp_rem.queryarr("is_periodic", ocn_periodic_vec, 0, AMREX_SPACEDIM)) {
-                amrex::Abort("Missing required input: remora.is_periodic");
-            }
-            ocn_is_periodic = {ocn_periodic_vec[0], ocn_periodic_vec[1], ocn_periodic_vec[2]};
+        if (!pp_erf.queryarr("prob_lo", atm_lo, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: erf.prob_lo");
         }
+        const bool has_erf_prob_hi = pp_erf.queryarr("prob_hi", atm_hi, 0, AMREX_SPACEDIM);
+        amrex::Vector<amrex::Real> atm_extent;
+        const bool has_erf_prob_extent = pp_erf.queryarr("prob_extent", atm_extent, 0, AMREX_SPACEDIM);
+        if (has_erf_prob_hi == has_erf_prob_extent) {
+            amrex::Abort("ERF topology requires exactly one of erf.prob_hi or erf.prob_extent.");
+        }
+        if (has_erf_prob_extent) {
+            atm_hi.resize(AMREX_SPACEDIM);
+            for (int i = 0; i < AMREX_SPACEDIM; ++i) {
+                atm_hi[i] = atm_lo[i] + atm_extent[i];
+            }
+        }
+        if (!pp_erf.queryarr("n_cell", n_cell_atm, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: erf.n_cell");
+        }
+        amrex::Vector<int> atm_periodic_vec;
+        if (!pp_erf.queryarr("is_periodic", atm_periodic_vec, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: erf.is_periodic");
+        }
+        atm_is_periodic = {atm_periodic_vec[0], atm_periodic_vec[1], atm_periodic_vec[2]};
+
+        if (!pp_rem.queryarr("prob_lo", ocn_lo, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: remora.prob_lo");
+        }
+        if (!pp_rem.queryarr("prob_hi", ocn_hi, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: remora.prob_hi");
+        }
+        if (!pp_rem.queryarr("n_cell", n_cell_ocn, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: remora.n_cell");
+        }
+        amrex::Vector<int> ocn_periodic_vec;
+        if (!pp_rem.queryarr("is_periodic", ocn_periodic_vec, 0, AMREX_SPACEDIM)) {
+            amrex::Abort("Missing required input: remora.is_periodic");
+        }
+        ocn_is_periodic = {ocn_periodic_vec[0], ocn_periodic_vec[1], ocn_periodic_vec[2]};
 
         amrex::RealBox atm_rb(atm_lo.data(), atm_hi.data());
         amrex::RealBox ocn_rb(ocn_lo.data(), ocn_hi.data());

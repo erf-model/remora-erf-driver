@@ -130,6 +130,10 @@ private:
     amrex::DistributionMapping m_dm_ocn;
     amrex::Geometry m_geom_ocn;
 
+    // Coupling interface specification for nonmatching domains
+    amrex::RealBox m_interface_rb;
+    amrex::IntVect m_interface_ncell;
+
     amrex::Real m_erf_dt;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
@@ -138,6 +142,7 @@ private:
     std::string m_plot_file_exchange_a2o = "exchange_a2o";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
+    bool m_domains_match = true;  // True if atmosphere and ocean horizontal domains match
     int m_driver_verbose = 0;
 
     // Atmosphere -> ocean cache slab vector.

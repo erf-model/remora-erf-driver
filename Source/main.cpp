@@ -393,10 +393,11 @@ main (int argc, char* argv[])
         // Current supported topology is atmosphere same-or-finer than ocean on a
         // shared horizontal domain. ERF -> REMORA uses averaging; REMORA -> ERF
         // handles the reverse SST prolongation internally.
+        // For nonmatching domains, atmosphere domain must fully contain ocean domain.
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-            atm_lo[0] == ocn_lo[0] && atm_lo[1] == ocn_lo[1] &&
-            atm_hi[0] == ocn_hi[0] && atm_hi[1] == ocn_hi[1],
-            "Atmosphere and ocean horizontal domains must be identical.");
+            atm_lo[0] <= ocn_lo[0] && atm_lo[1] <= ocn_lo[1] &&
+            atm_hi[0] >= ocn_hi[0] && atm_hi[1] >= ocn_hi[1],
+            "Atmosphere domain must fully contain ocean domain for coupled simulations.");
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             n_cell_atm[0] % n_cell_ocn[0] == 0 && n_cell_atm[1] % n_cell_ocn[1] == 0,
             "Current coupling requires atmosphere horizontal cell counts to be integer multiples of ocean horizontal cell counts; ocean-finer-than-atmosphere topologies are unsupported.");

@@ -296,14 +296,46 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
       m_atmos_to_ocean_contract(atm2ocn_contract),
       m_use_two_way_coupling(use_two_way_coupling)
 {
+    // Validate containment: atmosphere must fully cover ocean
+    const bool atmosphere_contains_ocean =
+        (atm_rb.lo(0) <= ocn_rb.lo(0)) && (atm_rb.lo(1) <= ocn_rb.lo(1)) &&
+        (atm_rb.hi(0) >= ocn_rb.hi(0)) && (atm_rb.hi(1) >= ocn_rb.hi(1));
+
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        n_cell_atm[0] % n_cell_ocn[0] == 0 &&
-        n_cell_atm[1] % n_cell_ocn[1] == 0,
-        "Driver constructor requires integer x/y refinement ratio between atmosphere and ocean slabs.");
-    const amrex::IntVect horiz_ratio(n_cell_atm[0] / n_cell_ocn[0],
+        atmosphere_contains_ocean,
+        "Atmosphere domain must fully contain ocean domain.\n");
+
+    // Determine if domains match horizontally
+    m_domains_match =
+        (atm_rb.lo(0) == ocn_rb.lo(0)) && (atm_rb.lo(1) == ocn_rb.lo(1)) &&
+        (atm_rb.hi(0) == ocn_rb.hi(0)) && (atm_rb.hi(1) == ocn_rb.hi(1));
+
+    // Compute horizontal resolution ratio
+    amrex::IntVect horiz_ratio;
+    if (m_domains_match) {
+        // Matching domains: cell counts must have integer refinement ratio
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            n_cell_atm[0] % n_cell_ocn[0] == 0 &&
+            n_cell_atm[1] % n_cell_ocn[1] == 0,
+            "Matching domains: atmosphere cell count must be integer multiple of ocean cell count.");
+        horiz_ratio = amrex::IntVect(n_cell_atm[0] / n_cell_ocn[0],
                                      n_cell_atm[1] / n_cell_ocn[1], 1);
 
-    // Interface slab: horizontal extent of the atmosphere at z = 0.
+        amrex::Print() << "Coupling configuration: MATCHING domains\n"
+                       << "  Horizontal resolution ratio: " << horiz_ratio[0] << " x " << horiz_ratio[1] << "\n";
+    } else {
+        // Nonmatching domains: compute ratio from grid spacing
+        // TODO: validate integer grid spacing ratio for conservative remapping
+        horiz_ratio = amrex::IntVect(1, 1, 1);  // Placeholder for now
+
+        amrex::Print() << "Coupling configuration: NONMATCHING domains\n"
+                       << "  Coupling interface = ocean top surface\n"
+    }
+
+    // Interface slab construction for coupling
+    m_interface_rb = ocn_rb; // Coupling interface is the entire ocean top surface
+    m_interface_ncell = amrex::IntVect(n_cell_ocn[0], n_cell_ocn[1], n_cell_ocn[2]);
+
     amrex::Box domain(amrex::IntVect(0, 0, 0),
                       amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
     m_ba.define(domain);
@@ -894,11 +926,34 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
         },
         [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
             BL_PROFILE("Driver::Apply_Surface");
-            ERFApplyOceanSurfaceState(m_erf, state, time);
+
+            if (m_domains_match) {
+                // Fast path: domains match, apply directly from ocean-resolution cache
+                ERFApplyOceanSurfaceState(m_erf, state, time);
+            } else {
+                // Slow path: domains don't match, need spatial interpolation
+                // TODO: implement interpolation path
+                // 1. Create temporary atmosphere-resolution MultiFabs
+                // 2. Initialize with fallback SST (300 K)
+                // 3. InterpolateOceanToAtmosphereState(state, temp, m_interface_rb)
+                // 4. ERFApplyOceanSurfaceState(m_erf, temp, time)
+                amrex::Abort("Nonmatching domain interpolation not yet implemented for ocean->atmosphere apply");
+            }
         },
         [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Atmos");
-            ERFPackAtmosphericStates(m_erf, states, time);
+
+            if (m_domains_match) {
+                // Fast path: domains match, pack directly into ocean-resolution cache
+                ERFPackAtmosphericStates(m_erf, states, time);
+            } else {
+                // Slow path: domains don't match, need spatial remapping
+                // TODO: implement remapping path
+                // 1. Create temporary atmosphere-resolution MultiFabs
+                // 2. ERFPackAtmosphericStates into temp
+                // 3. RemapAtmosphereToOceanStates(temp, states)
+                amrex::Abort("Nonmatching domain remapping not yet implemented for atmosphere->ocean pack");
+            }
             static int cloud_warn_count = 0;
             constexpr int cloud_warn_limit = 5;
             constexpr amrex::Real cloud_tol = 1.0e-6;

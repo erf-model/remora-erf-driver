@@ -332,26 +332,48 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
                        << "  Coupling interface = ocean top surface\n"
     }
 
-    // Interface slab construction for coupling
-    m_interface_rb = ocn_rb; // Coupling interface is the entire ocean top surface
+    // Coupling interface is the entire ocean top surface
+    m_interface_rb = ocn_rb;
     m_interface_ncell = amrex::IntVect(n_cell_ocn[0], n_cell_ocn[1], n_cell_ocn[2]);
 
-    amrex::Box domain(amrex::IntVect(0, 0, 0),
-                      amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
-    m_ba.define(domain);
-    m_ba.maxSize(max_grid_size);
-    m_dm.define(m_ba);
-    PrintBoxArrayLayout("Driver constructor ocean->atmos slab", m_ba, m_dm);
+    // Interface slab construction: depends on whether domains match
+    if (m_domains_match) {
+        // Matching domains: use atmosphere extent, coarsen to ocean resolution
+        amrex::Box domain(amrex::IntVect(0, 0, 0),
+                          amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
+        m_ba.define(domain);
+        m_ba.maxSize(max_grid_size);
+        m_dm.define(m_ba);
+        PrintBoxArrayLayout("Driver constructor ocean->atmos slab", m_ba, m_dm);
 
-    // Enforce structural compatibility by deriving the ocean slab directly
-    // from the atmosphere slab decomposition.
-    m_ba_ocn = m_ba;
-    m_ba_ocn.coarsen(horiz_ratio);
-    m_dm_ocn.define(m_ba_ocn);
-    PrintBoxArrayLayout("Driver constructor atmos->ocean slab", m_ba_ocn, m_dm_ocn);
-    ValidateCouplingLayout(m_ba, m_dm, m_ba_ocn, m_dm_ocn,
-                           horiz_ratio,
-                           "ERF->REMORA horizontal coupling");
+        // Derive ocean slab from atmosphere slab via coarsening
+        m_ba_ocn = m_ba;
+        m_ba_ocn.coarsen(horiz_ratio);
+        m_dm_ocn.define(m_ba_ocn);
+        PrintBoxArrayLayout("Driver constructor atmos->ocean slab", m_ba_ocn, m_dm_ocn);
+        ValidateCouplingLayout(m_ba, m_dm, m_ba_ocn, m_dm_ocn,
+                               horiz_ratio,
+                               "ERF->REMORA horizontal coupling");
+    } else {
+        // Nonmatching domains: construct separate slabs for atmosphere and ocean extents
+        // m_ba = atmosphere extent (for ocean->atmosphere cache)
+        amrex::Box atm_domain(amrex::IntVect(0, 0, 0),
+                              amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
+        m_ba.define(atm_domain);
+        m_ba.maxSize(max_grid_size);
+        m_dm.define(m_ba);
+        PrintBoxArrayLayout("Driver constructor ocean->atmos slab (atm extent)", m_ba, m_dm);
+
+        // m_ba_ocn = ocean extent (for atmosphere->ocean cache)
+        amrex::Box ocn_domain(amrex::IntVect(0, 0, 0),
+                              amrex::IntVect(n_cell_ocn[0]-1, n_cell_ocn[1]-1, 0));
+        m_ba_ocn.define(ocn_domain);
+        m_ba_ocn.maxSize(max_grid_size);
+        m_dm_ocn.define(m_ba_ocn);
+        PrintBoxArrayLayout("Driver constructor atmos->ocean slab (ocn extent)", m_ba_ocn, m_dm_ocn);
+
+        // Note: No ValidateCouplingLayout for nonmatching - grids have different extents
+    }
 
     amrex::Real dz_atm = (atm_rb.hi(2) - atm_rb.lo(2)) / n_cell_atm[2];
     amrex::RealBox slab_rb({atm_rb.lo(0), atm_rb.lo(1), 0.0},

@@ -1016,13 +1016,19 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 // Fast path: domains match, apply directly from ocean-resolution cache
                 ERFApplyOceanSurfaceState(m_erf, state, time);
             } else {
-                // Slow path: domains don't match, need spatial interpolation
-                // TODO: implement interpolation path
-                // 1. Create temporary atmosphere-resolution MultiFabs
-                // 2. Initialize with fallback SST (300 K)
-                // 3. InterpolateOceanToAtmosphereState(state, temp, m_interface_rb)
-                // 4. ERFApplyOceanSurfaceState(m_erf, temp, time)
-                amrex::Abort("Nonmatching domain interpolation not yet implemented for ocean->atmosphere apply");
+                // Slow path: domains don't match, interpolate with fallback for uncovered regions
+                BL_PROFILE("Driver::Interp_SST");
+
+                // Create temporary atmosphere-resolution MultiFab
+                amrex::Vector<std::unique_ptr<amrex::MultiFab>> atm_temp_storage(1);
+                atm_temp_storage[0] = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, 0);
+                amrex::Vector<amrex::MultiFab*> atm_temp = amrex::GetVecOfPtrs(atm_temp_storage);
+
+                // Interpolate ocean SST to atmosphere resolution with fallback
+                InterpOceanToAtmos(state, atm_temp);
+
+                // Apply to ERF
+                ERFApplyOceanSurfaceState(m_erf, atm_temp, time);
             }
         },
         [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {

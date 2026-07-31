@@ -25,7 +25,7 @@ erf.most.Ch  = 0.0012 # theta flux
 erf.most.Cq  = 0.0012 # qv    flux
 
 erf.most.surf_temp  = 287.15
-erf.most.surf_moist = 0.0
+erf.most.surf_moist = .00802
 erf.most.z0     = 0.1
 erf.most.zref   = 25.0
 

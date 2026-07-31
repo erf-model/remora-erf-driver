@@ -802,6 +802,69 @@ ERFRemoraMultiBlockContainer::FillAtmosToOceanGhosts ()
 }
 
 void
+ERFRemoraMultiBlockContainer::InterpOceanToAtmos (
+    const amrex::Vector<amrex::MultiFab*>& ocean_state,
+    amrex::Vector<amrex::MultiFab*>& atm_state)
+{
+    BL_PROFILE("Driver::InterpOceanToAtmos");
+
+    // 1. Initialize atmosphere state with fallback SST everywhere
+    //    Use ERF's configured surface temperature (erf.most.surf_temp, default 300 K)
+    //    This matches one-way coupling behavior
+    amrex::Real fallback_sst = 300.0;
+    amrex::ParmParse pp_erf("erf");
+    pp_erf.query("most.surf_temp", fallback_sst);
+
+    atm_state[coupling::SST]->setVal(fallback_sst);
+
+    // 2. Compute refinement ratio from grid spacings
+    const amrex::Real dx_atm = (m_atm_rb.hi(0) - m_atm_rb.lo(0)) / m_atm_n_cell[0];
+    const amrex::Real dy_atm = (m_atm_rb.hi(1) - m_atm_rb.lo(1)) / m_atm_n_cell[1];
+    const amrex::Real dx_ocn = (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) / m_ocn_n_cell[0];
+    const amrex::Real dy_ocn = (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) / m_ocn_n_cell[1];
+
+    const amrex::IntVect ratio(
+        static_cast<int>(std::round(dx_ocn / dx_atm)),
+        static_cast<int>(std::round(dy_ocn / dy_atm)),
+        1
+    );
+
+    // 3. Create temporary MultiFab at atmosphere resolution on ocean extent
+    amrex::BoxArray ba_atm_temp = m_ba_ocn;
+    ba_atm_temp.refine(ratio);
+
+    amrex::DistributionMapping dm_atm_temp(ba_atm_temp);
+    amrex::MultiFab atm_temp(ba_atm_temp, dm_atm_temp, 1, 0);
+
+    // 4. Use InterpFromCoarseLevel to interpolate ocean SST to atmosphere resolution
+    //    This handles parallel distribution correctly via MPI communication
+    amrex::Vector<amrex::BCRec> bcs(1, amrex::BCRec());
+    amrex::Interpolater* mapper = &amrex::pc_interp;
+
+    amrex::InterpFromCoarseLevel(
+        atm_temp,                      // destination: atmosphere resolution on ocean extent
+        amrex::IntVect(0),             // time: t_old index (not used)
+        amrex::IntVect(0),             // time: t_new index (not used)
+        *ocean_state[coupling::SST],  // source: ocean resolution
+        0, 0, 1,                      // src_comp, dest_comp, ncomp
+        m_geom_ocn, m_geom_ocn,       // Both use ocean geometry
+        bcs, 0,                       // boundary conditions, bccomp
+        ratio,                        // refinement ratio
+        mapper,                       // interpolation scheme
+        amrex::Vector<amrex::BCRec>(),// bcs_in (empty)
+        0                             // bcs_comp_in
+    );
+
+    // 5. ParallelCopy interpolated SST from ocean extent to full atmosphere extent
+    //    ParallelCopy only overwrites overlapping region (ocean extent)
+    //    Non-overlapping regions keep fallback SST
+    atm_state[coupling::SST]->ParallelCopy(atm_temp, 0, 0, 1, 0, 0);
+
+    // 6. Fill ghost cells for periodicity
+    atm_state[coupling::SST]->FillBoundary(m_geom.periodicity());
+}
+
+void
 ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
                              const amrex::Vector<amrex::MultiFab*>& fields,
                              const amrex::Vector<std::string>& names) const

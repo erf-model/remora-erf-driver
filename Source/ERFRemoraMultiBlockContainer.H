@@ -109,6 +109,8 @@ private:
     void ValidateCouplingLayoutsFromSolvers() const;
     coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
     void SelectAtmosToOceanActiveView(long long ocean_step);
+    void InterpOceanToAtmos(const amrex::Vector<amrex::MultiFab*>& ocean_state,
+                            amrex::Vector<amrex::MultiFab*>& atm_state);
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;

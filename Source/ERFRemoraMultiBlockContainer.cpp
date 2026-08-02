@@ -626,7 +626,11 @@ ERFRemoraMultiBlockContainer::AllocateSyntheticCaches ()
         const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
         for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
             auto& mf_ptr = m_ocean_to_atmos_storage[idx];
-            mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+            // For nonmatching domains: use ocean extent for REMORA to pack into
+            // For matching domains: m_ba == m_ba_ocn, so this works for both cases
+            const amrex::BoxArray& ba_cache = m_domains_match ? m_ba : m_ba_ocn;
+            const amrex::DistributionMapping& dm_cache = m_domains_match ? m_dm : m_dm_ocn;
+            mf_ptr = std::make_unique<amrex::MultiFab>(ba_cache, dm_cache, 1, ocean_to_atmos_ng);
             mf_ptr->setVal(0.0);
             const std::string label = "Driver AllocateCaches ocean->atmos[" + std::to_string(idx) + "]";
             PrintMultiFabLayout(label.c_str(), *mf_ptr);
@@ -708,7 +712,11 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
         for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
             auto& mf_ptr = m_ocean_to_atmos_storage[idx];
-            mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
+            // For nonmatching domains: use ocean extent (m_ba_ocn) for REMORA to pack into
+            // For matching domains: m_ba == m_ba_ocn, so this works for both cases
+            const amrex::BoxArray& ba_cache = m_domains_match ? m_ba : m_ba_ocn;
+            const amrex::DistributionMapping& dm_cache = m_domains_match ? m_dm : m_dm_ocn;
+            mf_ptr = std::make_unique<amrex::MultiFab>(ba_cache, dm_cache, 1, ocean_to_atmos_ng);
             mf_ptr->setVal(0.0);
             const std::string label = "Driver AllocateCachesFromSolverLayouts ocean->atmos[" + std::to_string(idx) + "]";
             PrintMultiFabLayout(label.c_str(), *mf_ptr);

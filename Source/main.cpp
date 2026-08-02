@@ -398,9 +398,17 @@ main (int argc, char* argv[])
             atm_lo[0] <= ocn_lo[0] && atm_lo[1] <= ocn_lo[1] &&
             atm_hi[0] >= ocn_hi[0] && atm_hi[1] >= ocn_hi[1],
             "Atmosphere domain must fully contain ocean domain for coupled simulations.");
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-            n_cell_atm[0] % n_cell_ocn[0] == 0 && n_cell_atm[1] % n_cell_ocn[1] == 0,
-            "Current coupling requires atmosphere horizontal cell counts to be integer multiples of ocean horizontal cell counts; ocean-finer-than-atmosphere topologies are unsupported.");
+
+        // Check if domains match horizontally
+        bool domains_match =
+            (atm_lo[0] == ocn_lo[0]) && (atm_lo[1] == ocn_lo[1]) &&
+            (atm_hi[0] == ocn_hi[0]) && (atm_hi[1] == ocn_hi[1]);
+
+        if (domains_match) {
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                n_cell_atm[0] % n_cell_ocn[0] == 0 && n_cell_atm[1] % n_cell_ocn[1] == 0,
+                "For matching domains, atmosphere horizontal cell counts must be integer multiples of ocean horizontal cell counts; ocean-finer-than-atmosphere topologies are unsupported.");
+        }
 
         int max_level = 0;
         int coord = 0;

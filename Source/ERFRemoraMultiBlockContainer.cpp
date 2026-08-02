@@ -147,7 +147,8 @@ ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
                         const amrex::BoxArray& coarse_ba,
                         const amrex::DistributionMapping& coarse_dm,
                         const amrex::IntVect& ratio,
-                        const char* label)
+                        const char* label,
+                        bool domains_match = true)
 {
     const amrex::IntVect fine_len = fine_ba.minimalBox().length();
     const amrex::IntVect coarse_len = coarse_ba.minimalBox().length();
@@ -174,10 +175,13 @@ ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
         fine_len[2] == 1 && coarse_len[2] == 1,
         "ValidateCouplingLayout: coupling slabs must remain one-cell thick in z.");
-    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        fine_len[0] == coarse_len[0] * ratio[0] &&
-        fine_len[1] == coarse_len[1] * ratio[1],
-        "ValidateCouplingLayout: fine/coarse slab lengths do not match the requested ratio.");
+
+    if (domains_match) {
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            fine_len[0] == coarse_len[0] * ratio[0] &&
+            fine_len[1] == coarse_len[1] * ratio[1],
+            "ValidateCouplingLayout: for matching domains, fine/coarse slab lengths must match the requested ratio.");
+    }
 
     amrex::BoxArray coarsened_fine = fine_ba;
     for (int i = 0; i < coarsened_fine.size(); ++i) {
@@ -356,7 +360,8 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
         PrintBoxArrayLayout("Driver constructor atmos->ocean slab", m_ba_ocn, m_dm_ocn);
         ValidateCouplingLayout(m_ba, m_dm, m_ba_ocn, m_dm_ocn,
                                horiz_ratio,
-                               "ERF->REMORA horizontal coupling");
+                               "ERF->REMORA horizontal coupling",
+                               m_domains_match);
     } else {
         // Nonmatching domains: construct separate slabs for atmosphere and ocean extents
         // m_ba = atmosphere extent (for ocean->atmosphere cache)
@@ -737,23 +742,27 @@ ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
         ValidateCouplingLayout(erf_surface_ba, erf_surface_dm,
                                remora_rho_ba, remora_rho_dm,
                                horiz_ratio,
-                               "ERF surface <-> REMORA rho coupling");
+                               "ERF surface <-> REMORA rho coupling",
+                               m_domains_match);
 
         const amrex::BoxArray erf_xface_ba = amrex::convert(erf_surface_ba, amrex::IntVect(1,0,0));
         const amrex::BoxArray erf_yface_ba = amrex::convert(erf_surface_ba, amrex::IntVect(0,1,0));
         ValidateCouplingLayout(erf_xface_ba, erf_surface_dm,
                                remora_u_ba, remora_u_dm,
                                horiz_ratio,
-                               "ERF x-face <-> REMORA u-face coupling");
+                               "ERF x-face <-> REMORA u-face coupling",
+                               m_domains_match);
         ValidateCouplingLayout(erf_yface_ba, erf_surface_dm,
                                remora_v_ba, remora_v_dm,
                                horiz_ratio,
-                               "ERF y-face <-> REMORA v-face coupling");
+                               "ERF y-face <-> REMORA v-face coupling",
+                               m_domains_match);
     } else {
         ValidateCouplingLayout(m_ba, m_dm,
                                remora_rho_ba, remora_rho_dm,
                                horiz_ratio,
-                               "Driver atmosphere slab <-> REMORA rho coupling");
+                               "Driver atmosphere slab <-> REMORA rho coupling",
+                               m_domains_match);
     }
 }
 

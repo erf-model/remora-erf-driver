@@ -111,6 +111,8 @@ private:
     void SelectAtmosToOceanActiveView(long long ocean_step);
     void InterpOceanToAtmos(const amrex::Vector<amrex::MultiFab*>& ocean_state,
                             amrex::Vector<amrex::MultiFab*>& atm_state);
+    void RemapAtmosToOceanStates(const amrex::Vector<amrex::MultiFab*>& atm_states,
+                                 amrex::Vector<amrex::MultiFab*>& ocn_states);
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;

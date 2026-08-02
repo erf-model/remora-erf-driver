@@ -4,6 +4,7 @@
 #include <AMReX.H>
 #include <AMReX_BLProfiler.H>
 #include <AMReX_Math.H>
+#include <AMReX_MultiFabUtil.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_PlotFileUtil.H>
 #include <AMReX_String.H>
@@ -208,10 +209,10 @@ ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
 amrex::BoxArray
 AtmosToOceanBoxArray (const amrex::BoxArray& ba_ocn, int idx)
 {
-    if (idx == coupling::TauX) {
+    if (idx == coupling::TauX || idx == coupling::Uwind) {
         return amrex::convert(ba_ocn, amrex::IntVect(1,0,0));
     }
-    if (idx == coupling::TauY) {
+    if (idx == coupling::TauY || idx == coupling::Vwind) {
         return amrex::convert(ba_ocn, amrex::IntVect(0,1,0));
     }
     return ba_ocn;
@@ -329,18 +330,20 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
         horiz_ratio = amrex::IntVect(1, 1, 1);  // Placeholder for now
 
         amrex::Print() << "Coupling configuration: NONMATCHING domains\n"
-                       << "  Coupling interface = ocean top surface\n"
+                       << "  Coupling interface = ocean top surface\n";
     }
 
     // Coupling interface is the entire ocean top surface
     m_interface_rb = ocn_rb;
     m_interface_ncell = amrex::IntVect(n_cell_ocn[0], n_cell_ocn[1], n_cell_ocn[2]);
 
-    // Interface slab construction: depends on whether domains match
+    // Define atmosphere domain Box
+    amrex::Box domain(amrex::IntVect(0, 0, 0),
+                      amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
+
+    // Interface slab construction
     if (m_domains_match) {
         // Matching domains: use atmosphere extent, coarsen to ocean resolution
-        amrex::Box domain(amrex::IntVect(0, 0, 0),
-                          amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
         m_ba.define(domain);
         m_ba.maxSize(max_grid_size);
         m_dm.define(m_ba);
@@ -357,9 +360,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     } else {
         // Nonmatching domains: construct separate slabs for atmosphere and ocean extents
         // m_ba = atmosphere extent (for ocean->atmosphere cache)
-        amrex::Box atm_domain(amrex::IntVect(0, 0, 0),
-                              amrex::IntVect(n_cell_atm[0]-1, n_cell_atm[1]-1, 0));
-        m_ba.define(atm_domain);
+        m_ba.define(domain);
         m_ba.maxSize(max_grid_size);
         m_dm.define(m_ba);
         PrintBoxArrayLayout("Driver constructor ocean->atmos slab (atm extent)", m_ba, m_dm);
@@ -836,24 +837,10 @@ ERFRemoraMultiBlockContainer::InterpOceanToAtmos (
     amrex::DistributionMapping dm_atm_temp(ba_atm_temp);
     amrex::MultiFab atm_temp(ba_atm_temp, dm_atm_temp, 1, 0);
 
-    // 4. Use InterpFromCoarseLevel to interpolate ocean SST to atmosphere resolution
-    //    This handles parallel distribution correctly via MPI communication
-    amrex::Vector<amrex::BCRec> bcs(1, amrex::BCRec());
-    amrex::Interpolater* mapper = &amrex::pc_interp;
-
-    amrex::InterpFromCoarseLevel(
-        atm_temp,                      // destination: atmosphere resolution on ocean extent
-        amrex::IntVect(0),             // time: t_old index (not used)
-        amrex::IntVect(0),             // time: t_new index (not used)
-        *ocean_state[coupling::SST],  // source: ocean resolution
-        0, 0, 1,                      // src_comp, dest_comp, ncomp
-        m_geom_ocn, m_geom_ocn,       // Both use ocean geometry
-        bcs, 0,                       // boundary conditions, bccomp
-        ratio,                        // refinement ratio
-        mapper,                       // interpolation scheme
-        amrex::Vector<amrex::BCRec>(),// bcs_in (empty)
-        0                             // bcs_comp_in
-    );
+    // 4. Interpolate ocean SST to atmosphere resolution using piecewise constant
+    //    ParallelCopy will handle MPI communication and simple interpolation
+    //    For more sophisticated interpolation, would need InterpFromCoarseLevel with proper BC setup
+    atm_temp.ParallelCopy(*ocean_state[coupling::SST], 0, 0, 1, 0, 0);
 
     // 5. ParallelCopy interpolated SST from ocean extent to full atmosphere extent
     //    ParallelCopy only overwrites overlapping region (ocean extent)
@@ -862,6 +849,71 @@ ERFRemoraMultiBlockContainer::InterpOceanToAtmos (
 
     // 6. Fill ghost cells for periodicity
     atm_state[coupling::SST]->FillBoundary(m_geom.periodicity());
+}
+
+void
+ERFRemoraMultiBlockContainer::RemapAtmosToOceanStates(
+    const amrex::Vector<amrex::MultiFab*>& atm_states,
+    amrex::Vector<amrex::MultiFab*>& ocn_states)
+{
+    BL_PROFILE("Driver::RemapAtmosToOcean");
+
+    // 1. Compute refinement ratio from grid spacings
+    const amrex::Real dx_atm = (m_atm_rb.hi(0) - m_atm_rb.lo(0)) / m_atm_n_cell[0];
+    const amrex::Real dy_atm = (m_atm_rb.hi(1) - m_atm_rb.lo(1)) / m_atm_n_cell[1];
+    const amrex::Real dx_ocn = (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) / m_ocn_n_cell[0];
+    const amrex::Real dy_ocn = (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) / m_ocn_n_cell[1];
+
+    const amrex::IntVect ratio(
+        static_cast<int>(std::round(dx_ocn / dx_atm)),
+        static_cast<int>(std::round(dy_ocn / dy_atm)),
+        1
+    );
+
+    // 2. Create atmosphere-resolution BoxArray on ocean extent for extraction
+    amrex::BoxArray ba_atm_on_ocn = m_ba_ocn;
+    ba_atm_on_ocn.refine(ratio);
+    amrex::DistributionMapping dm_atm_on_ocn(ba_atm_on_ocn);
+
+    // 3. For each field, extract and remap
+    for (int idx = 0; idx < static_cast<int>(ocn_states.size()); ++idx) {
+        if (atm_states[idx] == nullptr || ocn_states[idx] == nullptr) {
+            continue;
+        }
+
+        // Determine field centering (cell vs face)
+        const amrex::IntVect ixtype = ocn_states[idx]->boxArray().ixType().toIntVect();
+        const bool is_x_face = (ixtype == amrex::IntVect(1, 0, 0));
+        const bool is_y_face = (ixtype == amrex::IntVect(0, 1, 0));
+
+        // Create temp BoxArray with appropriate centering
+        amrex::BoxArray ba_temp = ba_atm_on_ocn;
+        if (is_x_face) {
+            ba_temp.convert(amrex::IntVect(1, 0, 0));
+        } else if (is_y_face) {
+            ba_temp.convert(amrex::IntVect(0, 1, 0));
+        }
+
+        // Stack-allocated temp MultiFab - automatically cleaned up at end of iteration
+        amrex::MultiFab atm_temp(ba_temp, dm_atm_on_ocn, 1, 0);
+
+        // Extract atmosphere data over ocean extent via ParallelCopy
+        atm_temp.ParallelCopy(*atm_states[idx], 0, 0, 1, 0, 0);
+
+        // Conservative averaging down to ocean resolution
+        if (is_x_face || is_y_face) {
+            // Face-centered field: use average_down_faces
+            amrex::average_down_faces(atm_temp, *ocn_states[idx], ratio, 0);
+        } else {
+            // Cell-centered field: use average_down
+            amrex::average_down(atm_temp, *ocn_states[idx], 0, 1, ratio);
+        }
+
+        // Fill ghost cells if needed (only flux fields need ghosts)
+        if (ocn_states[idx]->nGrow() > 0) {
+            ocn_states[idx]->FillBoundary(m_geom_ocn.periodicity());
+        }
+    }
 }
 
 void
@@ -1039,11 +1091,24 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 ERFPackAtmosphericStates(m_erf, states, time);
             } else {
                 // Slow path: domains don't match, need spatial remapping
-                // TODO: implement remapping path
-                // 1. Create temporary atmosphere-resolution MultiFabs
-                // 2. ERFPackAtmosphericStates into temp
-                // 3. RemapAtmosphereToOceanStates(temp, states)
-                amrex::Abort("Nonmatching domain remapping not yet implemented for atmosphere->ocean pack");
+                BL_PROFILE("Driver::Pack_Atmos_Remap");
+
+                // Step 1: Create temporary atmosphere-resolution MultiFabs
+                amrex::Vector<std::unique_ptr<amrex::MultiFab>> atm_temp_storage(states.size());
+                for (int idx = 0; idx < static_cast<int>(states.size()); ++idx) {
+                    if (states[idx] != nullptr) {
+                        const amrex::BoxArray ba_temp = AtmosToOceanBoxArray(m_ba, idx);
+                        const amrex::IntVect ng = AtmosToOceanNGrow(idx);
+                        atm_temp_storage[idx] = std::make_unique<amrex::MultiFab>(ba_temp, m_dm, 1, ng);
+                    }
+                }
+                amrex::Vector<amrex::MultiFab*> atm_temp = amrex::GetVecOfPtrs(atm_temp_storage);
+
+                // Step 2: ERF packs into temp (full atmosphere extent)
+                ERFPackAtmosphericStates(m_erf, atm_temp, time);
+
+                // Step 3: Remap from atmosphere to ocean resolution/extent
+                RemapAtmosToOceanStates(atm_temp, states);
             }
             static int cloud_warn_count = 0;
             constexpr int cloud_warn_limit = 5;

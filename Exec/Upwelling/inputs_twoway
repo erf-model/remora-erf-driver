@@ -29,12 +29,8 @@ driver.atm2ocn_mode         = flux
 max_step = 864
 start_datetime         = "2025-06-25 11:00:00" # 11am UTC = 4am PDT, which is local time for Oregon summer
 
-erf.fixed_dt = 3
-remora.fixed_dt = 300
-
-# ERF: OceanSurf land surface model with bulk transfer coefficients supplied
-# by the two-way ERF RemoraCoupling base deck.
-erf.is_land = 0
+erf.fixed_dt    = 3.0
+remora.fixed_dt = 300.0
 
 erf.plot_file_1 = erfplt
 erf.plot_int_1 = 2000

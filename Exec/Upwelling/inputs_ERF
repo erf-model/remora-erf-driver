@@ -2,6 +2,9 @@
 
 erf.moisture_model = MoistNoCondensation
 
+# Default without landmask is set here to sea
+erf.is_land = 0
+
 # PROBLEM SIZE & GEOMETRY
 erf.prob_lo          = 0.0 0.0 0.0
 erf.prob_hi          = 50000 20000 9000.
@@ -83,7 +86,7 @@ erf.rayleigh_damping_type = SlowExplicit
 erf.rayleigh_zdamp    = 1000.0
 erf.rayleigh_dampcoef = 0.2
 
-erf.rayleigh_damp_U = false
+erf.rayleigh_damp_U = true
 erf.rayleigh_damp_V = true
 erf.rayleigh_damp_W = true
 erf.rayleigh_damp_T = true

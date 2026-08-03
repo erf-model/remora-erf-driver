@@ -25,6 +25,24 @@ endif()
 if(NOT DEFINED ERF_REMORA_ARGS)
   set(ERF_REMORA_ARGS "")
 endif()
+if(NOT DEFINED ERF_REMORA_ERF_COMPARE_SUFFIX)
+  set(ERF_REMORA_ERF_COMPARE_SUFFIX "00002")
+endif()
+if(NOT DEFINED ERF_REMORA_REMORA_COMPARE_SUFFIX)
+  set(ERF_REMORA_REMORA_COMPARE_SUFFIX "00002")
+endif()
+if(NOT DEFINED ERF_REMORA_EXCHANGE_COMPARE_SUFFIX)
+  set(ERF_REMORA_EXCHANGE_COMPARE_SUFFIX "${ERF_REMORA_REMORA_COMPARE_SUFFIX}")
+endif()
+if(NOT DEFINED ERF_REMORA_ERF_PLOT_INT)
+  set(ERF_REMORA_ERF_PLOT_INT "1")
+endif()
+if(NOT DEFINED ERF_REMORA_REMORA_PLOT_INT)
+  set(ERF_REMORA_REMORA_PLOT_INT "1")
+endif()
+if(NOT DEFINED ERF_REMORA_EXCHANGE_PLOT_INT)
+  set(ERF_REMORA_EXCHANGE_PLOT_INT "1")
+endif()
 
 if(NOT EXISTS "${ERF_REMORA_DRIVER_EXE}")
   message(FATAL_ERROR "Missing driver executable: ${ERF_REMORA_DRIVER_EXE}")
@@ -42,6 +60,7 @@ if(DEFINED ERF_REMORA_WORK_SUBDIR AND NOT "${ERF_REMORA_WORK_SUBDIR}" STREQUAL "
 endif()
 set(_work_dir "${CMAKE_CURRENT_BINARY_DIR}/${_work_subdir}")
 file(REMOVE_RECURSE "${_work_dir}")
+file(MAKE_DIRECTORY "${_work_dir}")
 file(MAKE_DIRECTORY "${_work_dir}/np1")
 file(MAKE_DIRECTORY "${_work_dir}/np2")
 
@@ -61,12 +80,9 @@ foreach(_fname IN LISTS _required_files)
 endforeach()
 
 set(_common_args
-  "max_step=2"
-  "erf.plot_int_1=1"
-  "erf.check_int=1"
-  "remora.plot_int=1"
-  "remora.check_int=1"
-  "driver.plot_int_exchange=1"
+  "erf.plot_int_1=${ERF_REMORA_ERF_PLOT_INT}"
+  "remora.plot_int=${ERF_REMORA_REMORA_PLOT_INT}"
+  "driver.plot_int_exchange=${ERF_REMORA_EXCHANGE_PLOT_INT}"
 )
 foreach(_arg IN LISTS ERF_REMORA_ARGS)
   if(NOT "${_arg}" STREQUAL "")
@@ -97,9 +113,7 @@ function(_erf_remora_run_case _nranks _tag)
   list(APPEND _cmd "${ERF_REMORA_DRIVER_EXE}" "${_work_dir}/${_input_name}")
   list(APPEND _cmd
     "erf.plot_file_1=${_tag}/erfplt"
-    "erf.check_file=${_tag}/erfchk"
     "remora.plot_file=${_tag}/remoraplt"
-    "remora.check_file=${_tag}/remorachk"
     "driver.plot_file_exchange_a2o=${_tag}/exchange_a2o"
     "driver.plot_file_exchange_o2a=${_tag}/exchange_o2a"
   )
@@ -142,9 +156,9 @@ _erf_remora_run_case("1" "np1")
 _erf_remora_run_case("2" "np2")
 
 foreach(_relative_path
-    "remoraplt00002"
-    "erfplt00002"
-    "exchange_a2o00002"
-    "exchange_o2a00002")
+    "remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
+    "erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}"
+    "exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
+    "exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}")
   _erf_remora_compare_output("${_relative_path}")
 endforeach()

@@ -19,6 +19,36 @@ endif()
 if(NOT DEFINED ERF_REMORA_ARGS)
   set(ERF_REMORA_ARGS "")
 endif()
+if(NOT DEFINED ERF_REMORA_ERF_RESTART_SUFFIX)
+  set(ERF_REMORA_ERF_RESTART_SUFFIX "00001")
+endif()
+if(NOT DEFINED ERF_REMORA_REMORA_RESTART_SUFFIX)
+  set(ERF_REMORA_REMORA_RESTART_SUFFIX "00001")
+endif()
+if(NOT DEFINED ERF_REMORA_ERF_COMPARE_SUFFIX)
+  set(ERF_REMORA_ERF_COMPARE_SUFFIX "00002")
+endif()
+if(NOT DEFINED ERF_REMORA_REMORA_COMPARE_SUFFIX)
+  set(ERF_REMORA_REMORA_COMPARE_SUFFIX "00002")
+endif()
+if(NOT DEFINED ERF_REMORA_EXCHANGE_COMPARE_SUFFIX)
+  set(ERF_REMORA_EXCHANGE_COMPARE_SUFFIX "${ERF_REMORA_REMORA_COMPARE_SUFFIX}")
+endif()
+if(NOT DEFINED ERF_REMORA_ERF_PLOT_INT)
+  set(ERF_REMORA_ERF_PLOT_INT "1")
+endif()
+if(NOT DEFINED ERF_REMORA_ERF_CHECK_INT)
+  set(ERF_REMORA_ERF_CHECK_INT "1")
+endif()
+if(NOT DEFINED ERF_REMORA_REMORA_PLOT_INT)
+  set(ERF_REMORA_REMORA_PLOT_INT "1")
+endif()
+if(NOT DEFINED ERF_REMORA_REMORA_CHECK_INT)
+  set(ERF_REMORA_REMORA_CHECK_INT "1")
+endif()
+if(NOT DEFINED ERF_REMORA_EXCHANGE_PLOT_INT)
+  set(ERF_REMORA_EXCHANGE_PLOT_INT "1")
+endif()
 
 if(NOT EXISTS "${ERF_REMORA_DRIVER_EXE}")
   message(FATAL_ERROR "Missing driver executable: ${ERF_REMORA_DRIVER_EXE}")
@@ -54,12 +84,11 @@ foreach(_fname IN LISTS _required_files)
 endforeach()
 
 set(_common_args
-  "max_step=2"
-  "erf.plot_int_1=1"
-  "erf.check_int=1"
-  "remora.plot_int=1"
-  "remora.check_int=1"
-  "driver.plot_int_exchange=1"
+  "erf.plot_int_1=${ERF_REMORA_ERF_PLOT_INT}"
+  "erf.check_int=${ERF_REMORA_ERF_CHECK_INT}"
+  "remora.plot_int=${ERF_REMORA_REMORA_PLOT_INT}"
+  "remora.check_int=${ERF_REMORA_REMORA_CHECK_INT}"
+  "driver.plot_int_exchange=${ERF_REMORA_EXCHANGE_PLOT_INT}"
 )
 foreach(_arg IN LISTS ERF_REMORA_ARGS)
   if(NOT "${_arg}" STREQUAL "")
@@ -101,8 +130,8 @@ if(NOT _cold_result EQUAL 0)
 endif()
 
 set(_restart_args
-  "erf.restart=cold_erfchk00001"
-  "remora.restart=cold_remorachk00001"
+  "erf.restart=cold_erfchk${ERF_REMORA_ERF_RESTART_SUFFIX}"
+  "remora.restart=cold_remorachk${ERF_REMORA_REMORA_RESTART_SUFFIX}"
   "erf.plot_file_1=restart_erfplt"
   "erf.check_file=restart_erfchk"
   "remora.plot_file=restart_remoraplt"
@@ -143,10 +172,10 @@ function(_erf_remora_compare_output _lhs _rhs)
 endfunction()
 
 foreach(_pair
-    "cold_remoraplt00002|restart_remoraplt00002"
-    "cold_erfplt00002|restart_erfplt00002"
-    "cold_exchange_a2o00002|restart_exchange_a2o00002"
-    "cold_exchange_o2a00002|restart_exchange_o2a00002")
+    "cold_remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}|restart_remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
+    "cold_erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}|restart_erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}"
+    "cold_exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}|restart_exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
+    "cold_exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}|restart_exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}")
   string(REPLACE "|" ";" _pair_fields "${_pair}")
   list(GET _pair_fields 0 _lhs_rel)
   list(GET _pair_fields 1 _rhs_rel)

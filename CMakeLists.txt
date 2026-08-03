@@ -253,74 +253,105 @@ if(ERF_REMORA_ENABLE_TESTS)
       LABELS "reproducer"
   )
 
-  if(FCOMPARE_EXE AND ERF_REMORA_RRTMGP_DIR)
-    add_test(
-      NAME reproducer_restart_substep
-      COMMAND
-        "${CMAKE_COMMAND}"
-        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-        -DFCOMPARE_EXE=${FCOMPARE_EXE}
-        -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
-        -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
-        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
-        -P "${ERF_REMORA_RESTART_TEST_SCRIPT}"
-    )
-    set_tests_properties(reproducer_restart_substep
-      PROPERTIES
-        LABELS "reproducer"
-        PROCESSORS 1
-    )
+  if(FCOMPARE_EXE)
+    set(_erf_remora_upwelling_cases
+      "oneway|Exec/Upwelling/inputs_oneway"
+      "twoway|Exec/Upwelling/inputs_twoway")
+    set(_erf_remora_atm2ocn_modes state flux)
+    foreach(_case_entry IN LISTS _erf_remora_upwelling_cases)
+      string(REPLACE "|" ";" _case_fields "${_case_entry}")
+      list(GET _case_fields 0 _case_name)
+      list(GET _case_fields 1 _case_input)
+      foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
+        add_test(
+          NAME reproducer_restart_${_case_name}_${_atm2ocn_mode}
+          COMMAND
+            "${CMAKE_COMMAND}"
+            -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+            -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DERF_REMORA_INPUT_FILE=${_case_input}
+            -DFCOMPARE_EXE=${FCOMPARE_EXE}
+            -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
+            -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
+            -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+            -DERF_REMORA_WORK_SUBDIR=restart_${_case_name}_${_atm2ocn_mode}
+            "-DERF_REMORA_ARGS=driver.atm2ocn_mode=${_atm2ocn_mode}"
+            -P "${ERF_REMORA_RESTART_TEST_SCRIPT}"
+        )
+        set_tests_properties(reproducer_restart_${_case_name}_${_atm2ocn_mode}
+          PROPERTIES
+            LABELS "reproducer;restart"
+            PROCESSORS 1
+        )
+      endforeach()
+    endforeach()
   else()
     message(STATUS
       "Skipping top-level restart reproducer test registration because "
-      "FCOMPARE_EXE or ERF_REMORA_RRTMGP_DIR is unset")
+      "FCOMPARE_EXE is unset")
   endif()
 
   if(ERF_REMORA_ENABLE_MPI
      AND MPIEXEC_EXECUTABLE
-     AND FCOMPARE_EXE
-     AND ERF_REMORA_RRTMGP_DIR)
-    add_test(
-      NAME parallel_upwelling_np2_smoke
-      COMMAND
-        "${CMAKE_COMMAND}"
-        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
-        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
-        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
-        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
-        -P "${ERF_REMORA_MPI_SMOKE_TEST_SCRIPT}"
-    )
-    set_tests_properties(parallel_upwelling_np2_smoke
-      PROPERTIES
-        LABELS "parallel"
-        PROCESSORS 2
-    )
+     AND FCOMPARE_EXE)
+    set(_erf_remora_upwelling_cases
+      "oneway|Exec/Upwelling/inputs_oneway"
+      "twoway|Exec/Upwelling/inputs_twoway")
+    set(_erf_remora_atm2ocn_modes state flux)
+    foreach(_case_entry IN LISTS _erf_remora_upwelling_cases)
+      string(REPLACE "|" ";" _case_fields "${_case_entry}")
+      list(GET _case_fields 0 _case_name)
+      list(GET _case_fields 1 _case_input)
+      foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
+        add_test(
+          NAME parallel_upwelling_${_case_name}_${_atm2ocn_mode}_np2_smoke
+          COMMAND
+            "${CMAKE_COMMAND}"
+            -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+            -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DERF_REMORA_INPUT_FILE=${_case_input}
+            -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+            -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+            -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+            -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+            -DERF_REMORA_WORK_SUBDIR=mpi_smoke_${_case_name}_${_atm2ocn_mode}
+            "-DERF_REMORA_ARGS=driver.atm2ocn_mode=${_atm2ocn_mode}"
+            -P "${ERF_REMORA_MPI_SMOKE_TEST_SCRIPT}"
+        )
+        set_tests_properties(parallel_upwelling_${_case_name}_${_atm2ocn_mode}_np2_smoke
+          PROPERTIES
+            LABELS "parallel"
+            PROCESSORS 2
+        )
 
-    add_test(
-      NAME parallel_upwelling_np2_compare_to_np1
-      COMMAND
-        "${CMAKE_COMMAND}"
-        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-        -DFCOMPARE_EXE=${FCOMPARE_EXE}
-        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
-        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
-        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
-        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
-        -P "${ERF_REMORA_MPI_COMPARE_TEST_SCRIPT}"
-    )
-    set_tests_properties(parallel_upwelling_np2_compare_to_np1
-      PROPERTIES
-        LABELS "parallel"
-        PROCESSORS 2
-    )
+        add_test(
+          NAME parallel_upwelling_${_case_name}_${_atm2ocn_mode}_np2_compare_to_np1
+          COMMAND
+            "${CMAKE_COMMAND}"
+            -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+            -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DERF_REMORA_INPUT_FILE=${_case_input}
+            -DFCOMPARE_EXE=${FCOMPARE_EXE}
+            -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
+            -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
+            -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+            -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+            -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+            -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+            -DERF_REMORA_WORK_SUBDIR=mpi_compare_${_case_name}_${_atm2ocn_mode}
+            "-DERF_REMORA_ARGS=driver.atm2ocn_mode=${_atm2ocn_mode}"
+            -P "${ERF_REMORA_MPI_COMPARE_TEST_SCRIPT}"
+        )
+        set_tests_properties(parallel_upwelling_${_case_name}_${_atm2ocn_mode}_np2_compare_to_np1
+          PROPERTIES
+            LABELS "parallel"
+            PROCESSORS 2
+        )
+      endforeach()
+    endforeach()
   else()
     message(STATUS
       "Skipping top-level MPI upwelling test registration because "
-      "ERF_REMORA_ENABLE_MPI is OFF or MPIEXEC_EXECUTABLE, FCOMPARE_EXE, "
-      "or ERF_REMORA_RRTMGP_DIR is unset")
+      "ERF_REMORA_ENABLE_MPI is OFF or MPIEXEC_EXECUTABLE or FCOMPARE_EXE is unset")
   endif()
 endif()

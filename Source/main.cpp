@@ -7,8 +7,11 @@
 #include <AMReX_ParmParse.H>
 #include <AMReX_Print.H>
 #include <AMReX_RealBox.H>
+
+#ifdef ERF_USE_KOKKOS
 #include <Kokkos_Core.hpp>
 #include "ERF_Kokkos.H"
+#endif
 
 #include <algorithm>
 #include <cctype>

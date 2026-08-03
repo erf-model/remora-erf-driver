@@ -40,9 +40,9 @@ jobs:
       run: |
         ctest --test-dir build -L compile --output-on-failure --no-tests=error
 
-    - name: Reproducer Tests
+    - name: Restart Tests
       run: |
-        ctest --test-dir build -L reproducer --output-on-failure --no-tests=error
+        ctest --test-dir build -L restart --output-on-failure --no-tests=error
 
     - name: Parallel Tests
       run: |

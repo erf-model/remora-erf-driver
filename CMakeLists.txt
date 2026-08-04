@@ -399,9 +399,10 @@ if(ERF_REMORA_ENABLE_TESTS)
           EXCHANGE_PLOT_INT 1
           RUNTIME_ARGS
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
-            "driver.atm_substeps_per_ocean_step=1"
             "erf.fixed_dt=1"
             "remora.fixed_dt=1"
+            "remora.fixed_fast_dt=1"
+            "remora.fixed_ndtfast_ratio=1"
             "max_step=2"
         )
 
@@ -421,6 +422,10 @@ if(ERF_REMORA_ENABLE_TESTS)
           EXCHANGE_PLOT_INT 1
           RUNTIME_ARGS
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
+            "erf.fixed_dt=1"
+            "remora.fixed_dt=10"
+            "remora.fixed_fast_dt=10"
+            "remora.fixed_ndtfast_ratio=1"
             "max_step=2"
         )
       endforeach()
@@ -455,9 +460,10 @@ if(ERF_REMORA_ENABLE_TESTS)
           EXCHANGE_PLOT_INT 1
           RUNTIME_ARGS
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
-            "driver.atm_substeps_per_ocean_step=1"
             "erf.fixed_dt=1"
             "remora.fixed_dt=1"
+            "remora.fixed_fast_dt=1"
+            "remora.fixed_ndtfast_ratio=1"
             "max_step=2"
         )
 
@@ -473,6 +479,10 @@ if(ERF_REMORA_ENABLE_TESTS)
           EXCHANGE_PLOT_INT 1
           RUNTIME_ARGS
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
+            "erf.fixed_dt=1"
+            "remora.fixed_dt=10"
+            "remora.fixed_fast_dt=10"
+            "remora.fixed_ndtfast_ratio=1"
             "max_step=2"
         )
       endforeach()

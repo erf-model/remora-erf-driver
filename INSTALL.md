@@ -77,6 +77,48 @@ ctest --test-dir build -L compile
 ctest --test-dir build -L reproducer
 ```
 
+### 1a. Local CTest workflow
+
+This mirrors the current top-level test registration for local iteration.
+It uses the lightweight no-radiation build that the wrapper scripts expect
+for fast restart/MPI checks.
+
+Configure:
+
+```bash
+cmake -S . -B build_ci \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_C_COMPILER=mpicc \
+  -DCMAKE_CXX_COMPILER=mpicxx \
+  -DERF_REMORA_ENABLE_TESTS=ON \
+  -DERF_ENABLE_RRTMGP=OFF \
+  -DERF_ENABLE_NETCDF=OFF
+```
+
+Build:
+
+```bash
+cmake --build build_ci --parallel
+```
+
+Run restart tests:
+
+```bash
+ctest --test-dir build_ci -L restart --output-on-failure --no-tests=error
+```
+
+Run only the 2-rank MPI sweep (`np2` vs `np1` plus `np2` smoke):
+
+```bash
+ctest --test-dir build_ci -L parallel -R 'np2' --output-on-failure --no-tests=error
+```
+
+Run the full MPI sweep (`np2`, `np4`, `np6`, `np8` vs `np1`):
+
+```bash
+ctest --test-dir build_ci -L parallel --output-on-failure --no-tests=error
+```
+
 ### 2. MPI + OpenMP build
 
 Use a separate build directory to preserve the MPI-only build.

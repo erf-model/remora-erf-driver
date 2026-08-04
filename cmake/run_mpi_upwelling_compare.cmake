@@ -34,6 +34,9 @@ endif()
 if(NOT DEFINED ERF_REMORA_EXCHANGE_COMPARE_SUFFIX)
   set(ERF_REMORA_EXCHANGE_COMPARE_SUFFIX "${ERF_REMORA_REMORA_COMPARE_SUFFIX}")
 endif()
+if(NOT DEFINED ERF_REMORA_MPI_NPROCS)
+  set(ERF_REMORA_MPI_NPROCS "2")
+endif()
 if(NOT DEFINED ERF_REMORA_ERF_PLOT_INT)
   set(ERF_REMORA_ERF_PLOT_INT "1")
 endif()
@@ -62,7 +65,8 @@ set(_work_dir "${CMAKE_CURRENT_BINARY_DIR}/${_work_subdir}")
 file(REMOVE_RECURSE "${_work_dir}")
 file(MAKE_DIRECTORY "${_work_dir}")
 file(MAKE_DIRECTORY "${_work_dir}/np1")
-file(MAKE_DIRECTORY "${_work_dir}/np2")
+set(_rank_tag "np${ERF_REMORA_MPI_NPROCS}")
+file(MAKE_DIRECTORY "${_work_dir}/${_rank_tag}")
 
 set(_upwelling_dir "${ERF_REMORA_SOURCE_DIR}/Exec/Upwelling")
 set(_required_files
@@ -130,7 +134,7 @@ endfunction()
 
 function(_erf_remora_compare_output _relative_path)
   set(_lhs "${_work_dir}/np1/${_relative_path}")
-  set(_rhs "${_work_dir}/np2/${_relative_path}")
+  set(_rhs "${_work_dir}/${_rank_tag}/${_relative_path}")
   if(EXISTS "${_lhs}" AND EXISTS "${_rhs}")
     execute_process(
       COMMAND ${_fcompare_cmd}
@@ -153,7 +157,7 @@ function(_erf_remora_compare_output _relative_path)
 endfunction()
 
 _erf_remora_run_case("1" "np1")
-_erf_remora_run_case("2" "np2")
+_erf_remora_run_case("${ERF_REMORA_MPI_NPROCS}" "${_rank_tag}")
 
 foreach(_relative_path
     "remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"

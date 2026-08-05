@@ -119,14 +119,23 @@ set(_cold_args
   "driver.plot_file_exchange_o2a=cold_exchange_o2a"
 )
 list(APPEND _cold_args ${_common_args})
+set(_cold_log "${_work_dir}/cold_run.log")
+set(_restart_log "${_work_dir}/restart_run.log")
 
 execute_process(
   COMMAND "${ERF_REMORA_DRIVER_EXE}" "${_work_dir}/${_input_name}" ${_cold_args}
   WORKING_DIRECTORY "${_work_dir}"
+  OUTPUT_FILE "${_cold_log}"
+  ERROR_FILE "${_cold_log}"
   RESULT_VARIABLE _cold_result
 )
 if(NOT _cold_result EQUAL 0)
-  message(FATAL_ERROR "Cold-start restart reproducer failed with exit code ${_cold_result}")
+  file(READ "${_cold_log}" _cold_log_contents)
+  string(REGEX REPLACE "([^\n]*\n){0,200}$" "\\0" _cold_log_tail "${_cold_log_contents}")
+  message(FATAL_ERROR
+    "Cold-start restart reproducer failed with exit code ${_cold_result}\n"
+    "Log: ${_cold_log}\n"
+    "${_cold_log_tail}")
 endif()
 
 set(_restart_args
@@ -144,13 +153,24 @@ list(APPEND _restart_args ${_common_args})
 execute_process(
   COMMAND "${ERF_REMORA_DRIVER_EXE}" "${_work_dir}/${_input_name}" ${_restart_args}
   WORKING_DIRECTORY "${_work_dir}"
+  OUTPUT_FILE "${_restart_log}"
+  ERROR_FILE "${_restart_log}"
   RESULT_VARIABLE _restart_result
 )
 if(NOT _restart_result EQUAL 0)
-  message(FATAL_ERROR "Restarted reproducer failed with exit code ${_restart_result}")
+  file(READ "${_restart_log}" _restart_log_contents)
+  string(REGEX REPLACE "([^\n]*\n){0,200}$" "\\0" _restart_log_tail "${_restart_log_contents}")
+  message(FATAL_ERROR
+    "Restarted reproducer failed with exit code ${_restart_result}\n"
+    "Log: ${_restart_log}\n"
+    "${_restart_log_tail}")
 endif()
 
-function(_erf_remora_compare_output _lhs _rhs)
+set(_erf_remora_failed_compares)
+set(_erf_remora_compare_status_lines)
+
+function(_erf_remora_compare_output _label _lhs _rhs)
+  message(STATUS "Comparing ${_label}: ${_lhs} vs ${_rhs}")
   if(EXISTS "${_lhs}" AND EXISTS "${_rhs}")
     execute_process(
       COMMAND ${_fcompare_cmd}
@@ -163,21 +183,52 @@ function(_erf_remora_compare_output _lhs _rhs)
       RESULT_VARIABLE _compare_result
     )
     if(NOT _compare_result EQUAL 0)
-      message(FATAL_ERROR
-        "Restart compare failed for ${_lhs} vs ${_rhs} with exit code ${_compare_result}")
+      set(_failure
+        "Restart compare failed for ${_label}: ${_lhs} vs ${_rhs} with exit code ${_compare_result}")
+      set(_erf_remora_failed_compares "${_erf_remora_failed_compares}" "${_failure}" PARENT_SCOPE)
+      set(_erf_remora_compare_status_lines
+        "${_erf_remora_compare_status_lines}"
+        "  - ${_label}: FAILS"
+        PARENT_SCOPE)
+    else()
+      set(_erf_remora_compare_status_lines
+        "${_erf_remora_compare_status_lines}"
+        "  - ${_label}: AGREES"
+        PARENT_SCOPE)
     endif()
   elseif(EXISTS "${_lhs}" OR EXISTS "${_rhs}")
-    message(FATAL_ERROR "Restart compare output mismatch for ${_lhs} vs ${_rhs}")
+    set(_failure "Restart compare output mismatch for ${_label}: ${_lhs} vs ${_rhs}")
+    set(_erf_remora_failed_compares "${_erf_remora_failed_compares}" "${_failure}" PARENT_SCOPE)
+    set(_erf_remora_compare_status_lines
+      "${_erf_remora_compare_status_lines}"
+      "  - ${_label}: FAILS"
+      PARENT_SCOPE)
+  else()
+    set(_erf_remora_compare_status_lines
+      "${_erf_remora_compare_status_lines}"
+      "  - ${_label}: SKIPPED (BOTH OUTPUTS ABSENT)"
+      PARENT_SCOPE)
   endif()
 endfunction()
 
 foreach(_pair
-    "cold_remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}|restart_remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
-    "cold_erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}|restart_erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}"
-    "cold_exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}|restart_exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
-    "cold_exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}|restart_exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}")
+    "REMORA compare|cold_remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}|restart_remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
+    "ERF compare|cold_erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}|restart_erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}"
+    "REMORA packed fields compare|cold_exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}|restart_exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
+    "ERF packed fields compare|cold_exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}|restart_exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}")
   string(REPLACE "|" ";" _pair_fields "${_pair}")
-  list(GET _pair_fields 0 _lhs_rel)
-  list(GET _pair_fields 1 _rhs_rel)
-  _erf_remora_compare_output("${_work_dir}/${_lhs_rel}" "${_work_dir}/${_rhs_rel}")
+  list(GET _pair_fields 0 _label)
+  list(GET _pair_fields 1 _lhs_rel)
+  list(GET _pair_fields 2 _rhs_rel)
+  _erf_remora_compare_output("${_label}" "${_work_dir}/${_lhs_rel}" "${_work_dir}/${_rhs_rel}")
 endforeach()
+
+if(_erf_remora_compare_status_lines)
+  string(JOIN "\n" _status_summary ${_erf_remora_compare_status_lines})
+  message(STATUS "===== RESTART COMPARE SUMMARY =====\n${_status_summary}")
+endif()
+
+if(_erf_remora_failed_compares)
+  string(JOIN "\n" _failure_summary ${_erf_remora_failed_compares})
+  message(FATAL_ERROR "${_failure_summary}")
+endif()

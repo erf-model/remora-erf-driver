@@ -6,21 +6,34 @@ on:
 
 concurrency:
   group: ${{ github.ref }}-${{ github.head_ref }}-ci
-  cancel-in-progress: true
+  # ERF CI uses `cancel-in-progress: true`, but this driver build can be
+  # expensive enough that canceling an in-flight run makes debugging harder.
+  # cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-test:
     runs-on: ubuntu-22.04
+    env:
+      BUILD_NPROCS: 4
 
     steps:
     - uses: actions/checkout@v7
       with:
         submodules: true
 
-    - name: Install MPI
+    - name: Install MPI and tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y mpich libmpich-dev
+        sudo apt-get install -y mpich libmpich-dev ccache
+
+    - name: Set Up Cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ github.workflow }}-${{ github.job }}-git-${{ github.sha }}
+        restore-keys: |
+             ccache-${{ github.workflow }}-${{ github.job }}-git-
 
     - name: Configure
       run: |
@@ -28,13 +41,20 @@ jobs:
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DCMAKE_C_COMPILER=mpicc \
           -DCMAKE_CXX_COMPILER=mpicxx \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
           -DERF_REMORA_ENABLE_TESTS=ON \
           -DERF_ENABLE_RRTMGP=OFF \
           -DERF_ENABLE_NETCDF=OFF
 
     - name: Build
       run: |
-        cmake --build build --parallel
+        export CCACHE_COMPRESS=1
+        export CCACHE_COMPRESSLEVEL=10
+        export CCACHE_MAXSIZE=600M
+        ccache -z
+        cmake --build build --parallel $BUILD_NPROCS
+        ccache -s
 
     - name: Compile Tests
       run: |

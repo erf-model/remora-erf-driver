@@ -164,8 +164,14 @@ private:
     amrex::Vector<amrex::MultiFab*> m_ocean_to_atmos;
 
     static constexpr int MAX_STENCIL_SIZE = 9;
+    
+    // Atmosphere -> Ocean (A2O) stencils (lives on REMORA layout)
     std::unique_ptr<amrex::MultiFab> m_weight_mf;
     std::unique_ptr<amrex::iMultiFab> m_index_mf;
+
+    // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout)
+    std::unique_ptr<amrex::MultiFab> m_weight_o2a_mf;
+    std::unique_ptr<amrex::iMultiFab> m_index_o2a_mf;
 
     void* m_erf = nullptr;
     void* m_remora = nullptr;

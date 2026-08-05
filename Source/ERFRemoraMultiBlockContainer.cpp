@@ -13,8 +13,63 @@
 
 namespace erf_remora
 {
-namespace
-{
+namespace {
+//// Similar to existing EB functions
+// Point structure for 2D geometry
+struct Point2D { amrex::Real x, y; };
+
+// Shoelace formula for polygon area
+amrex::Real PolygonArea(const amrex::Vector<Point2D>& poly) {
+    if (poly.size() < 3) return 0.0;
+    amrex::Real area = 0.0;
+    int n = poly.size();
+    for (int i = 0; i < n; ++i) {
+        int j = (i + 1) % n;
+        area += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
+    }
+    return 0.5 * std::abs(area);
+}
+
+// Sutherland-Hodgman clip against a single AABB edge
+void ClipEdge(amrex::Vector<Point2D>& poly, int axis, amrex::Real edge_val, bool is_max) {
+    if (poly.empty()) return;
+    amrex::Vector<Point2D> clipped;
+    int n = poly.size();
+    for (int i = 0; i < n; ++i) {
+        Point2D p1 = poly[i];
+        Point2D p2 = poly[(i + 1) % n];
+
+        amrex::Real v1 = (axis == 0) ? p1.x : p1.y;
+        amrex::Real v2 = (axis == 0) ? p2.x : p2.y;
+
+        bool p1_inside = is_max ? (v1 <= edge_val) : (v1 >= edge_val);
+        bool p2_inside = is_max ? (v2 <= edge_val) : (v2 >= edge_val);
+
+        if (p1_inside && p2_inside) {
+            clipped.push_back(p2);
+        } else if (p1_inside && !p2_inside) {
+            amrex::Real t = (edge_val - v1) / (v2 - v1);
+            Point2D intersect = { p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y) };
+            clipped.push_back(intersect);
+        } else if (!p1_inside && p2_inside) {
+            amrex::Real t = (edge_val - v1) / (v2 - v1);
+            Point2D intersect = { p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y) };
+            clipped.push_back(intersect);
+            clipped.push_back(p2);
+        }
+    }
+    poly = clipped;
+}
+
+// Clip an arbitrary polygon against an Axis-Aligned Bounding Box (AABB)
+amrex::Vector<Point2D> ClipPolyToAABB(amrex::Vector<Point2D> poly, const amrex::RealBox& aabb) {
+    ClipEdge(poly, 0, aabb.lo(0), false); // x >= x_lo
+    ClipEdge(poly, 0, aabb.hi(0), true);  // x <= x_hi
+    ClipEdge(poly, 1, aabb.lo(1), false); // y >= y_lo
+    ClipEdge(poly, 1, aabb.hi(1), true);  // y <= y_hi
+    return poly;
+}
+
 void
 DriverPrintHeader (int driver_verbose,
                    const char* title,
@@ -587,9 +642,76 @@ ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
 void
 ERFRemoraMultiBlockContainer::BuildRemapWeights()
 {
-    // TODO: Implement Sutherland-Hodgman polygon clipping here.
-    // Loop over local REMORA cells, define quadrilaterals from psi-points,
-    // clip against ERF cell bounding boxes, and populate m_weight_mf and m_index_mf.
+    using namespace amrex;
+
+    // Reset weight and index caches to 0
+    m_weight_mf->setVal(0.0);
+    m_index_mf->setVal(-1); // -1 indicates an empty/invalid stencil slot
+
+    // Step 1: Iterate over the local destination grid (REMORA Ocean)
+    for (MFIter mfi(*m_weight_mf); mfi.isValid(); ++mfi) {
+        Box bx = mfi.validbox();
+        auto weight_arr = m_weight_mf->array(mfi);
+        auto index_arr = m_index_mf->array(mfi);
+
+        // Standard CPU loop for initialization (can be offloaded to GPU if geometry is device-accessible)
+        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+
+                // --- GET DESTINATION (REMORA) POLYGON ---
+                // For a curvilinear grid, you would fetch the 4 psi-point coordinates here.
+                // Currently using m_geom_ocn bounding box as the default polygon.
+                RealBox remora_bounds = m_geom_ocn.CellBounds(IntVect(i, j, 0));
+                Vector<Point2D> remora_poly = {
+                    {remora_bounds.lo(0), remora_bounds.lo(1)},
+                    {remora_bounds.hi(0), remora_bounds.lo(1)},
+                    {remora_bounds.hi(0), remora_bounds.hi(1)},
+                    {remora_bounds.lo(0), remora_bounds.hi(1)}
+                };
+
+                Real dst_area = PolygonArea(remora_poly);
+                if (dst_area <= 0.0) continue;
+
+                // --- BOUNDING BOX PRUNE ---
+                // Find which ERF cells overlap this REMORA cell's bounding box
+                RealBox remora_bbox = remora_bounds; // Min/Max of the 4 corners
+                Box erf_candidate_box = m_geom.Domain();
+                // Map physical bounding box to ERF index space
+                int erf_i_lo = std::floor((remora_bbox.lo(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
+                int erf_i_hi = std::ceil((remora_bbox.hi(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
+                int erf_j_lo = std::floor((remora_bbox.lo(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+                int erf_j_hi = std::ceil((remora_bbox.hi(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+
+                erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 1);
+                erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 1);
+                erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 1);
+                erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 1);
+
+                // --- CLIP AND COMPUTE WEIGHTS ---
+                int stencil_idx = 0;
+                for (int src_j = erf_j_lo; src_j <= erf_j_hi; ++src_j) {
+                    for (int src_i = erf_i_lo; src_i <= erf_i_hi; ++src_i) {
+                        if (stencil_idx >= MAX_STENCIL_SIZE) break;
+
+                        RealBox erf_cell_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
+
+                        // Clip the REMORA polygon against the ERF cell's AABB
+                        Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_cell_bounds);
+                        Real intersect_area = PolygonArea(clipped_poly);
+
+                        if (intersect_area > 0.0) {
+                            Real weight = intersect_area / dst_area;
+                            weight_arr(i, j, 0, stencil_idx) = weight;
+                            index_arr(i, j, 0, stencil_idx * 3) = src_i;
+                            index_arr(i, j, 0, stencil_idx * 3 + 1) = src_j;
+                            index_arr(i, j, 0, stencil_idx * 3 + 2) = 0; // z-index is always 0 for the slab
+                            stencil_idx++;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 void

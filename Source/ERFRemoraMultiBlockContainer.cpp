@@ -18,11 +18,10 @@ namespace {
 // Point structure for 2D geometry
 struct Point2D { amrex::Real x, y; };
 
-// Shoelace formula for polygon area
-amrex::Real PolygonArea(const amrex::Vector<Point2D>& poly) {
+amrex::Real PolygonArea (const amrex::Vector<Point2D>& poly) {
     if (poly.size() < 3) return 0.0;
     amrex::Real area = 0.0;
-    int n = poly.size();
+    int n = static_cast<int>(poly.size());
     for (int i = 0; i < n; ++i) {
         int j = (i + 1) % n;
         area += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
@@ -30,11 +29,10 @@ amrex::Real PolygonArea(const amrex::Vector<Point2D>& poly) {
     return 0.5 * std::abs(area);
 }
 
-// Sutherland-Hodgman clip against a single AABB edge
-void ClipEdge(amrex::Vector<Point2D>& poly, int axis, amrex::Real edge_val, bool is_max) {
+void ClipEdge (amrex::Vector<Point2D>& poly, int axis, amrex::Real edge_val, bool is_max) {
     if (poly.empty()) return;
     amrex::Vector<Point2D> clipped;
-    int n = poly.size();
+    int n = static_cast<int>(poly.size());
     for (int i = 0; i < n; ++i) {
         Point2D p1 = poly[i];
         Point2D p2 = poly[(i + 1) % n];
@@ -61,8 +59,7 @@ void ClipEdge(amrex::Vector<Point2D>& poly, int axis, amrex::Real edge_val, bool
     poly = clipped;
 }
 
-// Clip an arbitrary polygon against an Axis-Aligned Bounding Box (AABB)
-amrex::Vector<Point2D> ClipPolyToAABB(amrex::Vector<Point2D> poly, const amrex::RealBox& aabb) {
+amrex::Vector<Point2D> ClipPolyToAABB (amrex::Vector<Point2D> poly, const amrex::RealBox& aabb) {
     ClipEdge(poly, 0, aabb.lo(0), false); // x >= x_lo
     ClipEdge(poly, 0, aabb.hi(0), true);  // x <= x_hi
     ClipEdge(poly, 1, aabb.lo(1), false); // y >= y_lo
@@ -602,8 +599,15 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
 
+    // Atmosphere -> Ocean (A2O) stencils (lives on REMORA layout)
     m_weight_mf = std::make_unique<amrex::MultiFab>(m_ba_ocn, m_dm_ocn, MAX_STENCIL_SIZE, 0);
     m_index_mf = std::make_unique<amrex::iMultiFab>(m_ba_ocn, m_dm_ocn, 3 * MAX_STENCIL_SIZE, 0);
+
+    // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout)
+    if (m_use_two_way_coupling) {
+        m_weight_o2a_mf = std::make_unique<amrex::MultiFab>(m_ba, m_dm, MAX_STENCIL_SIZE, 0);
+        m_index_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 3 * MAX_STENCIL_SIZE, 0);
+    }
 
     m_atmos_to_ocean_state_active.resize(m_atmos_to_ocean_state_active_indices.size());
     for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_state_active_indices.size()); ++local_idx) {
@@ -644,68 +648,124 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
 {
     using namespace amrex;
 
-    // Reset weight and index caches to 0
-    m_weight_mf->setVal(0.0);
-    m_index_mf->setVal(-1); // -1 indicates an empty/invalid stencil slot
+    // Reset A2O weight and index caches
+    if (m_weight_mf && m_index_mf) {
+        m_weight_mf->setVal(0.0);
+        m_index_mf->setVal(-1);
 
-    // Step 1: Iterate over the local destination grid (REMORA Ocean)
-    for (MFIter mfi(*m_weight_mf); mfi.isValid(); ++mfi) {
-        Box bx = mfi.validbox();
-        auto weight_arr = m_weight_mf->array(mfi);
-        auto index_arr = m_index_mf->array(mfi);
+        for (MFIter mfi(*m_weight_mf); mfi.isValid(); ++mfi) {
+            Box bx = mfi.validbox();
+            auto weight_arr = m_weight_mf->array(mfi);
+            auto index_arr = m_index_mf->array(mfi);
 
-        // Standard CPU loop for initialization (can be offloaded to GPU if geometry is device-accessible)
-        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
-            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                    RealBox remora_bounds = m_geom_ocn.CellBounds(IntVect(i, j, 0));
+                    Vector<Point2D> remora_poly = {
+                        {remora_bounds.lo(0), remora_bounds.lo(1)},
+                        {remora_bounds.hi(0), remora_bounds.lo(1)},
+                        {remora_bounds.hi(0), remora_bounds.hi(1)},
+                        {remora_bounds.lo(0), remora_bounds.hi(1)}
+                    };
+                    
+                    Real dst_area = PolygonArea(remora_poly);
+                    if (dst_area <= 0.0) continue;
 
-                // --- GET DESTINATION (REMORA) POLYGON ---
-                // For a curvilinear grid, you would fetch the 4 psi-point coordinates here.
-                // Currently using m_geom_ocn bounding box as the default polygon.
-                RealBox remora_bounds = m_geom_ocn.CellBounds(IntVect(i, j, 0));
-                Vector<Point2D> remora_poly = {
-                    {remora_bounds.lo(0), remora_bounds.lo(1)},
-                    {remora_bounds.hi(0), remora_bounds.lo(1)},
-                    {remora_bounds.hi(0), remora_bounds.hi(1)},
-                    {remora_bounds.lo(0), remora_bounds.hi(1)}
-                };
+                    RealBox remora_bbox = remora_bounds;
+                    Box erf_candidate_box = m_geom.Domain();
+                    int erf_i_lo = std::floor((remora_bbox.lo(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
+                    int erf_i_hi = std::ceil((remora_bbox.hi(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
+                    int erf_j_lo = std::floor((remora_bbox.lo(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+                    int erf_j_hi = std::ceil((remora_bbox.hi(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+                    
+                    erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 1);
+                    erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 1);
+                    erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 1);
+                    erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 1);
 
-                Real dst_area = PolygonArea(remora_poly);
-                if (dst_area <= 0.0) continue;
+                    int stencil_idx = 0;
+                    for (int src_j = erf_j_lo; src_j <= erf_j_hi; ++src_j) {
+                        for (int src_i = erf_i_lo; src_i <= erf_i_hi; ++src_i) {
+                            if (stencil_idx >= MAX_STENCIL_SIZE) break;
 
-                // --- BOUNDING BOX PRUNE ---
-                // Find which ERF cells overlap this REMORA cell's bounding box
-                RealBox remora_bbox = remora_bounds; // Min/Max of the 4 corners
-                Box erf_candidate_box = m_geom.Domain();
-                // Map physical bounding box to ERF index space
-                int erf_i_lo = std::floor((remora_bbox.lo(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
-                int erf_i_hi = std::ceil((remora_bbox.hi(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
-                int erf_j_lo = std::floor((remora_bbox.lo(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
-                int erf_j_hi = std::ceil((remora_bbox.hi(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+                            RealBox erf_cell_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
+                            Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_cell_bounds);
+                            Real intersect_area = PolygonArea(clipped_poly);
+                            
+                            if (intersect_area > 0.0) {
+                                Real weight = intersect_area / dst_area;
+                                weight_arr(i, j, 0, stencil_idx) = weight;
+                                index_arr(i, j, 0, stencil_idx * 3) = src_i;
+                                index_arr(i, j, 0, stencil_idx * 3 + 1) = src_j;
+                                index_arr(i, j, 0, stencil_idx * 3 + 2) = 0;
+                                stencil_idx++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
-                erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 1);
-                erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 1);
-                erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 1);
-                erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 1);
+    // Reset and compute O2A weight and index caches if active
+    if (m_use_two_way_coupling && m_weight_o2a_mf && m_index_o2a_mf) {
+        m_weight_o2a_mf->setVal(0.0);
+        m_index_o2a_mf->setVal(-1);
 
-                // --- CLIP AND COMPUTE WEIGHTS ---
-                int stencil_idx = 0;
-                for (int src_j = erf_j_lo; src_j <= erf_j_hi; ++src_j) {
-                    for (int src_i = erf_i_lo; src_i <= erf_i_hi; ++src_i) {
-                        if (stencil_idx >= MAX_STENCIL_SIZE) break;
+        for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
+            Box bx = mfi.validbox();
+            auto weight_arr = m_weight_o2a_mf->array(mfi);
+            auto index_arr = m_index_o2a_mf->array(mfi);
 
-                        RealBox erf_cell_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
+            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                    RealBox erf_bounds = m_geom.CellBounds(IntVect(i, j, 0));
+                    Vector<Point2D> erf_poly = {
+                        {erf_bounds.lo(0), erf_bounds.lo(1)},
+                        {erf_bounds.hi(0), erf_bounds.lo(1)},
+                        {erf_bounds.hi(0), erf_bounds.hi(1)},
+                        {erf_bounds.lo(0), erf_bounds.hi(1)}
+                    };
 
-                        // Clip the REMORA polygon against the ERF cell's AABB
-                        Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_cell_bounds);
-                        Real intersect_area = PolygonArea(clipped_poly);
+                    Real dst_area = PolygonArea(erf_poly);
+                    if (dst_area <= 0.0) continue;
 
-                        if (intersect_area > 0.0) {
-                            Real weight = intersect_area / dst_area;
-                            weight_arr(i, j, 0, stencil_idx) = weight;
-                            index_arr(i, j, 0, stencil_idx * 3) = src_i;
-                            index_arr(i, j, 0, stencil_idx * 3 + 1) = src_j;
-                            index_arr(i, j, 0, stencil_idx * 3 + 2) = 0; // z-index is always 0 for the slab
-                            stencil_idx++;
+                    RealBox erf_bbox = erf_bounds;
+                    Box remora_candidate_box = m_geom_ocn.Domain();
+                    int ocn_i_lo = std::floor((erf_bbox.lo(0) - m_ocn_rb.lo(0)) / (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) * m_ocn_n_cell[0]);
+                    int ocn_i_hi = std::ceil((erf_bbox.hi(0) - m_ocn_rb.lo(0)) / (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) * m_ocn_n_cell[0]);
+                    int ocn_j_lo = std::floor((erf_bbox.lo(1) - m_ocn_rb.lo(1)) / (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) * m_ocn_n_cell[1]);
+                    int ocn_j_hi = std::ceil((erf_bbox.hi(1) - m_ocn_rb.lo(1)) / (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) * m_ocn_n_cell[1]);
+
+                    ocn_i_lo = std::max(remora_candidate_box.smallEnd(0), ocn_i_lo - 1);
+                    ocn_i_hi = std::min(remora_candidate_box.bigEnd(0), ocn_i_hi + 1);
+                    ocn_j_lo = std::max(remora_candidate_box.smallEnd(1), ocn_j_lo - 1);
+                    ocn_j_hi = std::min(remora_candidate_box.bigEnd(1), ocn_j_hi + 1);
+
+                    int stencil_idx = 0;
+                    for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
+                        for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
+                            if (stencil_idx >= MAX_STENCIL_SIZE) break;
+
+                            RealBox remora_cell_bounds = m_geom_ocn.CellBounds(IntVect(src_i, src_j, 0));
+                            Vector<Point2D> remora_poly = {
+                                {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
+                                {remora_cell_bounds.hi(0), remora_cell_bounds.lo(1)},
+                                {remora_cell_bounds.hi(0), remora_cell_bounds.hi(1)},
+                                {remora_cell_bounds.lo(0), remora_cell_bounds.hi(1)}
+                            };
+
+                            Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_bounds);
+                            Real intersect_area = PolygonArea(clipped_poly);
+
+                            if (intersect_area > 0.0) {
+                                Real weight = intersect_area / dst_area;
+                                weight_arr(i, j, 0, stencil_idx) = weight;
+                                index_arr(i, j, 0, stencil_idx * 3) = src_i;
+                                index_arr(i, j, 0, stencil_idx * 3 + 1) = src_j;
+                                index_arr(i, j, 0, stencil_idx * 3 + 2) = 0;
+                                stencil_idx++;
+                            }
                         }
                     }
                 }
@@ -1032,7 +1092,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                                                            const ConstStateFn& apply_atmos_states,
                                                            int ocean_steps)
 {
-    BL_PROFILE("Driver::Build_Comm_Metadata"); // V1 Baseline marker
+    BL_PROFILE("Driver::Build_Comm_Metadata");
     if (m_use_two_way_coupling) {
         PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
     }
@@ -1147,10 +1207,6 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
 
 
-        // Initial architecture note: this passes instantaneous slabs at the macro-step boundary.
-        // Future update: use old/new cached states and time interpolation during this
-        // loop (same temporal pattern as erf-amrwind-driver boundary ingestion in
-        // Source/wind_energy/ABLReadERF.cpp) to avoid stepwise forcing artifacts.
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
                 amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="

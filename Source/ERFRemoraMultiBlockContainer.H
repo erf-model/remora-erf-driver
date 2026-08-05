@@ -8,6 +8,7 @@
 #include <AMReX_Geometry.H>
 #include <AMReX_IntVect.H>
 #include <AMReX_MultiFab.H>
+#include <AMReX_iMultiFab.H>
 #include <AMReX_RealBox.H>
 #include <AMReX_REAL.H>
 #include <AMReX_Vector.H>
@@ -109,6 +110,7 @@ private:
     void ValidateCouplingLayoutsFromSolvers() const;
     coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
     void SelectAtmosToOceanActiveView(long long ocean_step);
+    void BuildRemapWeights();
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;
@@ -160,6 +162,10 @@ private:
     // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_ocean_to_atmos_storage;
     amrex::Vector<amrex::MultiFab*> m_ocean_to_atmos;
+
+    static constexpr int MAX_STENCIL_SIZE = 9;
+    std::unique_ptr<amrex::MultiFab> m_weight_mf;
+    std::unique_ptr<amrex::iMultiFab> m_index_mf;
 
     void* m_erf = nullptr;
     void* m_remora = nullptr;

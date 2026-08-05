@@ -74,7 +74,6 @@ foreach(_fname IN LISTS _required_files)
 endforeach()
 
 set(_runtime_args
-  "erf.plot_file_1=np2/erfplt"
   "erf.plot_file_1=${_rank_tag}/erfplt"
   "erf.plot_int_1=${ERF_REMORA_ERF_PLOT_INT}"
   "remora.plot_file=${_rank_tag}/remoraplt"
@@ -105,21 +104,37 @@ if(DEFINED MPIEXEC_PREFLAGS AND NOT "${MPIEXEC_PREFLAGS}" STREQUAL "")
 endif()
 list(APPEND _cmd "${ERF_REMORA_DRIVER_EXE}" "${_work_dir}/${_input_name}")
 list(APPEND _cmd ${_runtime_args})
+set(_run_log "${_work_dir}/${_rank_tag}_smoke.log")
 
 execute_process(
   COMMAND ${_cmd}
   WORKING_DIRECTORY "${_work_dir}"
+  OUTPUT_FILE "${_run_log}"
+  ERROR_FILE "${_run_log}"
   RESULT_VARIABLE _result
 )
 if(NOT _result EQUAL 0)
-  message(FATAL_ERROR "MPI smoke run failed with exit code ${_result}")
+  file(READ "${_run_log}" _run_log_contents)
+  string(REGEX REPLACE "([^\n]*\n){0,200}$" "\\0" _run_log_tail "${_run_log_contents}")
+  message(FATAL_ERROR
+    "MPI smoke run failed with exit code ${_result}\n"
+    "Log: ${_run_log}\n"
+    "${_run_log_tail}")
 endif()
 
+set(_mpi_smoke_status_lines)
 foreach(_expected
     "${_rank_tag}/remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
     "${_rank_tag}/exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
     "${_rank_tag}/erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}")
   if(NOT EXISTS "${_work_dir}/${_expected}")
     message(FATAL_ERROR "MPI smoke run did not produce ${_work_dir}/${_expected}")
+  else()
+    list(APPEND _mpi_smoke_status_lines "  - produced ${_expected}: YES")
   endif()
 endforeach()
+
+if(_mpi_smoke_status_lines)
+  string(JOIN "\n" _status_summary ${_mpi_smoke_status_lines})
+  message(STATUS "===== MPI SMOKE SUMMARY (${_rank_tag}) =====\n${_status_summary}")
+endif()

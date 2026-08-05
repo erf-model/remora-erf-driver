@@ -108,6 +108,9 @@ if(NOT _fcompare_cmd)
   message(FATAL_ERROR "FCOMPARE_EXE resolved to an empty command")
 endif()
 
+set(_mpi_compare_failed_checks)
+set(_mpi_compare_status_lines)
+
 function(_erf_remora_run_case _nranks _tag)
   set(_cmd "${MPIEXEC_EXECUTABLE}" "${MPIEXEC_NUMPROC_FLAG}" "${_nranks}")
   if(DEFINED MPIEXEC_PREFLAGS AND NOT "${MPIEXEC_PREFLAGS}" STREQUAL "")
@@ -122,19 +125,28 @@ function(_erf_remora_run_case _nranks _tag)
     "driver.plot_file_exchange_o2a=${_tag}/exchange_o2a"
   )
   list(APPEND _cmd ${_common_args})
+  set(_run_log "${_work_dir}/${_tag}.log")
   execute_process(
     COMMAND ${_cmd}
     WORKING_DIRECTORY "${_work_dir}"
+    OUTPUT_FILE "${_run_log}"
+    ERROR_FILE "${_run_log}"
     RESULT_VARIABLE _run_result
   )
   if(NOT _run_result EQUAL 0)
-    message(FATAL_ERROR "MPI compare run (${_tag}) failed with exit code ${_run_result}")
+    file(READ "${_run_log}" _run_log_contents)
+    string(REGEX REPLACE "([^\n]*\n){0,200}$" "\\0" _run_log_tail "${_run_log_contents}")
+    message(FATAL_ERROR
+      "MPI compare run (${_tag}) failed with exit code ${_run_result}\n"
+      "Log: ${_run_log}\n"
+      "${_run_log_tail}")
   endif()
 endfunction()
 
-function(_erf_remora_compare_output _relative_path)
+function(_erf_remora_compare_output _label _relative_path)
   set(_lhs "${_work_dir}/np1/${_relative_path}")
   set(_rhs "${_work_dir}/${_rank_tag}/${_relative_path}")
+  message(STATUS "Comparing ${_label}: ${_lhs} vs ${_rhs}")
   if(EXISTS "${_lhs}" AND EXISTS "${_rhs}")
     execute_process(
       COMMAND ${_fcompare_cmd}
@@ -147,22 +159,47 @@ function(_erf_remora_compare_output _relative_path)
       RESULT_VARIABLE _compare_result
     )
     if(NOT _compare_result EQUAL 0)
-      message(FATAL_ERROR
-        "MPI compare failed for ${_relative_path} with exit code ${_compare_result}")
+      list(APPEND _mpi_compare_failed_checks
+        "MPI compare failed for ${_label}: ${_relative_path} with exit code ${_compare_result}")
+      set(_mpi_compare_failed_checks "${_mpi_compare_failed_checks}" PARENT_SCOPE)
+      list(APPEND _mpi_compare_status_lines "  - ${_label}: FAILS")
+      set(_mpi_compare_status_lines "${_mpi_compare_status_lines}" PARENT_SCOPE)
+    else()
+      list(APPEND _mpi_compare_status_lines "  - ${_label}: AGREES")
+      set(_mpi_compare_status_lines "${_mpi_compare_status_lines}" PARENT_SCOPE)
     endif()
   elseif(EXISTS "${_lhs}" OR EXISTS "${_rhs}")
-    message(FATAL_ERROR
-      "MPI compare output mismatch for ${_relative_path}: one side is missing")
+    list(APPEND _mpi_compare_failed_checks
+      "MPI compare output mismatch for ${_label}: ${_relative_path} one side is missing")
+    set(_mpi_compare_failed_checks "${_mpi_compare_failed_checks}" PARENT_SCOPE)
+    list(APPEND _mpi_compare_status_lines "  - ${_label}: FAILS")
+    set(_mpi_compare_status_lines "${_mpi_compare_status_lines}" PARENT_SCOPE)
+  else()
+    list(APPEND _mpi_compare_status_lines "  - ${_label}: SKIPPED (BOTH OUTPUTS ABSENT)")
+    set(_mpi_compare_status_lines "${_mpi_compare_status_lines}" PARENT_SCOPE)
   endif()
 endfunction()
 
 _erf_remora_run_case("1" "np1")
 _erf_remora_run_case("${ERF_REMORA_MPI_NPROCS}" "${_rank_tag}")
 
-foreach(_relative_path
-    "remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
-    "erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}"
-    "exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
-    "exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}")
-  _erf_remora_compare_output("${_relative_path}")
+foreach(_pair
+    "REMORA compare|remoraplt${ERF_REMORA_REMORA_COMPARE_SUFFIX}"
+    "ERF compare|erfplt${ERF_REMORA_ERF_COMPARE_SUFFIX}"
+    "REMORA packed fields compare|exchange_a2o${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}"
+    "ERF packed fields compare|exchange_o2a${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}")
+  string(REPLACE "|" ";" _pair_fields "${_pair}")
+  list(GET _pair_fields 0 _label)
+  list(GET _pair_fields 1 _relative_path)
+  _erf_remora_compare_output("${_label}" "${_relative_path}")
 endforeach()
+
+if(_mpi_compare_status_lines)
+  string(JOIN "\n" _status_summary ${_mpi_compare_status_lines})
+  message(STATUS "===== MPI COMPARE SUMMARY (np1 vs ${_rank_tag}) =====\n${_status_summary}")
+endif()
+
+if(_mpi_compare_failed_checks)
+  string(JOIN "\n" _failure_summary ${_mpi_compare_failed_checks})
+  message(FATAL_ERROR "${_failure_summary}")
+endif()

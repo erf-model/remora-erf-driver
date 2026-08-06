@@ -8,16 +8,15 @@
 #include <AMReX_PlotFileUtil.H>
 #include <AMReX_String.H>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
 namespace erf_remora
 {
 namespace {
-//// Similar to existing EB functions
-// Point structure for 2D geometry
-struct Point2D { amrex::Real x, y; };
 
+// Compute 2D polygon area using Shoelace formula
 amrex::Real PolygonArea (const amrex::Vector<Point2D>& poly) {
     if (poly.size() < 3) return 0.0;
     amrex::Real area = 0.0;
@@ -29,42 +28,90 @@ amrex::Real PolygonArea (const amrex::Vector<Point2D>& poly) {
     return 0.5 * std::abs(area);
 }
 
-void ClipEdge (amrex::Vector<Point2D>& poly, int axis, amrex::Real edge_val, bool is_max) {
-    if (poly.empty()) return;
-    amrex::Vector<Point2D> clipped;
+// Ensure polygon vertices are ordered counter-clockwise (CCW)
+void EnsureCounterClockwise(amrex::Vector<Point2D>& poly) {
+    if (poly.size() < 3) return;
+    amrex::Real signed_area = 0.0;
     int n = static_cast<int>(poly.size());
     for (int i = 0; i < n; ++i) {
-        Point2D p1 = poly[i];
-        Point2D p2 = poly[(i + 1) % n];
-
-        amrex::Real v1 = (axis == 0) ? p1.x : p1.y;
-        amrex::Real v2 = (axis == 0) ? p2.x : p2.y;
-
-        bool p1_inside = is_max ? (v1 <= edge_val) : (v1 >= edge_val);
-        bool p2_inside = is_max ? (v2 <= edge_val) : (v2 >= edge_val);
-
-        if (p1_inside && p2_inside) {
-            clipped.push_back(p2);
-        } else if (p1_inside && !p2_inside) {
-            amrex::Real t = (edge_val - v1) / (v2 - v1);
-            Point2D intersect = { p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y) };
-            clipped.push_back(intersect);
-        } else if (!p1_inside && p2_inside) {
-            amrex::Real t = (edge_val - v1) / (v2 - v1);
-            Point2D intersect = { p1.x + t * (p2.x - p1.x), p1.y + t * (p2.y - p1.y) };
-            clipped.push_back(intersect);
-            clipped.push_back(p2);
-        }
+        int j = (i + 1) % n;
+        signed_area += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
     }
-    poly = clipped;
+    if (signed_area < 0.0) {
+        std::reverse(poly.begin(), poly.end());
+    }
 }
 
-amrex::Vector<Point2D> ClipPolyToAABB (amrex::Vector<Point2D> poly, const amrex::RealBox& aabb) {
-    ClipEdge(poly, 0, aabb.lo(0), false); // x >= x_lo
-    ClipEdge(poly, 0, aabb.hi(0), true);  // x <= x_hi
-    ClipEdge(poly, 1, aabb.lo(1), false); // y >= y_lo
-    ClipEdge(poly, 1, aabb.hi(1), true);  // y <= y_hi
-    return poly;
+// Check if point p is on the inside (left) of directed edge A -> B
+bool IsInsideEdge(const Point2D& p, const Point2D& A, const Point2D& B) {
+    constexpr amrex::Real eps = 1.0e-12;
+    return ((B.x - A.x) * (p.y - A.y) - (B.y - A.y) * (p.x - A.x)) >= -eps;
+}
+
+// Compute line segment intersection between p1-p2 and edge A-B
+Point2D EdgeIntersection(const Point2D& p1, const Point2D& p2, const Point2D& A, const Point2D& B) {
+    amrex::Real A1 = p2.y - p1.y;
+    amrex::Real B1 = p1.x - p2.x;
+    amrex::Real C1 = A1 * p1.x + B1 * p1.y;
+
+    amrex::Real A2 = B.y - A.y;
+    amrex::Real B2 = A.x - B.x;
+    amrex::Real C2 = A2 * A.x + B2 * A.y;
+
+    amrex::Real det = A1 * B2 - A2 * B1;
+    if (std::abs(det) < 1.0e-14) {
+        return p2;
+    }
+    return Point2D{ (B2 * C1 - B1 * C2) / det, (A1 * C2 - A2 * C1) / det };
+}
+
+// Sutherland-Hodgman convex polygon clipping algorithm
+amrex::Vector<Point2D> ClipPolygon(amrex::Vector<Point2D> subjectPoly, amrex::Vector<Point2D> clipPoly) {
+    if (subjectPoly.empty() || clipPoly.empty()) return {};
+
+    EnsureCounterClockwise(subjectPoly);
+    EnsureCounterClockwise(clipPoly);
+
+    amrex::Vector<Point2D> outputPoly = subjectPoly;
+    int numClipEdges = static_cast<int>(clipPoly.size());
+
+    for (int i = 0; i < numClipEdges; ++i) {
+        Point2D A = clipPoly[i];
+        Point2D B = clipPoly[(i + 1) % numClipEdges];
+
+        amrex::Vector<Point2D> inputPoly = outputPoly;
+        outputPoly.clear();
+        if (inputPoly.empty()) break;
+
+        Point2D S = inputPoly.back();
+        for (const auto& E : inputPoly) {
+            if (IsInsideEdge(E, A, B)) {
+                if (IsInsideEdge(S, A, B)) {
+                    outputPoly.push_back(E);
+                } else {
+                    outputPoly.push_back(EdgeIntersection(S, E, A, B));
+                    outputPoly.push_back(E);
+                }
+            } else if (IsInsideEdge(S, A, B)) {
+                outputPoly.push_back(EdgeIntersection(S, E, A, B));
+            }
+            S = E;
+        }
+    }
+    return outputPoly;
+}
+
+// Extract 4-corner physical quad for cell (i, j) from 2D coordinate MultiFabs
+amrex::Vector<Point2D> ExtractCellQuadFromCoords(int i, int j, const amrex::Array4<const amrex::Real>& x_arr,
+                                                 const amrex::Array4<const amrex::Real>& y_arr) {
+    amrex::Vector<Point2D> quad = {
+        { x_arr(i,   j,   0), y_arr(i,   j,   0) },
+        { x_arr(i+1, j,   0), y_arr(i+1, j,   0) },
+        { x_arr(i+1, j+1, 0), y_arr(i+1, j+1, 0) },
+        { x_arr(i,   j+1, 0), y_arr(i,   j+1, 0) }
+    };
+    EnsureCounterClockwise(quad);
+    return quad;
 }
 
 void
@@ -465,7 +512,7 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     DriverPrintHeader(
         m_driver_verbose,
         "Initialize Coupling Caches",
-        "Phase 4: query finalized post-InitData solver layouts. Phase 5: allocate driver-owned caches from solver layouts. Phase 6: seed bootstrap state and select active atm2ocn view.");
+        "Phase 4: query finalized post-InitData solver layouts. Phase 5: allocate driver-owned caches from solver layouts. Phase 6: seed bootstrap state and build remap weights and select active atm2ocn view.");
     m_atm_tick = 0;
     DriverPrintLine(m_driver_verbose, "resetting driver atmosphere tick to 0");
     AllocateCaches();
@@ -692,67 +739,47 @@ ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
 //   SCALAR_CENTERED (Patm, Qair, Tair, Cloud, Rain, SWrad, LWrad, SHflux,
 //     LHflux, Evap, SST): both sides are cell-centered/rho already.
 WeightFamily
-ClassifyAtmosToOceanFieldFamily (int field_idx)
-{
-    if (field_idx == coupling::TauX) {
-        return WeightFamily::TAUX_FACE;
-    }
-    if (field_idx == coupling::TauY) {
-        return WeightFamily::TAUY_FACE;
-    }
-    if (field_idx == coupling::Uwind || field_idx == coupling::Vwind) {
-        return WeightFamily::WIND_FACE_TO_CENTER;
-    }
+ClassifyAtmosToOceanFieldFamily (int field_idx) {
+    if (field_idx == coupling::TauX) { return WeightFamily::TAUX_FACE; }
+    if (field_idx == coupling::TauY) { return WeightFamily::TAUY_FACE; }
+    if (field_idx == coupling::Uwind || field_idx == coupling::Vwind) { return WeightFamily::WIND_FACE_TO_CENTER; }
     return WeightFamily::SCALAR_CENTERED;
 }
 
-namespace {
-// Per-field compatibility check against the corrected weight-family contract
-// above. This is plumbing/validation only: it does not select or switch the
-// remap math path used below, which remains the unchanged legacy
-// CellBounds()-based loops regardless of the result computed here.
-// Returns true (compatible) plus clears reason, or false plus a field-specific
-// reason string.
-bool
-FieldCompatibleWithCoordinateSource (int field_idx,
-                                     const std::string& field_name,
-                                     bool coord_source_available,
-                                     std::string& reason)
+void
+ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
+                                                                   const amrex::iMultiFab& index_mf,
+                                                                   const char* label)
 {
-    if (!coord_source_available) {
-        reason = field_name + ": no coordinate-aware source available; using legacy CellBounds() path";
-        return false;
+    using namespace amrex;
+    amrex::Real max_sum_err = 0.0;
+
+    for (MFIter mfi(weight_mf); mfi.isValid(); ++mfi) {
+        Box bx = mfi.validbox();
+        auto w_arr = weight_mf.array(mfi);
+
+        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                amrex::Real sum_w = 0.0;
+                for (int m = 0; m < MAX_STENCIL_SIZE; ++m) {
+                    sum_w += w_arr(i, j, 0, m);
+                }
+                if (sum_w > 0.0) {
+                    max_sum_err = std::max(max_sum_err, std::abs(sum_w - 1.0));
+                    for (int m = 0; m < MAX_STENCIL_SIZE; ++m) {
+                        w_arr(i, j, 0, m) /= sum_w;
+                    }
+                }
+            }
+        }
     }
 
-    switch (ClassifyAtmosToOceanFieldFamily(field_idx)) {
-    case WeightFamily::TAUX_FACE:
-    case WeightFamily::TAUY_FACE:
-        // Compatible when ERF's tau ixType/extents match REMORA's
-        // vec_sustr/vec_svstr layout contract (AtmosToOceanBoxArray() already
-        // requests amrex::convert(ba_ocn, IntVect(1,0,0)/IntVect(0,1,0)) for
-        // TauX/TauY, matching REMORA's native u-face/v-face stress arrays).
-        // No stagger mismatch to guard against here; still gated on
-        // coord_source_available above since the coordinate-aware polygon
-        // build itself is not yet implemented for any family.
-        reason = field_name + ": TAUX_FACE/TAUY_FACE family (ERF tau -> REMORA sustr/svstr, "
-                 "already stagger-matched); coordinate-aware polygon build not yet implemented, "
-                 "using legacy CellBounds() path";
-        return false;
-    case WeightFamily::WIND_FACE_TO_CENTER:
-        reason = field_name + ": WIND_FACE_TO_CENTER family requires a face->center averaging "
-                 "transform hook (ERF face-staggered U/V -> REMORA rho-point wind) that is not "
-                 "yet wired; using legacy CellBounds() path";
-        return false;
-    case WeightFamily::SCALAR_CENTERED:
-        reason.clear();
-        return true;
-    case WeightFamily::NumWeightFamilies:
-        break;
+    ParallelDescriptor::ReduceRealMax(max_sum_err);
+    if (ParallelDescriptor::IOProcessor() && m_driver_verbose >= 1) {
+        amrex::Print() << "[driver] Remap weight normalization (" << label
+                       << "): max weight sum drift before normalization = " << max_sum_err << "\n";
     }
-    reason = field_name + ": unhandled weight family; using legacy CellBounds() path";
-    return false;
 }
-} // namespace
 
 void
 ERFRemoraMultiBlockContainer::BuildRemapWeights()
@@ -782,30 +809,9 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
         (remora_x_psi != nullptr && remora_y_psi != nullptr &&
          erf_x_corner != nullptr && erf_y_corner != nullptr);
 
-    // Per-field compatibility pass: log once per field/reason. Legacy
-    // CellBounds()-based loops below are unaffected by this result — this is
-    // guard-condition/plumbing only, not a source switch.
-    if (amrex::ParallelDescriptor::IOProcessor()) {
-        static bool logged_once = false;
-        if (!logged_once) {
-            const auto& all_names = coupling::AtmosToOceanAllNames();
-            for (int idx = 0; idx < static_cast<int>(all_names.size()); ++idx) {
-                std::string reason;
-                const bool compatible = FieldCompatibleWithCoordinateSource(
-                    idx, all_names[idx], coord_source_available, reason);
-                if (!compatible) {
-                    amrex::Print() << "[driver] BuildRemapWeights: " << reason << "\n";
-                }
-            }
-            std::string sst_reason;
-            FieldCompatibleWithCoordinateSource(
-                coupling::SST, "SST", coord_source_available, sst_reason);
-            if (!sst_reason.empty()) {
-                amrex::Print() << "[driver] BuildRemapWeights: " << sst_reason << "\n";
-            }
-            logged_once = true;
-        }
-    }
+    amrex::Print() << "[driver] BuildRemapWeights: curvilinear coordinate mode = "
+                       << (coord_source_available ? "active (true physical corner polygons)" : "fallback (CellBounds AABB)")
+                       << "\n";
 
     // Reset A2O weight and index caches, one family slot at a time. Each slot
     // was allocated (AllocateCachesFromSolverLayouts) against its own
@@ -835,41 +841,75 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
             auto weight_arr = weight_mf->array(mfi);
             auto index_arr = index_mf->array(mfi);
 
+            const Array4<const Real> rx_arr = coord_source_available ? remora_x_psi->const_array(mfi) : Array4<const Real>{};
+            const Array4<const Real> ry_arr = coord_source_available ? remora_y_psi->const_array(mfi) : Array4<const Real>{};
+
             for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
                 for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
-                    RealBox remora_bounds = m_geom_ocn.CellBounds(IntVect(i, j, 0));
-                    Vector<Point2D> remora_poly = {
-                        {remora_bounds.lo(0), remora_bounds.lo(1)},
-                        {remora_bounds.hi(0), remora_bounds.lo(1)},
-                        {remora_bounds.hi(0), remora_bounds.hi(1)},
-                        {remora_bounds.lo(0), remora_bounds.hi(1)}
-                    };
+                    Vector<Point2D> remora_poly;
+                    RealBox remora_bbox;
+
+                    if (coord_source_available) {
+                        remora_poly = ExtractCellQuadFromCoords(i, j, rx_arr, ry_arr);
+                    } else {
+                        RealBox bounds = m_geom_ocn.CellBounds(IntVect(i, j, 0));
+                        remora_poly = {
+                            {bounds.lo(0), bounds.lo(1)},
+                            {bounds.hi(0), bounds.lo(1)},
+                            {bounds.hi(0), bounds.hi(1)},
+                            {bounds.lo(0), bounds.hi(1)}
+                        };
+                    }
 
                     Real dst_area = PolygonArea(remora_poly);
                     if (dst_area <= 0.0) continue;
 
-                    RealBox remora_bbox = remora_bounds;
+                    Real x_min = remora_poly[0].x, x_max = remora_poly[0].x;
+                    Real y_min = remora_poly[0].y, y_max = remora_poly[0].y;
+                    for (const auto& p : remora_poly) {
+                        x_min = std::min(x_min, p.x); x_max = std::max(x_max, p.x);
+                        y_min = std::min(y_min, p.y); y_max = std::max(y_max, p.y);
+                    }
+                    remora_bbox = RealBox({x_min, y_min, 0.0}, {x_max, y_max, 0.0});
+
                     Box erf_candidate_box = m_geom.Domain();
                     int erf_i_lo = std::floor((remora_bbox.lo(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
                     int erf_i_hi = std::ceil((remora_bbox.hi(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
                     int erf_j_lo = std::floor((remora_bbox.lo(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
                     int erf_j_hi = std::ceil((remora_bbox.hi(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
 
-                    erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 1);
-                    erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 1);
-                    erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 1);
-                    erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 1);
+                    // Add padded safety halo around search bounds for curvilinear distortion
+                    erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 2);
+                    erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 2);
+                    erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 2);
+                    erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 2);
 
                     int stencil_idx = 0;
                     for (int src_j = erf_j_lo; src_j <= erf_j_hi; ++src_j) {
                         for (int src_i = erf_i_lo; src_i <= erf_i_hi; ++src_i) {
-                            if (stencil_idx >= MAX_STENCIL_SIZE) break;
+                            Vector<Point2D> erf_poly;
+                            if (coord_source_available && erf_x_corner && erf_y_corner) {
+                                auto const& ex_arr = erf_x_corner->const_array(mfi);
+                                auto const& ey_arr = erf_y_corner->const_array(mfi);
+                                erf_poly = ExtractCellQuadFromCoords(src_i, src_j, ex_arr, ey_arr);
+                            } else {
+                                RealBox erf_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
+                                erf_poly = {
+                                    {erf_bounds.lo(0), erf_bounds.lo(1)},
+                                    {erf_bounds.hi(0), erf_bounds.lo(1)},
+                                    {erf_bounds.hi(0), erf_bounds.hi(1)},
+                                    {erf_bounds.lo(0), erf_bounds.hi(1)}
+                                };
+                            }
 
-                            RealBox erf_cell_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
-                            Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_cell_bounds);
+                            Vector<Point2D> clipped_poly = ClipPolygon(remora_poly, erf_poly);
                             Real intersect_area = PolygonArea(clipped_poly);
 
                             if (intersect_area > 0.0) {
+                                AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                                    stencil_idx < MAX_STENCIL_SIZE,
+                                    "BuildRemapWeights: A2O stencil size exceeded MAX_STENCIL_SIZE=9.");
+
                                 Real weight = intersect_area / dst_area;
                                 weight_arr(i, j, 0, stencil_idx) = weight;
                                 index_arr(i, j, 0, stencil_idx * 3) = src_i;
@@ -882,6 +922,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                 }
             }
         }
+        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, "A2O Family Slot");
     }
 
     // Reset and compute O2A weight and index caches if active

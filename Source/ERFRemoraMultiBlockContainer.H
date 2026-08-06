@@ -19,6 +19,12 @@
 
 namespace erf_remora
 {
+// Point structure for 2D curvilinear and Cartesian cell geometry
+struct Point2D {
+    amrex::Real x{0.0};
+    amrex::Real y{0.0};
+};
+
 // COAWST-style weight family tag for the A2O remap stencils. The storage key
 // is one slot finer than the conceptual three-way family split (TauX/TauY
 // need distinct destination BoxArrays even though both are
@@ -37,21 +43,12 @@ WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
 /**
  * ERFRemoraMultiBlockContainer is the driver-owned "conductor" object.
  *
- * Stage-2 design:
- * 1. The driver (not ERF/REMORA) owns the full topology: atmosphere RealBox + n_cell and
- *    ocean RealBox + n_cell are stored here and exposed via getters.
- * 2. The interface slab (cache MultiFabs) is derived from the atmosphere horizontal extent
- *    at z = 0.
- * 3. ERF and REMORA are constructed by caller translation units using GetAtm()/GetOcn() getters
- *    to pass explicit topology into their explicit-construction constructors.
- * 4. Interface memory uses native AMReX containers (Vector<MultiFab*>).
- * 5. Geometry is level-0 only; coupling slabs may remap across integer-ratio
- *    horizontal resolution mismatches where supported by the exchange path.
- *
- * Parallel exchange roadmap:
- * - Current: direct local access to shared MultiFab objects.
- * - Future: AMReX-native ParallelCopy + NonLocalBC::MultiBlockCommMetaData once
- *   block/rank ownership diverges.
+ * Driver Responsibilities:
+ * 1. Owns topology for both atmosphere (ERF) and ocean (REMORA).
+ * 2. Allocates and manages driver-level exchange cache slabs.
+ * 3. Computes curvilinear polygon-polygon intersection remap weights (A2O and O2A).
+ * 4. Executes centralized conservative remapping (ApplyConservativeRemap) with dynamic
+ *    ghost halos and unmapped cell safeguards, keeping math decoupled from solvers.
  */
 class ERFRemoraMultiBlockContainer
 {
@@ -80,8 +77,28 @@ public:
     amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();
     const amrex::Vector<std::string>& AtmosToOceanActiveNames() const;
 
-    // Topology getters — used by RunERFOneStepAndPack / RunREMORAApplyAndOneStep
-    // to construct solvers with driver-owned explicit topology.
+    /**
+     * Centralized Driver Conservative Remap Engine
+     *
+     * Applies sparse weight matrix dot-product from src to dst.
+     *
+     * @param src Source MultiFab on source grid layout
+     * @param dst Destination MultiFab on target grid layout
+     * @param weight_mf Weight MultiFab (ncomp = max_stencil_size)
+     * @param index_mf Index iMultiFab (ncomp = 3 * max_stencil_size)
+     * @param max_stencil_size Maximum stencil entries per destination cell
+     * @param fallback_val Fallback value for unmapped destination cells (e.g. 288.15 for SST)
+     * @param is_temperature_field Flag enabling temperature physical range safeguards
+     */
+    void ApplyConservativeRemap(const amrex::MultiFab& src,
+                                amrex::MultiFab& dst,
+                                const amrex::MultiFab& weight_mf,
+                                const amrex::iMultiFab& index_mf,
+                                int max_stencil_size,
+                                amrex::Real fallback_val = 0.0,
+                                bool is_temperature_field = false) const;
+
+    // Topology getters
     const amrex::RealBox& GetAtmRealBox() const { return m_atm_rb; }
     const amrex::Vector<int>& GetAtmNCell() const { return m_atm_n_cell; }
     const amrex::RealBox& GetOcnRealBox() const { return m_ocn_rb; }
@@ -90,6 +107,16 @@ public:
     int GetCoord() const { return m_coord; }
     const amrex::Vector<amrex::IntVect>& GetRefRatio() const { return m_ref_ratio; }
     const amrex::Array<int,AMREX_SPACEDIM>& GetIsPeriodic() const { return m_is_periodic; }
+
+    // Accessors for remap weight and index MultiFabs by family slot
+    const amrex::MultiFab* GetA2OWeightMultiFab(WeightFamily family) const {
+        return m_weight_mf_by_family[static_cast<int>(family)].get();
+    }
+    const amrex::iMultiFab* GetA2OIndexMultiFab(WeightFamily family) const {
+        return m_index_mf_by_family[static_cast<int>(family)].get();
+    }
+    const amrex::MultiFab* GetO2AWeightMultiFab() const { return m_weight_o2a_mf.get(); }
+    const amrex::iMultiFab* GetO2AIndexMultiFab() const { return m_index_o2a_mf.get(); }
 
 private:
     using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&, amrex::Real)>;
@@ -125,7 +152,20 @@ private:
     void ValidateCouplingLayoutsFromSolvers() const;
     coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
     void SelectAtmosToOceanActiveView(long long ocean_step);
+
+    // Weight calculation and stencil safety helpers
     void BuildRemapWeights();
+    void NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
+                                              const amrex::iMultiFab& index_mf,
+                                              const char* label);
+    int ComputeRequiredGhostHalo(const amrex::iMultiFab& index_mf,
+                                const amrex::MultiFab& weight_mf,
+                                int max_stencil_size) const;
+    void HandleUnmappedCells(amrex::MultiFab& dst,
+                            const amrex::MultiFab& weight_mf,
+                            int max_stencil_size,
+                            amrex::Real fallback_val,
+                            bool is_temperature_field) const;
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;

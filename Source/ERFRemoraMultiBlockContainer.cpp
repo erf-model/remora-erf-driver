@@ -2,7 +2,10 @@
 #include "StandaloneSolverRuns.H"
 
 #include <AMReX.H>
+#include <AMReX_BCRec.H>
 #include <AMReX_BLProfiler.H>
+#include <AMReX_FillPatchUtil.H>
+#include <AMReX_Interpolater.H>
 #include <AMReX_Math.H>
 #include <AMReX_MultiFabUtil.H>
 #include <AMReX_ParmParse.H>
@@ -213,10 +216,10 @@ ValidateCouplingLayout (const amrex::BoxArray& fine_ba,
 amrex::BoxArray
 AtmosToOceanBoxArray (const amrex::BoxArray& ba_ocn, int idx)
 {
-    if (idx == coupling::TauX || idx == coupling::Uwind) {
+    if (idx == coupling::TauX) {
         return amrex::convert(ba_ocn, amrex::IntVect(1,0,0));
     }
-    if (idx == coupling::TauY || idx == coupling::Vwind) {
+    if (idx == coupling::TauY) {
         return amrex::convert(ba_ocn, amrex::IntVect(0,1,0));
     }
     return ba_ocn;
@@ -855,9 +858,17 @@ ERFRemoraMultiBlockContainer::InterpOceanToAtmos (
     amrex::MultiFab atm_temp(ba_atm_temp, dm_atm_temp, 1, 0);
 
     // 4. Interpolate ocean SST to atmosphere resolution using piecewise constant
-    //    ParallelCopy will handle MPI communication and simple interpolation
-    //    For more sophisticated interpolation, would need InterpFromCoarseLevel with proper BC setup
-    atm_temp.ParallelCopy(*ocean_state[coupling::SST], 0, 0, 1, 0, 0);
+    //    Use InterpFromCoarseLevel with cell-centered interpolation
+    amrex::Geometry geom_atm_temp(ba_atm_temp.minimalBox(), &m_ocn_rb, amrex::CoordSys::cartesian, m_is_periodic.data());
+
+    amrex::Vector<amrex::BCRec> bcs(1);  // One component (SST), default BC is interior
+
+    amrex::InterpFromCoarseLevel(atm_temp, atm_temp.nGrowVect(),
+                                  amrex::IntVect(0,0,0), // do not fill ghost cells outside domain
+                                  *ocean_state[coupling::SST], 0, 0, 1,
+                                  m_geom_ocn, geom_atm_temp,
+                                  ratio, &amrex::cell_cons_interp,
+                                  bcs, 0);
 
     // 5. ParallelCopy interpolated SST from ocean extent to full atmosphere extent
     //    ParallelCopy only overwrites overlapping region (ocean extent)
@@ -898,12 +909,12 @@ ERFRemoraMultiBlockContainer::RemapAtmosToOceanStates(
             continue;
         }
 
-        // Determine field centering (cell vs face)
-        const amrex::IntVect ixtype = ocn_states[idx]->boxArray().ixType().toIntVect();
+        // Determine field centering from atmosphere state (source)
+        const amrex::IntVect ixtype = atm_states[idx]->boxArray().ixType().toIntVect();
         const bool is_x_face = (ixtype == amrex::IntVect(1, 0, 0));
         const bool is_y_face = (ixtype == amrex::IntVect(0, 1, 0));
 
-        // Create temp BoxArray with appropriate centering
+        // Create temp BoxArray with same centering as source
         amrex::BoxArray ba_temp = ba_atm_on_ocn;
         if (is_x_face) {
             ba_temp.convert(amrex::IntVect(1, 0, 0));
@@ -1111,12 +1122,14 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 BL_PROFILE("Driver::Pack_Atmos_Remap");
 
                 // Step 1: Create temporary atmosphere-resolution MultiFabs
+                // Note: states is m_atmos_to_ocean_active which maps local index to global coupling contract index
                 amrex::Vector<std::unique_ptr<amrex::MultiFab>> atm_temp_storage(states.size());
-                for (int idx = 0; idx < static_cast<int>(states.size()); ++idx) {
-                    if (states[idx] != nullptr) {
-                        const amrex::BoxArray ba_temp = AtmosToOceanBoxArray(m_ba, idx);
-                        const amrex::IntVect ng = AtmosToOceanNGrow(idx);
-                        atm_temp_storage[idx] = std::make_unique<amrex::MultiFab>(ba_temp, m_dm, 1, ng);
+                for (int local_idx = 0; local_idx < static_cast<int>(states.size()); ++local_idx) {
+                    if (states[local_idx] != nullptr) {
+                        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+                        const amrex::BoxArray ba_temp = AtmosToOceanBoxArray(m_ba, global_idx);
+                        const amrex::IntVect ng = AtmosToOceanNGrow(global_idx);
+                        atm_temp_storage[local_idx] = std::make_unique<amrex::MultiFab>(ba_temp, m_dm, 1, ng);
                     }
                 }
                 amrex::Vector<amrex::MultiFab*> atm_temp = amrex::GetVecOfPtrs(atm_temp_storage);

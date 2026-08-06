@@ -36,7 +36,7 @@ Purpose:
 Run:
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
+./build/erf-remora-driver Exec/CTest/inputs_one_step_solver_initialization_check \
   max_step=1
 ```
 
@@ -64,7 +64,7 @@ Purpose:
 Run:
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF
+./build/erf-remora-driver Exec/IdealizedFlows/inputs_ERFtoREMORA_coupleToERF
 ```
 
 Dependency note:
@@ -116,7 +116,7 @@ Purpose:
 Run:
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_ABL
+./build/erf-remora-driver Exec/IdealizedFlows/inputs_two_way_ABL
 ```
 
 ---
@@ -131,7 +131,7 @@ Purpose:
 Run:
 
 ```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_couette
+./build/erf-remora-driver Exec/IdealizedFlows/inputs_two_way_couette
 ```
 
 ---

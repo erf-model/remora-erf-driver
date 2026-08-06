@@ -142,6 +142,129 @@ install(
 if(ERF_REMORA_ENABLE_TESTS)
   enable_testing()
 
+  function(erf_remora_add_restart_test _name _input _work_subdir)
+    set(options)
+    set(oneValueArgs
+      ERF_RESTART_SUFFIX
+      REMORA_RESTART_SUFFIX
+      ERF_COMPARE_SUFFIX
+      REMORA_COMPARE_SUFFIX
+      EXCHANGE_COMPARE_SUFFIX
+      ERF_PLOT_INT
+      ERF_CHECK_INT
+      REMORA_PLOT_INT
+      REMORA_CHECK_INT
+      EXCHANGE_PLOT_INT)
+    set(multiValueArgs RUNTIME_ARGS)
+    cmake_parse_arguments(ERF_REMORA "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    list(JOIN ERF_REMORA_RUNTIME_ARGS ";" _args_joined)
+    add_test(
+      NAME ${_name}
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DERF_REMORA_INPUT_FILE=${_input}
+        -DFCOMPARE_EXE=${FCOMPARE_EXE}
+        -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
+        -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -DERF_REMORA_WORK_SUBDIR=${_work_subdir}
+        -DERF_REMORA_ERF_RESTART_SUFFIX=${ERF_REMORA_ERF_RESTART_SUFFIX}
+        -DERF_REMORA_REMORA_RESTART_SUFFIX=${ERF_REMORA_REMORA_RESTART_SUFFIX}
+        -DERF_REMORA_ERF_COMPARE_SUFFIX=${ERF_REMORA_ERF_COMPARE_SUFFIX}
+        -DERF_REMORA_REMORA_COMPARE_SUFFIX=${ERF_REMORA_REMORA_COMPARE_SUFFIX}
+        -DERF_REMORA_EXCHANGE_COMPARE_SUFFIX=${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}
+        -DERF_REMORA_ERF_PLOT_INT=${ERF_REMORA_ERF_PLOT_INT}
+        -DERF_REMORA_ERF_CHECK_INT=${ERF_REMORA_ERF_CHECK_INT}
+        -DERF_REMORA_REMORA_PLOT_INT=${ERF_REMORA_REMORA_PLOT_INT}
+        -DERF_REMORA_REMORA_CHECK_INT=${ERF_REMORA_REMORA_CHECK_INT}
+        -DERF_REMORA_EXCHANGE_PLOT_INT=${ERF_REMORA_EXCHANGE_PLOT_INT}
+        "-DERF_REMORA_ARGS=${_args_joined}"
+        -P "${ERF_REMORA_RESTART_TEST_SCRIPT}"
+    )
+    set_tests_properties(${_name}
+      PROPERTIES
+        LABELS "reproducer;restart"
+        PROCESSORS 1
+    )
+  endfunction()
+
+  function(erf_remora_add_parallel_tests _test_prefix _input _work_subdir_prefix)
+    set(options)
+    set(oneValueArgs
+      ERF_COMPARE_SUFFIX
+      REMORA_COMPARE_SUFFIX
+      EXCHANGE_COMPARE_SUFFIX
+      ERF_PLOT_INT
+      REMORA_PLOT_INT
+      EXCHANGE_PLOT_INT
+      MPI_NPROCS)
+    set(multiValueArgs RUNTIME_ARGS)
+    cmake_parse_arguments(ERF_REMORA "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    list(JOIN ERF_REMORA_RUNTIME_ARGS ";" _args_joined)
+    add_test(
+      NAME ${_test_prefix}_np${ERF_REMORA_MPI_NPROCS}_smoke
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DERF_REMORA_INPUT_FILE=${_input}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+        -DERF_REMORA_WORK_SUBDIR=${_work_subdir_prefix}_smoke
+        -DERF_REMORA_MPI_NPROCS=${ERF_REMORA_MPI_NPROCS}
+        -DERF_REMORA_ERF_COMPARE_SUFFIX=${ERF_REMORA_ERF_COMPARE_SUFFIX}
+        -DERF_REMORA_REMORA_COMPARE_SUFFIX=${ERF_REMORA_REMORA_COMPARE_SUFFIX}
+        -DERF_REMORA_EXCHANGE_COMPARE_SUFFIX=${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}
+        -DERF_REMORA_ERF_PLOT_INT=${ERF_REMORA_ERF_PLOT_INT}
+        -DERF_REMORA_REMORA_PLOT_INT=${ERF_REMORA_REMORA_PLOT_INT}
+        -DERF_REMORA_EXCHANGE_PLOT_INT=${ERF_REMORA_EXCHANGE_PLOT_INT}
+        "-DERF_REMORA_ARGS=${_args_joined}"
+        -P "${ERF_REMORA_MPI_SMOKE_TEST_SCRIPT}"
+    )
+    set_tests_properties(${_test_prefix}_np${ERF_REMORA_MPI_NPROCS}_smoke
+      PROPERTIES
+        LABELS "parallel"
+        PROCESSORS ${ERF_REMORA_MPI_NPROCS}
+    )
+
+    add_test(
+      NAME ${_test_prefix}_np${ERF_REMORA_MPI_NPROCS}_compare_to_np1
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DERF_REMORA_INPUT_FILE=${_input}
+        -DFCOMPARE_EXE=${FCOMPARE_EXE}
+        -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
+        -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+        -DERF_REMORA_WORK_SUBDIR=${_work_subdir_prefix}_compare
+        -DERF_REMORA_MPI_NPROCS=${ERF_REMORA_MPI_NPROCS}
+        -DERF_REMORA_ERF_COMPARE_SUFFIX=${ERF_REMORA_ERF_COMPARE_SUFFIX}
+        -DERF_REMORA_REMORA_COMPARE_SUFFIX=${ERF_REMORA_REMORA_COMPARE_SUFFIX}
+        -DERF_REMORA_EXCHANGE_COMPARE_SUFFIX=${ERF_REMORA_EXCHANGE_COMPARE_SUFFIX}
+        -DERF_REMORA_ERF_PLOT_INT=${ERF_REMORA_ERF_PLOT_INT}
+        -DERF_REMORA_REMORA_PLOT_INT=${ERF_REMORA_REMORA_PLOT_INT}
+        -DERF_REMORA_EXCHANGE_PLOT_INT=${ERF_REMORA_EXCHANGE_PLOT_INT}
+        "-DERF_REMORA_ARGS=${_args_joined}"
+        -P "${ERF_REMORA_MPI_COMPARE_TEST_SCRIPT}"
+    )
+    set_tests_properties(${_test_prefix}_np${ERF_REMORA_MPI_NPROCS}_compare_to_np1
+      PROPERTIES
+        LABELS "parallel"
+        PROCESSORS ${ERF_REMORA_MPI_NPROCS}
+    )
+  endfunction()
+
   set(ERF_REMORA_DRIVER_EXE "$<TARGET_FILE:erf-remora-driver>")
   set(ERF_REMORA_TEST_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_reproducer.cmake")
   set(ERF_REMORA_RESTART_TEST_SCRIPT
@@ -184,7 +307,7 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_COMMAND}"
       -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
       -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_one_step_solver_initialization_check
+      -DERF_REMORA_INPUT_FILE=Exec/CTest/inputs_one_step_solver_initialization_check
       -DERF_REMORA_ARGS=max_step=1
       -P "${ERF_REMORA_TEST_SCRIPT}"
   )
@@ -199,7 +322,7 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_COMMAND}"
       -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
       -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF
+      -DERF_REMORA_INPUT_FILE=Exec/IdealizedFlows/inputs_ERFtoREMORA_coupleToERF
       -DERF_REMORA_ARGS=max_step=10
       -P "${ERF_REMORA_TEST_SCRIPT}"
   )
@@ -229,7 +352,7 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_COMMAND}"
       -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
       -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_two_way_ABL
+      -DERF_REMORA_INPUT_FILE=Exec/IdealizedFlows/inputs_two_way_ABL
       -DERF_REMORA_ARGS=
       -P "${ERF_REMORA_TEST_SCRIPT}"
   )
@@ -244,7 +367,7 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_COMMAND}"
       -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
       -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_two_way_couette
+      -DERF_REMORA_INPUT_FILE=Exec/IdealizedFlows/inputs_two_way_couette
       -DERF_REMORA_ARGS=
       -P "${ERF_REMORA_TEST_SCRIPT}"
   )
@@ -253,74 +376,127 @@ if(ERF_REMORA_ENABLE_TESTS)
       LABELS "reproducer"
   )
 
-  if(FCOMPARE_EXE AND ERF_REMORA_RRTMGP_DIR)
-    add_test(
-      NAME reproducer_restart_substep
-      COMMAND
-        "${CMAKE_COMMAND}"
-        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-        -DFCOMPARE_EXE=${FCOMPARE_EXE}
-        -DERF_REMORA_TEST_FCOMPARE_RTOL=${ERF_REMORA_TEST_FCOMPARE_RTOL}
-        -DERF_REMORA_TEST_FCOMPARE_ATOL=${ERF_REMORA_TEST_FCOMPARE_ATOL}
-        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
-        -P "${ERF_REMORA_RESTART_TEST_SCRIPT}"
-    )
-    set_tests_properties(reproducer_restart_substep
-      PROPERTIES
-        LABELS "reproducer"
-        PROCESSORS 1
-    )
+  if(FCOMPARE_EXE)
+    set(_erf_remora_upwelling_cases
+      "oneway|Exec/Upwelling/inputs_oneway"
+      "twoway|Exec/Upwelling/inputs_twoway")
+    set(_erf_remora_atm2ocn_modes state flux)
+    foreach(_case_entry IN LISTS _erf_remora_upwelling_cases)
+      string(REPLACE "|" ";" _case_fields "${_case_entry}")
+      list(GET _case_fields 0 _case_name)
+      list(GET _case_fields 1 _case_input)
+      foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
+        erf_remora_add_restart_test(
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_matched
+          ${_case_input}
+          restart_${_case_name}_${_atm2ocn_mode}_matched
+          ERF_RESTART_SUFFIX 00001
+          REMORA_RESTART_SUFFIX 00001
+          ERF_COMPARE_SUFFIX 00002
+          REMORA_COMPARE_SUFFIX 00002
+          EXCHANGE_COMPARE_SUFFIX 00001
+          ERF_PLOT_INT 1
+          ERF_CHECK_INT 1
+          REMORA_PLOT_INT 1
+          REMORA_CHECK_INT 1
+          EXCHANGE_PLOT_INT 1
+          RUNTIME_ARGS
+            "driver.atm2ocn_mode=${_atm2ocn_mode}"
+            "erf.fixed_dt=1"
+            "remora.fixed_dt=1"
+            "remora.fixed_fast_dt=1"
+            "remora.fixed_ndtfast_ratio=1"
+            "max_step=2"
+        )
+
+        erf_remora_add_restart_test(
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_substep
+          ${_case_input}
+          restart_${_case_name}_${_atm2ocn_mode}_substep
+          ERF_RESTART_SUFFIX 00010
+          REMORA_RESTART_SUFFIX 00001
+          ERF_COMPARE_SUFFIX 00020
+          REMORA_COMPARE_SUFFIX 00002
+          EXCHANGE_COMPARE_SUFFIX 00001
+          ERF_PLOT_INT 10
+          ERF_CHECK_INT 10
+          REMORA_PLOT_INT 1
+          REMORA_CHECK_INT 1
+          EXCHANGE_PLOT_INT 1
+          RUNTIME_ARGS
+            "driver.atm2ocn_mode=${_atm2ocn_mode}"
+            "erf.fixed_dt=1"
+            "remora.fixed_dt=10"
+            "remora.fixed_fast_dt=10"
+            "remora.fixed_ndtfast_ratio=1"
+            "max_step=2"
+        )
+      endforeach()
+    endforeach()
   else()
     message(STATUS
       "Skipping top-level restart reproducer test registration because "
-      "FCOMPARE_EXE or ERF_REMORA_RRTMGP_DIR is unset")
+      "FCOMPARE_EXE is unset")
   endif()
 
   if(ERF_REMORA_ENABLE_MPI
      AND MPIEXEC_EXECUTABLE
-     AND FCOMPARE_EXE
-     AND ERF_REMORA_RRTMGP_DIR)
-    add_test(
-      NAME parallel_upwelling_np2_smoke
-      COMMAND
-        "${CMAKE_COMMAND}"
-        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
-        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
-        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
-        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
-        -P "${ERF_REMORA_MPI_SMOKE_TEST_SCRIPT}"
-    )
-    set_tests_properties(parallel_upwelling_np2_smoke
-      PROPERTIES
-        LABELS "parallel"
-        PROCESSORS 2
-    )
+     AND FCOMPARE_EXE)
+    set(_erf_remora_upwelling_cases
+      "oneway|Exec/Upwelling/inputs_oneway"
+      "twoway|Exec/Upwelling/inputs_twoway")
+    set(_erf_remora_atm2ocn_modes state flux)
+    foreach(_case_entry IN LISTS _erf_remora_upwelling_cases)
+      string(REPLACE "|" ";" _case_fields "${_case_entry}")
+      list(GET _case_fields 0 _case_name)
+      list(GET _case_fields 1 _case_input)
+      foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
+        foreach(_mpi_nprocs 2 4 6 8)
+          erf_remora_add_parallel_tests(
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_matched
+            ${_case_input}
+            mpi_${_case_name}_${_atm2ocn_mode}_matched_np${_mpi_nprocs}
+            MPI_NPROCS ${_mpi_nprocs}
+            ERF_COMPARE_SUFFIX 00002
+            REMORA_COMPARE_SUFFIX 00002
+            EXCHANGE_COMPARE_SUFFIX 00001
+            ERF_PLOT_INT 1
+            REMORA_PLOT_INT 1
+            EXCHANGE_PLOT_INT 1
+            RUNTIME_ARGS
+              "driver.atm2ocn_mode=${_atm2ocn_mode}"
+              "erf.fixed_dt=1"
+              "remora.fixed_dt=1"
+              "remora.fixed_fast_dt=1"
+              "remora.fixed_ndtfast_ratio=1"
+              "max_step=2"
+          )
 
-    add_test(
-      NAME parallel_upwelling_np2_compare_to_np1
-      COMMAND
-        "${CMAKE_COMMAND}"
-        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-        -DFCOMPARE_EXE=${FCOMPARE_EXE}
-        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
-        -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
-        -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
-        -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
-        -P "${ERF_REMORA_MPI_COMPARE_TEST_SCRIPT}"
-    )
-    set_tests_properties(parallel_upwelling_np2_compare_to_np1
-      PROPERTIES
-        LABELS "parallel"
-        PROCESSORS 2
-    )
+          erf_remora_add_parallel_tests(
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_substep
+            ${_case_input}
+            mpi_${_case_name}_${_atm2ocn_mode}_substep_np${_mpi_nprocs}
+            MPI_NPROCS ${_mpi_nprocs}
+            ERF_COMPARE_SUFFIX 00020
+            REMORA_COMPARE_SUFFIX 00002
+            EXCHANGE_COMPARE_SUFFIX 00001
+            ERF_PLOT_INT 10
+            REMORA_PLOT_INT 1
+            EXCHANGE_PLOT_INT 1
+            RUNTIME_ARGS
+              "driver.atm2ocn_mode=${_atm2ocn_mode}"
+              "erf.fixed_dt=1"
+              "remora.fixed_dt=10"
+              "remora.fixed_fast_dt=10"
+              "remora.fixed_ndtfast_ratio=1"
+              "max_step=2"
+          )
+        endforeach()
+      endforeach()
+    endforeach()
   else()
     message(STATUS
       "Skipping top-level MPI upwelling test registration because "
-      "ERF_REMORA_ENABLE_MPI is OFF or MPIEXEC_EXECUTABLE, FCOMPARE_EXE, "
-      "or ERF_REMORA_RRTMGP_DIR is unset")
+      "ERF_REMORA_ENABLE_MPI is OFF or MPIEXEC_EXECUTABLE or FCOMPARE_EXE is unset")
   endif()
 endif()

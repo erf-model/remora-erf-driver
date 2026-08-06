@@ -21,14 +21,14 @@ if(ERF_REMORA_INPUT_FILE STREQUAL "Exec/CouplingReproducers/inputs_two_way_coupl
   list(APPEND _required_files
     "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_two_way"
     "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding")
-elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF")
+elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/IdealizedFlows/inputs_ERFtoREMORA_coupleToERF")
   list(APPEND _required_files
     "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_ERFtoREMORA"
     "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding")
-elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/CouplingReproducers/inputs_two_way_ABL")
+elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/IdealizedFlows/inputs_two_way_ABL")
   list(APPEND _required_files
     "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_abl")
-elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/CouplingReproducers/inputs_two_way_couette")
+elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/IdealizedFlows/inputs_two_way_couette")
   list(APPEND _required_files
     "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_couette")
 endif()

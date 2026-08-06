@@ -19,6 +19,21 @@
 
 namespace erf_remora
 {
+// COAWST-style weight family tag for the A2O remap stencils. The storage key
+// is one slot finer than the conceptual three-way family split (TauX/TauY
+// need distinct destination BoxArrays even though both are
+// STRESS_STAG_MATCHED), so this enum doubles as both the classification tag
+// and the m_weight_mf_by_family/m_index_mf_by_family array index.
+enum class WeightFamily {
+    SCALAR_CENTERED,      // rho-point destination: IntVect(0,0,0)
+    TAUX_FACE,             // STRESS_STAG_MATCHED / TauX: u-face destination: IntVect(1,0,0)
+    TAUY_FACE,             // STRESS_STAG_MATCHED / TauY: v-face destination: IntVect(0,1,0)
+    WIND_FACE_TO_CENTER,  // Uwind/Vwind: face-staggered source -> rho-point destination
+    NumWeightFamilies
+};
+
+WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
+
 /**
  * ERFRemoraMultiBlockContainer is the driver-owned "conductor" object.
  *
@@ -164,12 +179,16 @@ private:
     amrex::Vector<amrex::MultiFab*> m_ocean_to_atmos;
 
     static constexpr int MAX_STENCIL_SIZE = 9;
-    
-    // Atmosphere -> Ocean (A2O) stencils (lives on REMORA layout)
-    std::unique_ptr<amrex::MultiFab> m_weight_mf;
-    std::unique_ptr<amrex::iMultiFab> m_index_mf;
+    static constexpr int kNumWeightFamilies = static_cast<int>(WeightFamily::NumWeightFamilies);
 
-    // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout)
+    // Atmosphere -> Ocean (A2O) stencils, one per WeightFamily slot (lives on
+    // REMORA layout, on that family's destination stagger).
+    std::array<std::unique_ptr<amrex::MultiFab>, kNumWeightFamilies> m_weight_mf_by_family;
+    std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_index_mf_by_family;
+
+    // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout). O2A is
+    // SST-only/scalar today; kept as a single pair (SCALAR_CENTERED-equivalent)
+    // rather than a full per-family array until O2A gains more lanes.
     std::unique_ptr<amrex::MultiFab> m_weight_o2a_mf;
     std::unique_ptr<amrex::iMultiFab> m_index_o2a_mf;
 

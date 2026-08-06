@@ -99,9 +99,13 @@ ERFApplyOceanSurfaceState(void* erf_handle,
 void
 ERFPackAtmosphericStates(void* erf_handle,
                          amrex::Vector<amrex::MultiFab*>& states,
-                         amrex::Real time)
+                         amrex::Real time,
+                         const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
+                         const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
+                         int max_stencil_size)
 {
-    static_cast<ERF*>(erf_handle)->PackAtmosphericStates(states, time);
+    static_cast<ERF*>(erf_handle)->PackAtmosphericStates(
+        states, time, weight_mf_by_family, index_mf_by_family, max_stencil_size);
 }
 
 amrex::Real
@@ -129,6 +133,9 @@ RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
             "erf");
     erf.InitData();
     erf.Evolve();
-    erf.PackAtmosphericStates(states, time);
+    // Uncoupled/standalone path: no driver-owned remap stencils available.
+    const amrex::Vector<const amrex::MultiFab*> no_weight(4, nullptr);
+    const amrex::Vector<const amrex::iMultiFab*> no_index(4, nullptr);
+    erf.PackAtmosphericStates(states, time, no_weight, no_index, 0);
 }
 } // namespace erf_remora

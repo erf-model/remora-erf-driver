@@ -618,9 +618,24 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
 
-    // Atmosphere -> Ocean (A2O) stencils (lives on REMORA layout)
-    m_weight_mf = std::make_unique<amrex::MultiFab>(m_ba_ocn, m_dm_ocn, MAX_STENCIL_SIZE, 0);
-    m_index_mf = std::make_unique<amrex::iMultiFab>(m_ba_ocn, m_dm_ocn, 3 * MAX_STENCIL_SIZE, 0);
+    // Atmosphere -> Ocean (A2O) stencils, one per WeightFamily slot, each built
+    // against its own destination stagger (rho for scalars, u-face for TauX,
+    // v-face for TauY, rho for WIND_FACE_TO_CENTER since the face->center
+    // averaging happens upstream in the source pack step).
+    {
+        const std::array<const amrex::BoxArray*, kNumWeightFamilies> family_ba = {
+            &remora_rho_ba, &remora_u_ba, &remora_v_ba, &remora_rho_ba
+        };
+        const std::array<const amrex::DistributionMapping*, kNumWeightFamilies> family_dm = {
+            &remora_rho_dm, &remora_u_dm, &remora_v_dm, &remora_rho_dm
+        };
+        for (int f = 0; f < kNumWeightFamilies; ++f) {
+            m_weight_mf_by_family[f] = std::make_unique<amrex::MultiFab>(
+                *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0);
+            m_index_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
+                *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0);
+        }
+    }
 
     // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout)
     if (m_use_two_way_coupling) {
@@ -662,10 +677,9 @@ ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
     // to support general non-conformal curvilinear grid coupling.
 }
 
-namespace {
 // Weight-family classification per field, per the corrected authoritative
 // contract for this branch:
-//   STRESS_STAG_MATCHED (TauX/TauY): ERF tau_x/tau_y are transferred directly
+//   TAUX_FACE/TAUY_FACE (TauX/TauY): ERF tau_x/tau_y are transferred directly
 //     to REMORA vec_sustr/vec_svstr, which already live on the matching
 //     x-face/y-face stagger (see AtmosToOceanBoxArray() above and
 //     Submodules/REMORA/Source/REMORA.H:423-426). This is a stagger-matched
@@ -677,13 +691,14 @@ namespace {
 //     none is wired yet, so this family always falls back today.
 //   SCALAR_CENTERED (Patm, Qair, Tair, Cloud, Rain, SWrad, LWrad, SHflux,
 //     LHflux, Evap, SST): both sides are cell-centered/rho already.
-enum class WeightFamily { STRESS_STAG_MATCHED, WIND_FACE_TO_CENTER, SCALAR_CENTERED };
-
 WeightFamily
 ClassifyAtmosToOceanFieldFamily (int field_idx)
 {
-    if (field_idx == coupling::TauX || field_idx == coupling::TauY) {
-        return WeightFamily::STRESS_STAG_MATCHED;
+    if (field_idx == coupling::TauX) {
+        return WeightFamily::TAUX_FACE;
+    }
+    if (field_idx == coupling::TauY) {
+        return WeightFamily::TAUY_FACE;
     }
     if (field_idx == coupling::Uwind || field_idx == coupling::Vwind) {
         return WeightFamily::WIND_FACE_TO_CENTER;
@@ -691,6 +706,7 @@ ClassifyAtmosToOceanFieldFamily (int field_idx)
     return WeightFamily::SCALAR_CENTERED;
 }
 
+namespace {
 // Per-field compatibility check against the corrected weight-family contract
 // above. This is plumbing/validation only: it does not select or switch the
 // remap math path used below, which remains the unchanged legacy
@@ -709,7 +725,8 @@ FieldCompatibleWithCoordinateSource (int field_idx,
     }
 
     switch (ClassifyAtmosToOceanFieldFamily(field_idx)) {
-    case WeightFamily::STRESS_STAG_MATCHED:
+    case WeightFamily::TAUX_FACE:
+    case WeightFamily::TAUY_FACE:
         // Compatible when ERF's tau ixType/extents match REMORA's
         // vec_sustr/vec_svstr layout contract (AtmosToOceanBoxArray() already
         // requests amrex::convert(ba_ocn, IntVect(1,0,0)/IntVect(0,1,0)) for
@@ -717,7 +734,7 @@ FieldCompatibleWithCoordinateSource (int field_idx,
         // No stagger mismatch to guard against here; still gated on
         // coord_source_available above since the coordinate-aware polygon
         // build itself is not yet implemented for any family.
-        reason = field_name + ": STRESS_STAG_MATCHED family (ERF tau -> REMORA sustr/svstr, "
+        reason = field_name + ": TAUX_FACE/TAUY_FACE family (ERF tau -> REMORA sustr/svstr, "
                  "already stagger-matched); coordinate-aware polygon build not yet implemented, "
                  "using legacy CellBounds() path";
         return false;
@@ -729,6 +746,8 @@ FieldCompatibleWithCoordinateSource (int field_idx,
     case WeightFamily::SCALAR_CENTERED:
         reason.clear();
         return true;
+    case WeightFamily::NumWeightFamilies:
+        break;
     }
     reason = field_name + ": unhandled weight family; using legacy CellBounds() path";
     return false;
@@ -788,15 +807,33 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
         }
     }
 
-    // Reset A2O weight and index caches
-    if (m_weight_mf && m_index_mf) {
-        m_weight_mf->setVal(0.0);
-        m_index_mf->setVal(-1);
+    // Reset A2O weight and index caches, one family slot at a time. Each slot
+    // was allocated (AllocateCachesFromSolverLayouts) against its own
+    // destination BoxArray/stagger (rho for SCALAR_CENTERED/WIND_FACE_TO_CENTER,
+    // u-face for TAUX_FACE, v-face for TAUY_FACE), so building weights
+    // per-slot means TauX/TauY finally get stencils computed against their own
+    // stagger instead of borrowing the rho-point stencil. The polygon-clipping
+    // math itself (CellBounds()-based AABB overlap) is unchanged; only the
+    // destination MultiFab/BoxArray driving the (i,j) loop and dst_area varies.
+    static const std::array<amrex::IntVect, kNumWeightFamilies> kExpectedFamilyStagger = {
+        amrex::IntVect(0,0,0), amrex::IntVect(1,0,0), amrex::IntVect(0,1,0), amrex::IntVect(0,0,0)
+    };
+    for (int f = 0; f < kNumWeightFamilies; ++f) {
+        MultiFab* weight_mf = m_weight_mf_by_family[f].get();
+        iMultiFab* index_mf = m_index_mf_by_family[f].get();
+        if (!weight_mf || !index_mf) { continue; }
 
-        for (MFIter mfi(*m_weight_mf); mfi.isValid(); ++mfi) {
+        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+            weight_mf->boxArray().ixType().toIntVect() == kExpectedFamilyStagger[f],
+            "BuildRemapWeights: A2O weight MultiFab stagger does not match its WeightFamily slot.");
+
+        weight_mf->setVal(0.0);
+        index_mf->setVal(-1);
+
+        for (MFIter mfi(*weight_mf); mfi.isValid(); ++mfi) {
             Box bx = mfi.validbox();
-            auto weight_arr = m_weight_mf->array(mfi);
-            auto index_arr = m_index_mf->array(mfi);
+            auto weight_arr = weight_mf->array(mfi);
+            auto index_arr = index_mf->array(mfi);
 
             for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
                 for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
@@ -807,7 +844,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                         {remora_bounds.hi(0), remora_bounds.hi(1)},
                         {remora_bounds.lo(0), remora_bounds.hi(1)}
                     };
-                    
+
                     Real dst_area = PolygonArea(remora_poly);
                     if (dst_area <= 0.0) continue;
 
@@ -817,7 +854,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                     int erf_i_hi = std::ceil((remora_bbox.hi(0) - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
                     int erf_j_lo = std::floor((remora_bbox.lo(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
                     int erf_j_hi = std::ceil((remora_bbox.hi(1) - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
-                    
+
                     erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 1);
                     erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 1);
                     erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 1);
@@ -831,7 +868,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                             RealBox erf_cell_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
                             Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_cell_bounds);
                             Real intersect_area = PolygonArea(clipped_poly);
-                            
+
                             if (intersect_area > 0.0) {
                                 Real weight = intersect_area / dst_area;
                                 weight_arr(i, j, 0, stencil_idx) = weight;
@@ -1089,7 +1126,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
     AdvanceBlocksWithCallbacks(
         [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Surface");
-            REMORAPackSurfaceState(m_remora, state, time);
+            REMORAPackSurfaceState(m_remora, state, time,
+                                  m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE);
 
             // Finite check on packed surface state
             for (auto* mf : state) {
@@ -1110,7 +1148,14 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
         },
         [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Atmos");
-            ERFPackAtmosphericStates(m_erf, states, time);
+            amrex::Vector<const amrex::MultiFab*> weight_mf_by_family(kNumWeightFamilies);
+            amrex::Vector<const amrex::iMultiFab*> index_mf_by_family(kNumWeightFamilies);
+            for (int f = 0; f < kNumWeightFamilies; ++f) {
+                weight_mf_by_family[f] = m_weight_mf_by_family[f].get();
+                index_mf_by_family[f] = m_index_mf_by_family[f].get();
+            }
+            ERFPackAtmosphericStates(m_erf, states, time,
+                                    weight_mf_by_family, index_mf_by_family, MAX_STENCIL_SIZE);
             static int cloud_warn_count = 0;
             constexpr int cloud_warn_limit = 5;
             constexpr amrex::Real cloud_tol = 1.0e-6;

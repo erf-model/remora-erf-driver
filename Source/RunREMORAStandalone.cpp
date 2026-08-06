@@ -99,9 +99,13 @@ REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
 void
 REMORAPackSurfaceState(void* remora_handle,
                        amrex::Vector<amrex::MultiFab*>& state,
-                       amrex::Real time)
+                       amrex::Real time,
+                       const amrex::MultiFab* weight_o2a_mf,
+                       const amrex::iMultiFab* index_o2a_mf,
+                       int max_stencil_size)
 {
-    static_cast<REMORA*>(remora_handle)->PackSurfaceState(state, time);
+    static_cast<REMORA*>(remora_handle)->PackSurfaceState(
+        state, time, weight_o2a_mf, index_o2a_mf, max_stencil_size);
 }
 
 void

@@ -4,6 +4,7 @@
 #include "ERFRemoraMultiBlockContainer.H"
 
 #include <AMReX_MultiFab.H>
+#include <AMReX_iMultiFab.H>
 #include <AMReX_REAL.H>
 #include <AMReX_Vector.H>
 
@@ -40,9 +41,14 @@ void ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time);
+// weight_mf_by_family/index_mf_by_family are keyed by WeightFamily slot order
+// {SCALAR_CENTERED, TAUX_FACE, TAUY_FACE, WIND_FACE_TO_CENTER}.
 void ERFPackAtmosphericStates(void* erf_handle,
                               amrex::Vector<amrex::MultiFab*>& states,
-                              amrex::Real time);
+                              amrex::Real time,
+                              const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
+                              const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
+                              int max_stencil_size);
 amrex::Real ERFEvolveOneStep(void* erf_handle, amrex::Real time, amrex::Real dt_request);
 void ERFWriteAtFinalTime(void* erf_handle);
 
@@ -69,7 +75,10 @@ void REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
                                          const amrex::MultiFab** y_psi);
 void REMORAPackSurfaceState(void* remora_handle,
                             amrex::Vector<amrex::MultiFab*>& state,
-                            amrex::Real time);
+                            amrex::Real time,
+                            const amrex::MultiFab* weight_o2a_mf,
+                            const amrex::iMultiFab* index_o2a_mf,
+                            int max_stencil_size);
 void REMORAApplyAtmosphericStates(void* remora_handle,
                                   const amrex::Vector<amrex::MultiFab*>& states,
                                   amrex::Real time);

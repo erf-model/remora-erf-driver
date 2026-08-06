@@ -96,7 +96,8 @@ public:
                                 const amrex::iMultiFab& index_mf,
                                 int max_stencil_size,
                                 amrex::Real fallback_val = 0.0,
-                                bool is_temperature_field = false) const;
+                                bool is_temperature_field = false,
+                                const amrex::MultiFab* dst_mask = nullptr) const;
 
     // Topology getters
     const amrex::RealBox& GetAtmRealBox() const { return m_atm_rb; }

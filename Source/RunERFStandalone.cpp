@@ -89,6 +89,14 @@ ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
 }
 
 void
+ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land)
+{
+    const amrex::iMultiFab* lmask = nullptr;
+    static_cast<ERF*>(erf_handle)->GetLandMask(lmask);
+    if (is_land) { *is_land = lmask; }
+}
+
+void
 ERFApplyOceanSurfaceState(void* erf_handle,
                           const amrex::Vector<amrex::MultiFab*>& state,
                           amrex::Real time)
@@ -102,10 +110,14 @@ ERFPackAtmosphericStates(void* erf_handle,
                          amrex::Real time,
                          const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
                          const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
-                         int max_stencil_size)
+                         int max_stencil_size,
+                         const amrex::MultiFab* dst_mskr,
+                         const amrex::MultiFab* dst_msku,
+                         const amrex::MultiFab* dst_mskv)
 {
     static_cast<ERF*>(erf_handle)->PackAtmosphericStates(
-        states, time, weight_mf_by_family, index_mf_by_family, max_stencil_size);
+        states, time, weight_mf_by_family, index_mf_by_family, max_stencil_size,
+        dst_mskr, dst_msku, dst_mskv);
 }
 
 amrex::Real

@@ -97,15 +97,31 @@ REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
 }
 
 void
+REMORAGetMasks(void* remora_handle,
+              const amrex::MultiFab** mskr,
+              const amrex::MultiFab** msku,
+              const amrex::MultiFab** mskv)
+{
+    const amrex::MultiFab* r = nullptr;
+    const amrex::MultiFab* u = nullptr;
+    const amrex::MultiFab* v = nullptr;
+    static_cast<REMORA*>(remora_handle)->GetLandSeaMasks(r, u, v);
+    if (mskr) { *mskr = r; }
+    if (msku) { *msku = u; }
+    if (mskv) { *mskv = v; }
+}
+
+void
 REMORAPackSurfaceState(void* remora_handle,
                        amrex::Vector<amrex::MultiFab*>& state,
                        amrex::Real time,
                        const amrex::MultiFab* weight_o2a_mf,
                        const amrex::iMultiFab* index_o2a_mf,
-                       int max_stencil_size)
+                       int max_stencil_size,
+                       const amrex::iMultiFab* dst_land_mask)
 {
     static_cast<REMORA*>(remora_handle)->PackSurfaceState(
-        state, time, weight_o2a_mf, index_o2a_mf, max_stencil_size);
+        state, time, weight_o2a_mf, index_o2a_mf, max_stencil_size, dst_land_mask);
 }
 
 void

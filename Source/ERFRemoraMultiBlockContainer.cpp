@@ -522,7 +522,11 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     if (m_erf != nullptr && m_remora != nullptr) {
         if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
             DriverPrintLine(m_driver_verbose, "packing REMORA surface state into ocean->atmos bootstrap cache");
-            REMORAPackSurfaceState(m_remora, m_ocean_to_atmos, amrex::Real(0.0));
+            const amrex::iMultiFab* erf_is_land_bootstrap = nullptr;
+            ERFGetLandMask(m_erf, &erf_is_land_bootstrap);
+            REMORAPackSurfaceState(m_remora, m_ocean_to_atmos, amrex::Real(0.0),
+                                  m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE,
+                                  erf_is_land_bootstrap);
             FillOceanToAtmosGhosts();
         }
     } else {
@@ -781,6 +785,25 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     }
 }
 
+namespace
+{
+// AMReX's Geometry::CellBounds() is not available on this AMReX version;
+// ProbLo()/CellSize() are the public accessors for uniform Cartesian geometry.
+amrex::RealBox
+CellBoundsFromGeom (const amrex::Geometry& g, int i, int j)
+{
+    const amrex::Real* plo = g.ProbLo();
+    const amrex::Real* dx  = g.CellSize();
+
+    const amrex::Real xlo = plo[0] + static_cast<amrex::Real>(i    ) * dx[0];
+    const amrex::Real xhi = plo[0] + static_cast<amrex::Real>(i + 1) * dx[0];
+    const amrex::Real ylo = plo[1] + static_cast<amrex::Real>(j    ) * dx[1];
+    const amrex::Real yhi = plo[1] + static_cast<amrex::Real>(j + 1) * dx[1];
+
+    return amrex::RealBox({xlo, ylo, 0.0}, {xhi, yhi, 0.0});
+}
+}
+
 void
 ERFRemoraMultiBlockContainer::BuildRemapWeights()
 {
@@ -788,7 +811,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
 
     // Query coordinate-aware sources (psi points from REMORA, corner points
     // from ERF) via the C-bridge. This is plumbing/guard-condition only: the
-    // legacy m_geom/m_geom_ocn CellBounds()-based polygon-clipping loops below
+    // legacy m_geom/m_geom_ocn ProbLo/CellSize-based polygon-clipping loops below
     // are unchanged and remain the only path exercised per-field until a
     // coordinate-aware remap algorithm consumes the per-field compatibility
     // result computed here.
@@ -802,6 +825,14 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     if (m_erf != nullptr) {
         ERFGetOceanToAtmosCornerCoordinates(m_erf, &erf_x_corner, &erf_y_corner);
     }
+
+    // ERF land mask (1 = land, 0 = water). Wet/dry masking only: vector
+    // rotation (cos_angler/sin_angler) is intentionally not handled here
+    // because REMORA does not currently expose those arrays.
+    const amrex::iMultiFab* erf_is_land = nullptr;
+    if (m_erf != nullptr) {
+        ERFGetLandMask(m_erf, &erf_is_land);
+    }
     // Coordinate-aware source is available at all only if both solvers report
     // non-null nodal coordinate MultiFabs (development baseline: coordinate
     // pointers are all-or-nothing per the null-safe getter contract).
@@ -810,7 +841,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
          erf_x_corner != nullptr && erf_y_corner != nullptr);
 
     amrex::Print() << "[driver] BuildRemapWeights: curvilinear coordinate mode = "
-                       << (coord_source_available ? "active (true physical corner polygons)" : "fallback (CellBounds AABB)")
+                       << (coord_source_available ? "active (true physical corner polygons)" : "fallback (ProbLo/CellSize AABB)")
                        << "\n";
 
     // Reset A2O weight and index caches, one family slot at a time. Each slot
@@ -819,7 +850,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     // u-face for TAUX_FACE, v-face for TAUY_FACE), so building weights
     // per-slot means TauX/TauY finally get stencils computed against their own
     // stagger instead of borrowing the rho-point stencil. The polygon-clipping
-    // math itself (CellBounds()-based AABB overlap) is unchanged; only the
+    // math itself (ProbLo/CellSize-based AABB overlap) is unchanged; only the
     // destination MultiFab/BoxArray driving the (i,j) loop and dst_area varies.
     static const std::array<amrex::IntVect, kNumWeightFamilies> kExpectedFamilyStagger = {
         amrex::IntVect(0,0,0), amrex::IntVect(1,0,0), amrex::IntVect(0,1,0), amrex::IntVect(0,0,0)
@@ -852,7 +883,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                     if (coord_source_available) {
                         remora_poly = ExtractCellQuadFromCoords(i, j, rx_arr, ry_arr);
                     } else {
-                        RealBox bounds = m_geom_ocn.CellBounds(IntVect(i, j, 0));
+                        RealBox bounds = CellBoundsFromGeom(m_geom_ocn, i, j);
                         remora_poly = {
                             {bounds.lo(0), bounds.lo(1)},
                             {bounds.hi(0), bounds.lo(1)},
@@ -887,13 +918,21 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                     int stencil_idx = 0;
                     for (int src_j = erf_j_lo; src_j <= erf_j_hi; ++src_j) {
                         for (int src_i = erf_i_lo; src_i <= erf_i_hi; ++src_i) {
+                            // Wet/dry masking only (no vector rotation): skip land
+                            // ERF cells so atmospheric land fluxes cannot bleed
+                            // into coastal ocean cells via the remap stencil.
+                            if (erf_is_land != nullptr) {
+                                auto const& land_arr = erf_is_land->const_array(mfi);
+                                if (land_arr(src_i, src_j, 0) == 1) { continue; }
+                            }
+
                             Vector<Point2D> erf_poly;
                             if (coord_source_available && erf_x_corner && erf_y_corner) {
                                 auto const& ex_arr = erf_x_corner->const_array(mfi);
                                 auto const& ey_arr = erf_y_corner->const_array(mfi);
                                 erf_poly = ExtractCellQuadFromCoords(src_i, src_j, ex_arr, ey_arr);
                             } else {
-                                RealBox erf_bounds = m_geom.CellBounds(IntVect(src_i, src_j, 0));
+                                RealBox erf_bounds = CellBoundsFromGeom(m_geom, src_i, src_j);
                                 erf_poly = {
                                     {erf_bounds.lo(0), erf_bounds.lo(1)},
                                     {erf_bounds.hi(0), erf_bounds.lo(1)},
@@ -937,7 +976,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
 
             for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
                 for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
-                    RealBox erf_bounds = m_geom.CellBounds(IntVect(i, j, 0));
+                    RealBox erf_bounds = CellBoundsFromGeom(m_geom, i, j);
                     Vector<Point2D> erf_poly = {
                         {erf_bounds.lo(0), erf_bounds.lo(1)},
                         {erf_bounds.hi(0), erf_bounds.lo(1)},
@@ -965,7 +1004,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                         for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
                             if (stencil_idx >= MAX_STENCIL_SIZE) break;
 
-                            RealBox remora_cell_bounds = m_geom_ocn.CellBounds(IntVect(src_i, src_j, 0));
+                            RealBox remora_cell_bounds = CellBoundsFromGeom(m_geom_ocn, src_i, src_j);
                             Vector<Point2D> remora_poly = {
                                 {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
                                 {remora_cell_bounds.hi(0), remora_cell_bounds.lo(1)},
@@ -973,7 +1012,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
                                 {remora_cell_bounds.lo(0), remora_cell_bounds.hi(1)}
                             };
 
-                            Vector<Point2D> clipped_poly = ClipPolyToAABB(remora_poly, erf_bounds);
+                            Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
                             Real intersect_area = PolygonArea(clipped_poly);
 
                             if (intersect_area > 0.0) {
@@ -1167,8 +1206,14 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
     AdvanceBlocksWithCallbacks(
         [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Surface");
+            // ERF land mask on the destination (ERF) layout: zeroes out
+            // land cells in the remapped ocean->atmos SST. Wet/dry masking
+            // only, no vector rotation.
+            const amrex::iMultiFab* erf_is_land = nullptr;
+            ERFGetLandMask(m_erf, &erf_is_land);
             REMORAPackSurfaceState(m_remora, state, time,
-                                  m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE);
+                                  m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE,
+                                  erf_is_land);
 
             // Finite check on packed surface state
             for (auto* mf : state) {
@@ -1195,8 +1240,15 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 weight_mf_by_family[f] = m_weight_mf_by_family[f].get();
                 index_mf_by_family[f] = m_index_mf_by_family[f].get();
             }
+            // REMORA wet/dry masks: mskr masks the scalar destination lanes,
+            // msku/mskv mask TauX/TauY. Wet/dry masking only, no vector rotation.
+            const amrex::MultiFab* mskr = nullptr;
+            const amrex::MultiFab* msku = nullptr;
+            const amrex::MultiFab* mskv = nullptr;
+            REMORAGetMasks(m_remora, &mskr, &msku, &mskv);
             ERFPackAtmosphericStates(m_erf, states, time,
-                                    weight_mf_by_family, index_mf_by_family, MAX_STENCIL_SIZE);
+                                    weight_mf_by_family, index_mf_by_family, MAX_STENCIL_SIZE,
+                                    mskr, msku, mskv);
             static int cloud_warn_count = 0;
             constexpr int cloud_warn_limit = 5;
             constexpr amrex::Real cloud_tol = 1.0e-6;

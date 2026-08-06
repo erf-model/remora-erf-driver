@@ -77,6 +77,18 @@ ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
 }
 
 void
+ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
+                                    const amrex::MultiFab** x_corner,
+                                    const amrex::MultiFab** y_corner)
+{
+    const amrex::MultiFab* xc = nullptr;
+    const amrex::MultiFab* yc = nullptr;
+    static_cast<ERF*>(erf_handle)->GetOceanToAtmosCornerCoordinates(xc, yc);
+    if (x_corner) { *x_corner = xc; }
+    if (y_corner) { *y_corner = yc; }
+}
+
+void
 ERFApplyOceanSurfaceState(void* erf_handle,
                           const amrex::Vector<amrex::MultiFab*>& state,
                           amrex::Real time)

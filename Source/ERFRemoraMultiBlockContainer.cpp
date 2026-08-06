@@ -204,6 +204,25 @@ AtmosToOceanBoxArray (const amrex::BoxArray& ba_ocn, int idx)
     return ba_ocn;
 }
 
+// Field -> expected location, taken verbatim from AtmosToOceanBoxArray() above
+// (the trusted development-baseline stagger contract):
+//
+//   field                        expected location (development)
+//   ---------------------------  --------------------------------
+//   TauX                         x-face staggered: IntVect(1,0,0)
+//   TauY                         y-face staggered: IntVect(0,1,0)
+//   Uwind, Vwind, Patm, Qair/RH, cell-centered: IntVect(0,0,0)
+//   Tair, Cloud, Rain, SWrad,
+//   LWrad, SHflux, LHflux, Evap
+//   SST (ocean->atmos)           cell-centered: IntVect(0,0,0)
+amrex::IntVect
+ExpectedAtmosToOceanFieldStagger (int idx)
+{
+    if (idx == coupling::TauX) { return amrex::IntVect(1,0,0); }
+    if (idx == coupling::TauY) { return amrex::IntVect(0,1,0); }
+    return amrex::IntVect(0,0,0);
+}
+
 amrex::IntVect
 AtmosToOceanNGrow (int idx)
 {
@@ -643,10 +662,131 @@ ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
     // to support general non-conformal curvilinear grid coupling.
 }
 
+namespace {
+// Weight-family classification per field, per the corrected authoritative
+// contract for this branch:
+//   STRESS_STAG_MATCHED (TauX/TauY): ERF tau_x/tau_y are transferred directly
+//     to REMORA vec_sustr/vec_svstr, which already live on the matching
+//     x-face/y-face stagger (see AtmosToOceanBoxArray() above and
+//     Submodules/REMORA/Source/REMORA.H:423-426). This is a stagger-matched
+//     nodal transfer, not a center->face averaging problem.
+//   WIND_FACE_TO_CENTER (Uwind/Vwind): ERF U/V live on x-face/y-face (native
+//     ERF velocity stagger) but REMORA consumes wind at rho-points
+//     (Submodules/REMORA/Source/REMORA.H:428, "Wind ... defined at rho-points").
+//     Compatible only when a face->center averaging transform hook exists;
+//     none is wired yet, so this family always falls back today.
+//   SCALAR_CENTERED (Patm, Qair, Tair, Cloud, Rain, SWrad, LWrad, SHflux,
+//     LHflux, Evap, SST): both sides are cell-centered/rho already.
+enum class WeightFamily { STRESS_STAG_MATCHED, WIND_FACE_TO_CENTER, SCALAR_CENTERED };
+
+WeightFamily
+ClassifyAtmosToOceanFieldFamily (int field_idx)
+{
+    if (field_idx == coupling::TauX || field_idx == coupling::TauY) {
+        return WeightFamily::STRESS_STAG_MATCHED;
+    }
+    if (field_idx == coupling::Uwind || field_idx == coupling::Vwind) {
+        return WeightFamily::WIND_FACE_TO_CENTER;
+    }
+    return WeightFamily::SCALAR_CENTERED;
+}
+
+// Per-field compatibility check against the corrected weight-family contract
+// above. This is plumbing/validation only: it does not select or switch the
+// remap math path used below, which remains the unchanged legacy
+// CellBounds()-based loops regardless of the result computed here.
+// Returns true (compatible) plus clears reason, or false plus a field-specific
+// reason string.
+bool
+FieldCompatibleWithCoordinateSource (int field_idx,
+                                     const std::string& field_name,
+                                     bool coord_source_available,
+                                     std::string& reason)
+{
+    if (!coord_source_available) {
+        reason = field_name + ": no coordinate-aware source available; using legacy CellBounds() path";
+        return false;
+    }
+
+    switch (ClassifyAtmosToOceanFieldFamily(field_idx)) {
+    case WeightFamily::STRESS_STAG_MATCHED:
+        // Compatible when ERF's tau ixType/extents match REMORA's
+        // vec_sustr/vec_svstr layout contract (AtmosToOceanBoxArray() already
+        // requests amrex::convert(ba_ocn, IntVect(1,0,0)/IntVect(0,1,0)) for
+        // TauX/TauY, matching REMORA's native u-face/v-face stress arrays).
+        // No stagger mismatch to guard against here; still gated on
+        // coord_source_available above since the coordinate-aware polygon
+        // build itself is not yet implemented for any family.
+        reason = field_name + ": STRESS_STAG_MATCHED family (ERF tau -> REMORA sustr/svstr, "
+                 "already stagger-matched); coordinate-aware polygon build not yet implemented, "
+                 "using legacy CellBounds() path";
+        return false;
+    case WeightFamily::WIND_FACE_TO_CENTER:
+        reason = field_name + ": WIND_FACE_TO_CENTER family requires a face->center averaging "
+                 "transform hook (ERF face-staggered U/V -> REMORA rho-point wind) that is not "
+                 "yet wired; using legacy CellBounds() path";
+        return false;
+    case WeightFamily::SCALAR_CENTERED:
+        reason.clear();
+        return true;
+    }
+    reason = field_name + ": unhandled weight family; using legacy CellBounds() path";
+    return false;
+}
+} // namespace
+
 void
 ERFRemoraMultiBlockContainer::BuildRemapWeights()
 {
     using namespace amrex;
+
+    // Query coordinate-aware sources (psi points from REMORA, corner points
+    // from ERF) via the C-bridge. This is plumbing/guard-condition only: the
+    // legacy m_geom/m_geom_ocn CellBounds()-based polygon-clipping loops below
+    // are unchanged and remain the only path exercised per-field until a
+    // coordinate-aware remap algorithm consumes the per-field compatibility
+    // result computed here.
+    const amrex::MultiFab* remora_x_psi = nullptr;
+    const amrex::MultiFab* remora_y_psi = nullptr;
+    const amrex::MultiFab* erf_x_corner = nullptr;
+    const amrex::MultiFab* erf_y_corner = nullptr;
+    if (m_remora != nullptr) {
+        REMORAGetAtmosToOceanPsiCoordinates(m_remora, &remora_x_psi, &remora_y_psi);
+    }
+    if (m_erf != nullptr) {
+        ERFGetOceanToAtmosCornerCoordinates(m_erf, &erf_x_corner, &erf_y_corner);
+    }
+    // Coordinate-aware source is available at all only if both solvers report
+    // non-null nodal coordinate MultiFabs (development baseline: coordinate
+    // pointers are all-or-nothing per the null-safe getter contract).
+    const bool coord_source_available =
+        (remora_x_psi != nullptr && remora_y_psi != nullptr &&
+         erf_x_corner != nullptr && erf_y_corner != nullptr);
+
+    // Per-field compatibility pass: log once per field/reason. Legacy
+    // CellBounds()-based loops below are unaffected by this result — this is
+    // guard-condition/plumbing only, not a source switch.
+    if (amrex::ParallelDescriptor::IOProcessor()) {
+        static bool logged_once = false;
+        if (!logged_once) {
+            const auto& all_names = coupling::AtmosToOceanAllNames();
+            for (int idx = 0; idx < static_cast<int>(all_names.size()); ++idx) {
+                std::string reason;
+                const bool compatible = FieldCompatibleWithCoordinateSource(
+                    idx, all_names[idx], coord_source_available, reason);
+                if (!compatible) {
+                    amrex::Print() << "[driver] BuildRemapWeights: " << reason << "\n";
+                }
+            }
+            std::string sst_reason;
+            FieldCompatibleWithCoordinateSource(
+                coupling::SST, "SST", coord_source_available, sst_reason);
+            if (!sst_reason.empty()) {
+                amrex::Print() << "[driver] BuildRemapWeights: " << sst_reason << "\n";
+            }
+            logged_once = true;
+        }
+    }
 
     // Reset A2O weight and index caches
     if (m_weight_mf && m_index_mf) {

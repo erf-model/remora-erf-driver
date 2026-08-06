@@ -85,6 +85,18 @@ REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
 }
 
 void
+REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
+                                    const amrex::MultiFab** x_psi,
+                                    const amrex::MultiFab** y_psi)
+{
+    const amrex::MultiFab* xp = nullptr;
+    const amrex::MultiFab* yp = nullptr;
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanPsiCoordinates(xp, yp);
+    if (x_psi) { *x_psi = xp; }
+    if (y_psi) { *y_psi = yp; }
+}
+
+void
 REMORAPackSurfaceState(void* remora_handle,
                        amrex::Vector<amrex::MultiFab*>& state,
                        amrex::Real time)

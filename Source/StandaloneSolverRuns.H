@@ -34,6 +34,9 @@ void InitERFSolver(void* erf_handle);
 void ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
                                      amrex::BoxArray& ba,
                                      amrex::DistributionMapping& dm);
+void ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
+                                         const amrex::MultiFab** x_corner,
+                                         const amrex::MultiFab** y_corner);
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time);
@@ -61,6 +64,9 @@ void REMORAGetAtmosToOceanUFaceLayout(void* remora_handle,
 void REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
                                       amrex::BoxArray& ba,
                                       amrex::DistributionMapping& dm);
+void REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
+                                         const amrex::MultiFab** x_psi,
+                                         const amrex::MultiFab** y_psi);
 void REMORAPackSurfaceState(void* remora_handle,
                             amrex::Vector<amrex::MultiFab*>& state,
                             amrex::Real time);

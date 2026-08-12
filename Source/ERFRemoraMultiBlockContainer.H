@@ -189,6 +189,7 @@ private:
     amrex::Geometry m_geom_ocn;
 
     amrex::Real m_erf_dt;
+    amrex::Real m_ocean_time_offset = 0.0;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
     int m_plot_int_exchange = -1;

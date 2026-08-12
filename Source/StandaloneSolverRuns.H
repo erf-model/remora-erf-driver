@@ -63,6 +63,7 @@ void ConfigureREMORADriverAtmosToOceanCoupling(void* remora_handle,
                                                bool use_coupling_driver,
                                                bool use_two_way_coupling,
                                                bool use_state_contract);
+void SetREMORAStartTime(void* remora_handle, amrex::Real time);
 void SetREMORADriverAtmosToOceanStateContract(void* remora_handle,
                                               bool use_state_contract);
 void InitREMORASolver(void* remora_handle);

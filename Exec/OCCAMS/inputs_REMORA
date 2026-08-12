@@ -90,6 +90,7 @@ remora.ic_type        = "netcdf"
 remora.nc_init_file_0 = "/global/cfs/cdirs/m4304/jmsexton/OCCAM/pnetcdf_compat/OCCAMS_ini_20210427_64bit.nc"
 remora.nc_grid_file_0 = "/global/cfs/cdirs/m4304/jmsexton/OCCAM/pnetcdf_compat/oneyear_grd_64bit.nc"
 remora.nc_frc_file    = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/oneyear_forcings.nc"
+remora.frc_time_varname = "time"
 
 # Leave climatology nudging and explicit NetCDF boundary history for a later
 # pass once the driver-side non-conformal coupling path is stable and the

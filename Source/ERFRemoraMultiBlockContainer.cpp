@@ -384,6 +384,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     amrex::ParmParse pp_driver("driver");
     pp_driver.query("v", m_driver_verbose);
     pp_driver.query("plot_int_exchange", m_plot_int_exchange);
+    pp_driver.query("ocean_time_offset", m_ocean_time_offset);
     pp_driver.query("plot_file_exchange_o2a", m_plot_file_exchange_o2a);
     pp_driver.query("plot_file_exchange_a2o", m_plot_file_exchange_a2o);
 
@@ -396,6 +397,9 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
         std::string("configured_atm2ocn_mode=") +
             coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) +
             " two_way=" + (m_use_two_way_coupling ? "1" : "0"));
+    DriverPrintLine(
+        m_driver_verbose,
+        std::string("ocean_time_offset=") + std::to_string(m_ocean_time_offset));
 }
 
 void
@@ -436,6 +440,7 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
         m_erf, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
     ConfigureREMORADriverAtmosToOceanCoupling(
         m_remora, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+    SetREMORAStartTime(m_remora, m_ocean_time_offset);
 
     DriverPrintLine(m_driver_verbose, "calling ERF InitData (enters ERF InitData_pre -> ERF InitData_post)");
     InitERFSolver(m_erf);
@@ -1434,7 +1439,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                                 << m_atm_tick << " of " << expected_atm_ticks << std::endl;
             break;
         }
-        const amrex::Real ocean_time = m_atm_tick * m_erf_dt;
+        const amrex::Real ocean_time = m_ocean_time_offset + m_atm_tick * m_erf_dt;
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
         SelectAtmosToOceanActiveView(global_ocean_step);

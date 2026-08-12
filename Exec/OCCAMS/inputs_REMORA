@@ -28,6 +28,7 @@ remora.bc.w.type      = outflow outflow slipwall outflow
 remora.bc.ubar.type   = flather flather slipwall flather
 remora.bc.vbar.type   = flather flather slipwall flather
 remora.bc.zeta.type   = chapman chapman slipwall chapman
+remora.bc.tke.type    = outflow outflow slipwall outflow
 
 remora.fixed_dt            = 15.0
 remora.fixed_ndtfast_ratio = 15

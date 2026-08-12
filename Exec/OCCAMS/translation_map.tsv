@@ -100,7 +100,7 @@ ocean.in	boundary	LBC(isFsur)	Cha Cha Clo Cha	inputs_REMORA	remora.bc.zeta.type	
 ocean.in	boundary	LBC(isUbar),LBC(isVbar)	Fla Fla Clo Fla	inputs_REMORA	remora.bc.ubar.type/remora.bc.vbar.type	all	Mapped to flather/open on west-south-north and slipwall on east closed boundary		adapted
 ocean.in	boundary	LBC(isUvel),LBC(isVvel)	RadNud RadNud Clo RadNud	inputs_REMORA	remora.bc.u.type/remora.bc.v.type	all	Mapped to orlanski_rad_nudg on open edges and slipwall on east closed boundary		adapted
 ocean.in	boundary	LBC(isTvar)	RadNud RadNud Clo RadNud	inputs_REMORA	remora.bc.temp.type/remora.bc.salt.type/remora.bc.scalar.type	all	Mapped to orlanski_rad_nudg on open edges and slipwall on east closed boundary		adapted
-ocean.in	boundary	LBC(isMtke)	Gra Gra Clo Gra	translation_map.tsv	tke_boundary	all	No separate TKE boundary key added in first pass		deferred
+ocean.in	boundary	LBC(isMtke)	Gra Gra Clo Gra	inputs_REMORA	remora.bc.tke.type	all	REMORA requires an explicit per-variable TKE boundary row; map ROMS open/open/closed/open intent to outflow/outflow/slipwall/outflow for the one-way bring-up		adapted
 ocean.in	boundary	VolCons(*)	F	translation_map.tsv	volume_conservation	all	No explicit REMORA volume-conservation toggle added in first pass		deferred
 ocean.in	time	NTIMES	172800	translation_map.tsv	ntimes	all	Full 30-day production length retained in provenance; wrapper max_step controls bring-up		dropped
 ocean.in	time	DT	15 s	inputs_REMORA	remora.fixed_dt	all	Direct timestep mapping for base ocean deck		copied

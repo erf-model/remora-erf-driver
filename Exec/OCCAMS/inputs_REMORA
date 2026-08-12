@@ -1,6 +1,9 @@
 # ------------------  OCCAMS REMORA INPUTS  -------------------
 
-remora.prob_name = OCCAMS
+# Use the least-intrusive supported REMORA problem family for a NetCDF-driven
+# coupled case. BlankProblem is recognized by REMORA without pulling in the
+# extra analytic setup used by IdealMiniGrid, Upwelling, or CoupleToERF.
+remora.prob_name = BlankProblem
 
 # Use the same projected horizontal extent as the WRF atmosphere deck while
 # preserving the native ROMS grid counts. This allows the mapping branch to

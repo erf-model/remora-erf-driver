@@ -1,6 +1,8 @@
 # ------------------  OCCAMS ERF INPUTS  -------------------
 
-erf.prob_name = "OCCAMS_WRFInput"
+# This is a WRFInput real-data case; local ERF examples like WPS_Test use
+# prob_name only as a descriptive label, so leave it unset here.
+# erf.prob_name = "WPS"
 
 # The coupled driver still requires explicit geometry metadata even when ERF
 # initializes from WRF NetCDF files.

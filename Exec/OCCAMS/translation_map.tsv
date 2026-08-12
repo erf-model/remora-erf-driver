@@ -1,0 +1,33 @@
+source_file	source_section	source_key	source_value	destination_file	destination_key	mode	transform_or_assumption	external_dependency	status
+namelist.input	time_control	run_hours	744	inputs_OCCAMS_oneway	max_step	oneway	First-pass smoke test overrides full 31-day run length for parse/initialization bring-up		adapted
+namelist.input	time_control	start_*	2021-08-01 00:00:00	inputs_OCCAMS_oneway	start_datetime	all	Converted WRF start tuple into driver timestamp string		copied
+namelist.input	domains	e_we	638	stderr/metadata	erf.n_cell[0]=637	all	ERF uses unstaggered west_east dimension from wrfinput_d01	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfinput_d01	adapted
+namelist.input	domains	e_sn	755	stderr/metadata	erf.n_cell[1]=754	all	ERF uses unstaggered south_north dimension from wrfinput_d01	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfinput_d01	adapted
+namelist.input	domains	e_vert	90	inputs_ERF	erf.n_cell[2]	all	Translated from wrfinput bottom_top=89 mass levels	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfinput_d01	adapted
+namelist.input	domains	dx,dy	2000 m	inputs_ERF	erf.prob_extent	all	Set projected horizontal extent from unstaggered counts times dx/dy	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfinput_d01	adapted
+namelist.input	physics	bl_pbl_physics	1	inputs_ERF	erf.pbl_type	all	Map WRF YSU/MYNN intent to available ERF MYNN25 setting for first pass		adapted
+namelist.input	physics	ra_lw_physics,ra_sw_physics	4,4	inputs_ERF	erf.nc_low_file	all	Keep wrflowinp path live so ERF can source low-frequency SST/current fields	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrflowinp_d01	adapted
+namelist.input	physics	sst_update	1	inputs_ERF	erf.nc_low_file	all	Interpret SST update intent through wrflowinp low-frequency file until live coupling supersedes it	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrflowinp_d01	adapted
+namelist.input	fdda	grid_fdda	1	translation_map.tsv	wrffdda_d01	all	ERF nudging file identified but not wired in first pass	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrffdda_d01	deferred
+namelist.input	bdy_control	spec_bdy_width	5	inputs_ERF	erf.real_width	all	Direct WRF->ERF real boundary width mapping		copied
+namelist.input	bdy_control	specified	.true.	inputs_ERF	erf.use_real_bcs	all	Use WRF boundary file for real-data ERF run		copied
+namelist.input	time_control	auxinput4_inname	wrflowinp_d<domain>	inputs_ERF	erf.nc_low_file	all	Resolved concrete domain-1 wrflowinp path	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrflowinp_d01	copied
+namelist.input	time_control	iofields_filename	myoutfields.txt	translation_map.tsv	iofields_filename	all	Not represented in first-pass ERF deck		dropped
+ocean.in	grid	Lm,Mm,N	563,751,40	inputs_REMORA	remora.n_cell	all	Translated to REMORA rho-grid counts from provided grid metadata xi_rho=565 eta_rho=753	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/oneyear_grd.nc	adapted
+ocean.in	time	DT	15 s	inputs_REMORA	remora.fixed_dt	all	First pass uses 300s macro-step to match existing driver-style coupled cadence, not native ROMS dt		adapted
+ocean.in	time	NDTFAST	15	inputs_REMORA	remora.fixed_ndtfast_ratio	all	Reduced first-pass ratio for simpler smoke testing		adapted
+ocean.in	mixing	GLS_*	GLS closure inputs_REMORA	remora.vertical_mixing_type	all	Maps to REMORA GLS closure selection; individual constants deferred unless needed		adapted
+ocean.in	scoord	THETA_S,THETA_B,TCLINE	8,3,100	inputs_REMORA	remora.theta_s/theta_b/tcline	all	Direct NetCDF-backed vertical coordinate mapping		copied
+ocean.in	eos	R0,T0,S0,TCOEF,SCOEF	1027,10,30,...	inputs_REMORA	remora.R0/T0/S0/Tcoef/Scoef	all	Direct linear EOS mapping		copied
+ocean.in	bulk	BLK_ZQ,BLK_ZT,BLK_ZW	10,10,10	inputs_REMORA	remora.blk_ZQ/blk_ZT/blk_ZW	all	Implicitly retained through REMORA defaults; not restated in first-pass deck		dropped
+ocean.in	files	VARNAME	oneyear.varinfo.dat	translation_map.tsv	varinfo	all	ROMS varinfo has no top-level REMORA driver equivalent in this repo		dropped
+ocean.in	files	GRDNAME	implied	inputs_REMORA	remora.nc_grid_file_0	all	Use provided OCCAMS grid file path	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/oneyear_grd.nc	adapted
+ocean.in	files	ININAME	implied	inputs_REMORA	remora.nc_init_file_0	all	Use provided OCCAMS initial-condition file path	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/OCCAMS_ini_20210427.nc	adapted
+ocean.in	files	forcing	implied	inputs_REMORA	remora.nc_frc_file	all	Use provided bulk-forcing file path	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/oneyear_forcings.nc	adapted
+oneyear_forcings.nc	forcing	Uwind,Vwind,Tair,swrad,rain,Pair,Qair	NetCDF vars	inputs_REMORA	remora.*_type=netcdf	oneway/state	Driver-provided fields override these when active; file remains fallback for uncoupled one-way bring-up	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/oneyear_forcings.nc	adapted
+oneyear_forcings.nc	forcing	Qair	percentage	inputs_REMORA	remora.qair_is_percent	all	Required unit conversion flag for REMORA NetCDF ingestion	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/oneyear_forcings.nc	copied
+wrflowinp_d01	low-frequency	SST,UOCE,VOCE	NetCDF vars	inputs_ERF	erf.nc_low_file	oneway/state/flux	Keep WRF low-frequency file active initially; later field-by-field ownership may bypass SST under two-way coupling	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrflowinp_d01	adapted
+scrip_coawst.nc	weights	ocn1_to_atm1_weights.nc	group	translation_map.tsv	driver remap weights	all	Mapping branch computes weights internally today; external SCRIP file identified but not yet ingested by driver inputs	/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/scrip_coawst.nc	unresolved
+main.cpp	driver topology	assert identical bounds and integer ratios	code path	all	Removed fatal sanity checks; retain warning logging only		adapted
+ERFRemoraCouplingContract.H	state contract	Uwind,Vwind,Patm,Qair,Tair,cloud,rain,SWrad,LWrad	required lanes	inputs_OCCAMS_state	driver.atm2ocn_mode=state	state	Two-way state wrapper enables this contract		copied
+ERFRemoraCouplingContract.H	flux contract	tau_x,tau_y,SHflux,LHflux,SWrad,LWrad,rain,evap	required lanes	inputs_OCCAMS_flux	driver.atm2ocn_mode=flux	flux	Two-way flux wrapper enables this contract		copied

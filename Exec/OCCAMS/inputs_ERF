@@ -1,0 +1,65 @@
+# ------------------  OCCAMS ERF INPUTS  -------------------
+
+erf.prob_name = "OCCAMS_WRFInput"
+
+# The coupled driver still requires explicit geometry metadata even when ERF
+# initializes from WRF NetCDF files.
+erf.prob_lo      = 0.0 0.0 0.0
+erf.prob_extent  = 1274000.0 1508000.0 20000.0
+erf.n_cell       = 637 754 89
+erf.is_periodic  = 0 0 0
+
+amr.max_level        = 0
+amr.blocking_factor  = 1
+amr.max_grid_size_x  = 128
+amr.max_grid_size_y  = 128
+amr.max_grid_size_z  = 128
+
+# Real-data initialization from WRF files.
+erf.init_type           = "WRFInput"
+erf.use_real_bcs        = true
+erf.real_width          = 5
+erf.real_set_width      = 1
+erf.real_extrap_w       = true
+erf.rebalance_wrf_input = true
+erf.nc_init_file_0      = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfinput_d01"
+erf.nc_bdy_file         = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfbdy_d01"
+erf.nc_low_file         = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrflowinp_d01"
+
+# WRF-derived physics choices retained where ERF has direct support.
+erf.moisture_model    = "Kessler"
+erf.pbl_type          = "MYNN25"
+erf.molec_diff_type   = "None"
+erf.les_type          = "None"
+erf.use_gravity       = true
+erf.use_coriolis      = true
+erf.coriolis_3d       = true
+erf.variable_coriolis = true
+erf.has_lat_lon       = true
+erf.terrain_type      = StaticFittedMesh
+erf.w_damping         = true
+erf.w_damping_const   = 0.3
+
+zlo.type = "surface_layer"
+zhi.type = "SlipWall"
+
+erf.most.average_policy = 1
+erf.most.radius         = 0
+erf.most.zref           = 10.0
+erf.most.z0             = 0.1
+erf.most.surf_temp      = 300.0
+erf.most.surf_moist     = 0.0
+
+# WRF namelist time_step=10s.
+erf.fixed_dt = 10.0
+
+erf.sum_interval = 1
+erf.v            = 1
+amr.v            = 1
+
+erf.check_file = occams_erf_chk
+erf.check_int  = -1
+
+erf.plot_file_1 = occams_erf_plt
+erf.plot_int_1  = 72
+erf.plot_vars_1 = density x_velocity y_velocity z_velocity pressure temp theta qv qc qr pres_hse z_phys

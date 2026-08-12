@@ -393,16 +393,31 @@ main (int argc, char* argv[])
         amrex::RealBox atm_rb(atm_lo.data(), atm_hi.data());
         amrex::RealBox ocn_rb(ocn_lo.data(), ocn_hi.data());
 
-        // Current supported topology is atmosphere same-or-finer than ocean on a
-        // shared horizontal domain. ERF -> REMORA uses averaging; REMORA -> ERF
-        // handles the reverse SST prolongation internally.
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        // The mapping branch supports non-conformal atmosphere/ocean layouts.
+        // Keep these details visible in the logs, but do not abort when the
+        // coupled grids have different horizontal extents or incompatible
+        // integer ratios. The remap layer is responsible for handling those
+        // cases.
+        const bool matching_horizontal_bounds =
             atm_lo[0] == ocn_lo[0] && atm_lo[1] == ocn_lo[1] &&
-            atm_hi[0] == ocn_hi[0] && atm_hi[1] == ocn_hi[1],
-            "Atmosphere and ocean horizontal domains must be identical.");
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-            n_cell_atm[0] % n_cell_ocn[0] == 0 && n_cell_atm[1] % n_cell_ocn[1] == 0,
-            "Current coupling requires atmosphere horizontal cell counts to be integer multiples of ocean horizontal cell counts; ocean-finer-than-atmosphere topologies are unsupported.");
+            atm_hi[0] == ocn_hi[0] && atm_hi[1] == ocn_hi[1];
+        const bool integer_ratio_horizontal_counts =
+            (n_cell_ocn[0] != 0 && n_cell_ocn[1] != 0) &&
+            (n_cell_atm[0] % n_cell_ocn[0] == 0) &&
+            (n_cell_atm[1] % n_cell_ocn[1] == 0);
+        if (amrex::ParallelDescriptor::IOProcessor() &&
+            (!matching_horizontal_bounds || !integer_ratio_horizontal_counts))
+        {
+            amrex::Print()
+                << "WARNING: coupled grids are non-conformal."
+                << " atm_lo=(" << atm_lo[0] << "," << atm_lo[1] << ")"
+                << " atm_hi=(" << atm_hi[0] << "," << atm_hi[1] << ")"
+                << " atm_ncell=(" << n_cell_atm[0] << "," << n_cell_atm[1] << ")"
+                << " ocn_lo=(" << ocn_lo[0] << "," << ocn_lo[1] << ")"
+                << " ocn_hi=(" << ocn_hi[0] << "," << ocn_hi[1] << ")"
+                << " ocn_ncell=(" << n_cell_ocn[0] << "," << n_cell_ocn[1] << ")"
+                << ". Proceeding with mapping-branch remap support.\n";
+        }
 
         int max_level = 0;
         int coord = 0;

@@ -79,6 +79,12 @@ void REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
 void REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
                                          const amrex::MultiFab** x_psi,
                                          const amrex::MultiFab** y_psi);
+// Spherical (degrees east/north) psi-point corner coordinates. Null when the
+// REMORA grid file carried no lon_psi/lat_psi, which is the signal that the
+// spherical remap frame is unavailable for this case.
+void REMORAGetAtmosToOceanPsiLonLat(void* remora_handle,
+                                    const amrex::MultiFab** lon_psi,
+                                    const amrex::MultiFab** lat_psi);
 // Wet/dry masks (1 = wet, 0 = land) at rho, u-face, and v-face points.
 void REMORAGetMasks(void* remora_handle,
                     const amrex::MultiFab** mskr,

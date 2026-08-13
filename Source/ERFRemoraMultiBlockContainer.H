@@ -40,6 +40,11 @@ enum class WeightFamily {
 
 WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
 
+// Cached plan for moving ERF-layout (source) surface geometry onto the REMORA
+// (destination) layout. Defined in the implementation file so this header stays
+// free of AMReX_NonLocalBC.H.
+struct RemapStagingPlan;
+
 /**
  * ERFRemoraMultiBlockContainer is the driver-owned "conductor" object.
  *
@@ -47,8 +52,8 @@ WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
  * 1. Owns topology for both atmosphere (ERF) and ocean (REMORA).
  * 2. Allocates and manages driver-level exchange cache slabs.
  * 3. Computes curvilinear polygon-polygon intersection remap weights (A2O and O2A).
- * 4. Executes centralized conservative remapping (ApplyConservativeRemap) with dynamic
- *    ghost halos and unmapped cell safeguards, keeping math decoupled from solvers.
+ * 4. Owns the source-to-destination staging plan (GetRemapStagingPlan()) that the
+ *    solver-side remap apply uses to route source data onto the destination layout.
  */
 class ERFRemoraMultiBlockContainer
 {
@@ -77,27 +82,9 @@ public:
     amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();
     const amrex::Vector<std::string>& AtmosToOceanActiveNames() const;
 
-    /**
-     * Centralized Driver Conservative Remap Engine
-     *
-     * Applies sparse weight matrix dot-product from src to dst.
-     *
-     * @param src Source MultiFab on source grid layout
-     * @param dst Destination MultiFab on target grid layout
-     * @param weight_mf Weight MultiFab (ncomp = max_stencil_size)
-     * @param index_mf Index iMultiFab (ncomp = 3 * max_stencil_size)
-     * @param max_stencil_size Maximum stencil entries per destination cell
-     * @param fallback_val Fallback value for unmapped destination cells (e.g. 288.15 for SST)
-     * @param is_temperature_field Flag enabling temperature physical range safeguards
-     */
-    void ApplyConservativeRemap(const amrex::MultiFab& src,
-                                amrex::MultiFab& dst,
-                                const amrex::MultiFab& weight_mf,
-                                const amrex::iMultiFab& index_mf,
-                                int max_stencil_size,
-                                amrex::Real fallback_val = 0.0,
-                                bool is_temperature_field = false,
-                                const amrex::MultiFab* dst_mask = nullptr) const;
+    // True when remap weights are built in lon/lat degrees rather than the
+    // shared projected frame. Resolved during BuildRemapWeights().
+    bool RemapIsSpherical() const { return m_remap_spherical; }
 
     // Topology getters
     const amrex::RealBox& GetAtmRealBox() const { return m_atm_rb; }
@@ -159,14 +146,25 @@ private:
     void NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                               const amrex::iMultiFab& index_mf,
                                               const char* label);
-    int ComputeRequiredGhostHalo(const amrex::iMultiFab& index_mf,
-                                const amrex::MultiFab& weight_mf,
-                                int max_stencil_size) const;
-    void HandleUnmappedCells(amrex::MultiFab& dst,
-                            const amrex::MultiFab& weight_mf,
-                            int max_stencil_size,
-                            amrex::Real fallback_val,
-                            bool is_temperature_field) const;
+
+    // Decide (and report) which coordinate frame the weights are built in.
+    // Aborts rather than silently degrading when exactly one side reports
+    // lon/lat, because clipping degrees against meters produces zero overlap
+    // for every cell and therefore an all-zero, silently unforced coupling.
+    void ResolveRemapFrame();
+
+    // Spherical-frame ERF geometry, built on the ERF layout: a nodal lon/lat
+    // corner mesh that tiles without gaps, plus the cell-centered land mask.
+    // Split from the REMORA-side loop so no MFIter touches two
+    // DistributionMappings.
+    void BuildERFCornerMesh();
+
+    // Geographic overlap -> per-REMORA-box ERF index regions -> cached
+    // NonLocalBC comm plan -> staged copies on the REMORA layout.
+    void BuildERFStagingPlan();
+
+    void BuildAtmosToOceanWeights();
+    void BuildOceanToAtmosWeights();
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;
@@ -198,6 +196,32 @@ private:
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
     int m_driver_verbose = 0;
+
+    // Remap configuration and resolved state.
+    //
+    // The frame choice mirrors SCRIP's `spherical` switch (COAWST
+    // Lib/SCRIP_COAWST/read_roms.f): either both sides are clipped in lon/lat
+    // degrees using their true corner arrays, or both are clipped in the shared
+    // projected frame implied by the driver RealBoxes. There is no meaningful
+    // mixed mode, so the resolved state is one bool. "auto" | "spherical" |
+    // "cartesian" is only ever a request, interpreted once in ResolveRemapFrame().
+    int m_remap_verbose = 0;
+    std::string m_remap_frame_request = "auto";
+    bool m_remap_spherical = false;
+    // Extend the ERF corner mesh by one ring (SCRIP create_extra_rho_grid).
+    // Off while the REMORA interior is the whole exchange region; needed once a
+    // smaller ocean grid nested inside the atmosphere exchanges on its outer ring.
+    bool m_remap_extend_corner_ring = false;
+    // Target ERF cells per search bin (SCRIP restrict_type=latlon analogue).
+    int m_remap_bin_cells = 4;
+
+    // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
+    // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.
+    std::unique_ptr<amrex::MultiFab> m_erf_node_coords;
+    std::unique_ptr<amrex::MultiFab> m_erf_land_mask;
+    // Same data staged onto the REMORA layout, with the comm plan that put it
+    // there. Reused every remap apply, not just at weight-build time.
+    std::unique_ptr<RemapStagingPlan> m_staging_plan;
 
     // Atmosphere -> ocean cache slab vector.
     // TODO(initial-temporal-interpolation): add old/new temporal copies for interpolation

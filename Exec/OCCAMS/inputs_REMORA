@@ -5,10 +5,12 @@
 # extra analytic setup used by IdealMiniGrid, Upwelling, or CoupleToERF.
 remora.prob_name = BlankProblem
 
-# Use the same projected horizontal extent as the WRF atmosphere deck while
-# preserving the native ROMS grid counts. This allows the mapping branch to
-# exercise non-conformal remapping instead of failing the old integer-ratio
-# sanity checks in the top-level driver.
+# Horizontal extent matched to the WRF atmosphere deck while preserving the
+# native ROMS grid counts. Under driver.remap_frame=spherical the two RealBoxes
+# no longer have to agree -- overlap is decided from lon_psi/lat_psi against
+# ERF's lon/lat corners, not from these numbers -- so this is now only REMORA's
+# own internal geometry. Left as-is deliberately: changing it mid-bring-up would
+# move REMORA's grid under the coupled case, which is a separate change.
 remora.prob_lo     = 0.0 0.0 -5000.0
 remora.prob_hi     = 1274000.0 1508000.0 0.0
 remora.n_cell      = 563 751 40

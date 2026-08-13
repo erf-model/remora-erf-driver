@@ -10,6 +10,15 @@ driver.coupling_direction = ERFtoREMORA
 driver.atm2ocn_mode       = state
 driver.ocean_time_offset  = 49939200.0
 
+# WRF (Lambert, degrees) and ROMS (Mercator, projected meters) share no Cartesian
+# frame, so remap in lon/lat using ERF's XLONG_U/XLAT_V corners against the grid
+# file's lon_psi/lat_psi. This is the same choice SCRIP makes for a spherical grid
+# pair (COAWST Lib/SCRIP_COAWST/read_roms.f). "auto" would resolve to the same
+# thing here; naming it means a missing lon_psi fails loudly instead of quietly
+# falling back to the shared-RealBox frame.
+driver.remap_frame = spherical
+driver.remap_v     = 1
+
 # Keep the first pass short and parse-clean.
 max_step = 1
 start_datetime = "2021-08-01 00:00:00"

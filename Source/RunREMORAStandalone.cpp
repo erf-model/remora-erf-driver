@@ -103,6 +103,18 @@ REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
 }
 
 void
+REMORAGetAtmosToOceanPsiLonLat(void* remora_handle,
+                               const amrex::MultiFab** lon_psi,
+                               const amrex::MultiFab** lat_psi)
+{
+    const amrex::MultiFab* lonp = nullptr;
+    const amrex::MultiFab* latp = nullptr;
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanPsiLonLat(lonp, latp);
+    if (lon_psi) { *lon_psi = lonp; }
+    if (lat_psi) { *lat_psi = latp; }
+}
+
+void
 REMORAGetMasks(void* remora_handle,
               const amrex::MultiFab** mskr,
               const amrex::MultiFab** msku,

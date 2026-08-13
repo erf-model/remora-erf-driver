@@ -11,7 +11,7 @@ remora.prob_name = BlankProblem
 # sanity checks in the top-level driver.
 remora.prob_lo     = 0.0 0.0 -5000.0
 remora.prob_hi     = 1274000.0 1508000.0 0.0
-remora.n_cell      = 565 753 40
+remora.n_cell      = 563 751 40
 remora.is_periodic = 0 0 0
 
 amr.max_grid_size_x = 128

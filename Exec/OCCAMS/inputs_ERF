@@ -32,7 +32,12 @@ erf.nc_low_file         = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/ba
 # WRF mp_physics=28 has no clean ERF equivalent in this repo; keep a simple
 # supported fallback here and record the mismatch in translation_map.tsv.
 erf.moisture_model    = "Kessler"
-erf.pbl_type          = "YSU"
+# WRF bl_pbl_physics=1 is YSU. ERF has two implementations: "YSU" is a partial
+# port that aborts on unstable conditions ("For now, YSU PBL only supports stable
+# conditions", ERF_ComputeDiffusivityYSU.cpp), which this August coastal case hits
+# immediately. "YSUNew" is the full port -- same scheme family, no stability or
+# zref restriction -- so it is the faithful translation here.
+erf.pbl_type          = "YSUNew"
 erf.molec_diff_type   = "None"
 erf.les_type          = "None"
 erf.use_gravity       = true
@@ -49,14 +54,14 @@ zhi.type = "SlipWall"
 erf.most.average_policy = 1
 erf.most.radius         = 0
 erf.most.zref           = 10.0
-# Required with terrain + YSU. Without interpolation, MOST snaps zref to the
-# center of whichever cell contains the 10 m point (ERF_MOSTAverage.cpp
-# set_k_indices_T), which on this vertical grid gives 8.565 m -- and
-# ERF_ComputeDiffusivityYSU.cpp aborts because YSU demands exactly 10 m on the
-# terrain-fitted path. With interpolation, set_z_positions_T keeps zref at 10.0
-# and interpolates the surface-layer fields to that height instead. This also
-# makes the atmosphere's reference height agree with the 10 m that REMORA's bulk
-# fluxes assume (remora.blk_ZW/ZT/ZQ below).
+# Without interpolation, MOST snaps zref to the center of whichever cell contains
+# the 10 m point (ERF_MOSTAverage.cpp set_k_indices_T), which on this vertical
+# grid gives 8.565 m. With interpolation, set_z_positions_T keeps zref at 10.0 and
+# interpolates the surface-layer fields to that height instead. Strictly required
+# by pbl_type=YSU, which aborts unless zref is exactly 10 m on the terrain-fitted
+# path; kept for pbl_type=YSUNew as well because it makes the atmosphere's
+# reference height agree with the 10 m REMORA's bulk fluxes assume
+# (remora.blk_ZW/ZT/ZQ).
 erf.most.use_interpolation = 1
 erf.most.z0             = 0.1
 erf.most.surf_temp      = 300.0

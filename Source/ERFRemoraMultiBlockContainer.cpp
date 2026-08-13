@@ -805,21 +805,45 @@ ClassifyAtmosToOceanFieldFamily (int field_idx) {
 void
 ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                                                    const amrex::iMultiFab& index_mf,
+                                                                   const amrex::MultiFab* wet_mask,
                                                                    const char* label)
 {
     using namespace amrex;
-    amrex::Real max_sum_err = 0.0;
+    amrex::Real max_cover_err = 0.0;
     amrex::Real frac_min = std::numeric_limits<amrex::Real>::max();
     amrex::Real frac_max = 0.0;
     amrex::Real frac_sum = 0.0;
     amrex::Long n_cells = 0;
     amrex::Long n_uncovered = 0;
     amrex::Long n_no_stencil = 0;
+    // Same counts restricted to REMORA's wet cells. Coverage over dry cells is
+    // uninteresting - a land cell has nothing to force - so this is the count that
+    // says whether the remap is actually usable.
+    amrex::Long n_wet = 0;
+    amrex::Long n_wet_uncovered = 0;
+    amrex::Real wet_frac_min = std::numeric_limits<amrex::Real>::max();
+
+    // Faces on a box seam belong to both adjacent boxes, so summing validbox over
+    // boxes would count them twice. Give each face to the lower box and let the
+    // last box in each direction keep its domain-boundary face, which tiles the
+    // staggered index space exactly once. Weights are still computed on every
+    // face including shared ones; this only makes the counts truthful.
+    const Box stagger_domain = weight_mf.boxArray().minimalBox();
+    const IntVect stagger = weight_mf.boxArray().ixType().toIntVect();
 
     for (MFIter mfi(weight_mf); mfi.isValid(); ++mfi) {
         Box bx = mfi.validbox();
         auto w_arr = weight_mf.array(mfi);
         auto const& idx_arr = index_mf.const_array(mfi);
+        const bool has_mask = (wet_mask != nullptr);
+        auto const& wet_arr = has_mask ? wet_mask->const_array(mfi) : Array4<const Real>{};
+
+        Box count_bx = bx;
+        for (int dir = 0; dir < 2; ++dir) {
+            if (stagger[dir] == 1 && bx.bigEnd(dir) < stagger_domain.bigEnd(dir)) {
+                count_bx.growHi(dir, -1);
+            }
+        }
 
         for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
             for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
@@ -827,30 +851,44 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                 for (int m = 0; m < MAX_STENCIL_SIZE; ++m) {
                     sum_w += w_arr(i, j, 0, m);
                 }
-                ++n_cells;
-                if (idx_arr(i, j, 0, 0) < 0) { ++n_no_stencil; }
+
+                const bool counted = count_bx.contains(IntVect(i,j,0));
+                const bool is_wet = has_mask ? (wet_arr(i,j,0) > Real(0.5)) : false;
+                if (counted) {
+                    ++n_cells;
+                    if (idx_arr(i, j, 0, 0) < 0) { ++n_no_stencil; }
+                    if (has_mask && is_wet) { ++n_wet; }
+                }
+
                 if (sum_w > 0.0) {
-                    frac_min = std::min(frac_min, sum_w);
-                    frac_max = std::max(frac_max, sum_w);
-                    frac_sum += sum_w;
-                    max_sum_err = std::max(max_sum_err, std::abs(sum_w - 1.0));
+                    if (counted) {
+                        frac_min = std::min(frac_min, sum_w);
+                        frac_max = std::max(frac_max, sum_w);
+                        frac_sum += sum_w;
+                        max_cover_err = std::max(max_cover_err, std::abs(sum_w - 1.0));
+                        if (has_mask && is_wet) { wet_frac_min = std::min(wet_frac_min, sum_w); }
+                    }
                     for (int m = 0; m < MAX_STENCIL_SIZE; ++m) {
                         w_arr(i, j, 0, m) /= sum_w;
                     }
-                } else {
+                } else if (counted) {
                     ++n_uncovered;
+                    if (has_mask && is_wet) { ++n_wet_uncovered; }
                 }
             }
         }
     }
 
-    ParallelDescriptor::ReduceRealMax(max_sum_err);
+    ParallelDescriptor::ReduceRealMax(max_cover_err);
     ParallelDescriptor::ReduceRealMin(frac_min);
     ParallelDescriptor::ReduceRealMax(frac_max);
     ParallelDescriptor::ReduceRealSum(frac_sum);
+    ParallelDescriptor::ReduceRealMin(wet_frac_min);
     ParallelDescriptor::ReduceLongSum(n_cells);
     ParallelDescriptor::ReduceLongSum(n_uncovered);
     ParallelDescriptor::ReduceLongSum(n_no_stencil);
+    ParallelDescriptor::ReduceLongSum(n_wet);
+    ParallelDescriptor::ReduceLongSum(n_wet_uncovered);
 
     const amrex::Long n_covered = n_cells - n_uncovered;
     if (n_covered == 0) {
@@ -858,14 +896,34 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                        << "source cell. Every weight is zero, so this coupling direction carries no "
                        << "forcing. Check driver.remap_frame and the two coordinate ranges reported "
                        << "above.\n";
-    } else if (ParallelDescriptor::IOProcessor() &&
-               (m_remap_verbose >= 1 || m_driver_verbose >= 1 || n_uncovered > 0)) {
+        return;
+    }
+
+    if (ParallelDescriptor::IOProcessor() &&
+        (m_remap_verbose >= 1 || m_driver_verbose >= 1 || n_uncovered > 0)) {
+        // max|frac-1| is the coverage error, not a conservation error: before
+        // normalization the weight sum *is* the covered fraction. A frac_max
+        // slightly above 1 is polygon-clipping round-off and is the useful signal
+        // hiding in it.
         amrex::Print() << "[driver] remap coverage (" << label << "): cells=" << n_cells
                        << " uncovered=" << n_uncovered
                        << " no_stencil=" << n_no_stencil
                        << " frac min/mean/max=" << frac_min << "/"
                        << (frac_sum / static_cast<amrex::Real>(n_covered)) << "/" << frac_max
-                       << " max sum drift before fracarea normalization=" << max_sum_err << "\n";
+                       << " max|frac-1|=" << max_cover_err << "\n";
+    }
+
+    // The verdict: an uncovered wet cell is a real hole in the forcing, whereas an
+    // uncovered dry cell is expected wherever the atmosphere grid is land.
+    if (wet_mask != nullptr) {
+        if (n_wet_uncovered > 0) {
+            amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_wet_uncovered
+                           << " of " << n_wet << " REMORA wet cells have no source overlap and will "
+                           << "receive zero forcing.\n";
+        } else if (ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
+            amrex::Print() << "[driver] remap coverage (" << label << "): all " << n_wet
+                           << " wet cells covered, min wet frac=" << wet_frac_min << "\n";
+        }
     }
 }
 
@@ -1567,6 +1625,15 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon, &remora_lat);
     }
 
+    // REMORA wet/dry masks, so coverage can be reported over the cells that carry
+    // ocean rather than over land the atmosphere grid was never going to force.
+    const MultiFab* remora_mskr = nullptr;
+    const MultiFab* remora_msku = nullptr;
+    const MultiFab* remora_mskv = nullptr;
+    if (m_remora != nullptr) {
+        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+    }
+
     // Reset A2O weight and index caches, one family slot at a time. Each slot
     // was allocated (AllocateCachesFromSolverLayouts) against its own
     // destination BoxArray/stagger (rho for SCALAR_CENTERED/WIND_FACE_TO_CENTER,
@@ -1745,7 +1812,16 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
             "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
         };
-        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, kFamilyLabel[f]);
+        // Each family's mask must sit on that family's stagger, or const_array()
+        // below would be reading a differently shaped array.
+        const MultiFab* family_mask = remora_mskr;
+        if (f == static_cast<int>(WeightFamily::TAUX_FACE))      { family_mask = remora_msku; }
+        else if (f == static_cast<int>(WeightFamily::TAUY_FACE)) { family_mask = remora_mskv; }
+        if (family_mask != nullptr &&
+            family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+            family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
+        }
+        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask, kFamilyLabel[f]);
     }
 
     ParallelDescriptor::ReduceIntMax(max_stencil_used);
@@ -1886,6 +1962,10 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
 {
     amrex::Print() << label << "\n";
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
+        if (fields[idx] == nullptr) {
+            amrex::Print() << "  " << names[idx] << ": withheld (not supplied by ERF)\n";
+            continue;
+        }
         const auto min_val = fields[idx]->min(0);
         const auto max_val = fields[idx]->max(0);
         amrex::Print() << "  " << names[idx] << ": min=" << min_val << " max=" << max_val << "\n";
@@ -1909,7 +1989,17 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
         const auto* mf = fields[idx];
         if (mf == nullptr) {
-            amrex::Abort(std::string(label) + ": null field at index " + std::to_string(idx));
+            // A null lane is deliberate, not a defect: it marks a field ERF cannot
+            // fill, withheld so the receiving solver keeps its own forcing for it
+            // (see SelectAtmosToOceanActiveView). Report it and move on.
+            if (amrex::ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << label
+                               << " ocean_step=" << ocean_step
+                               << " time=" << time
+                               << " field=" << names[idx]
+                               << " withheld (not supplied by ERF)\n";
+            }
+            continue;
         }
 
         const amrex::Real min_val = mf->min(0);
@@ -2164,6 +2254,39 @@ ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView (long long ocean_step
         m_atmos_to_ocean_active_indices = m_atmos_to_ocean_state_active_indices;
         m_atmos_to_ocean_active_names = m_atmos_to_ocean_state_active_names;
     }
+
+    // The view actually handed to REMORA. It is the active view with any lane
+    // nulled that ERF cannot fill, because REMORA decides per lane whether the
+    // driver is authoritative purely from the pointer being non-null
+    // (REMORA.cpp:1220 reads NetCDF shortwave only when the driver did not supply
+    // it). Handing over a lane of zeros therefore does not mean "no contribution",
+    // it means "the atmosphere says zero" - and silently disables REMORA's own
+    // NetCDF radiation. Nulling the lane instead lets that fallback stand.
+    //
+    // State contract only. The flux contract has no such fallback: REMORA's
+    // ApplyAtmosphericFluxes requires all eight lanes non-null and skips the whole
+    // application if any is missing, so withholding there would disable every flux
+    // rather than one. In flux mode a zero radiative flux is at least a truthful
+    // statement that the atmosphere computed none.
+    m_atmos_to_ocean_apply_view = m_atmos_to_ocean_active;
+    if (active_contract == coupling::AtmosToOceanContract::StatePassing &&
+        m_erf != nullptr && !ERFHasRadiation(m_erf)) {
+        for (int local_idx = 0;
+             local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
+            const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+            if (global_idx == coupling::SWrad || global_idx == coupling::LWrad) {
+                m_atmos_to_ocean_apply_view[local_idx] = nullptr;
+            }
+        }
+        if (!m_warned_no_erf_radiation) {
+            m_warned_no_erf_radiation = true;
+            amrex::Print() << "[driver] ERF reports no active radiation model, so the SWrad/LWrad "
+                              "atmos->ocean lanes are withheld rather than passed as zeros. REMORA "
+                              "keeps whatever radiative forcing its own configuration provides "
+                              "(remora.swrad_type / remora.lwrad_type). Enable ERF radiation to "
+                              "couple radiation from the atmosphere instead.\n";
+        }
+    }
 }
 
 void
@@ -2285,7 +2408,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             std::string("ocean_step=") + std::to_string(global_ocean_step) +
                 " apply atmos->ocean " + (use_state_contract ? "state" : "flux") +
                 " to REMORA at time=" + std::to_string(ocean_time));
-        apply_atmos_states(m_atmos_to_ocean_active, ocean_time);
+        // Masked view: lanes ERF cannot fill are nulled so REMORA keeps its own
+        // forcing for them (see SelectAtmosToOceanActiveView).
+        apply_atmos_states(m_atmos_to_ocean_apply_view, ocean_time);
 
 
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {

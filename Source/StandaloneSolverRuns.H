@@ -40,6 +40,10 @@ void ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
                                          const amrex::MultiFab** y_corner);
 // Land mask (1 = land, 0 = water) at ERF level-0, cell-centered on the rho grid.
 void ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land);
+// Whether ERF has an active radiation model producing fluxes. False means the
+// SWrad/LWrad atmos->ocean lanes would carry zeros, which REMORA treats as
+// authoritative and lets suppress its own NetCDF radiative forcing.
+bool ERFHasRadiation(void* erf_handle);
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time);

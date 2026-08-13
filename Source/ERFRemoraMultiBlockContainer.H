@@ -143,8 +143,12 @@ private:
 
     // Weight calculation and stencil safety helpers
     void BuildRemapWeights();
+    // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
+    // to report coverage over the cells that actually carry ocean. Pass nullptr
+    // when unavailable; coverage is then reported over all cells only.
     void NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                               const amrex::iMultiFab& index_mf,
+                                              const amrex::MultiFab* wet_mask,
                                               const char* label);
 
     // Decide (and report) which coordinate frame the weights are built in.
@@ -238,6 +242,11 @@ private:
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_active;
     amrex::Vector<int> m_atmos_to_ocean_active_indices;
     amrex::Vector<std::string> m_atmos_to_ocean_active_names;
+    // Same lanes as m_atmos_to_ocean_active, but with any lane ERF cannot fill set
+    // to nullptr so REMORA falls back to its own forcing for it. Only this view is
+    // handed to REMORA; diagnostics keep using the unmasked one.
+    amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_apply_view;
+    bool m_warned_no_erf_radiation = false;
 
     // Ocean -> atmosphere state cache (currently SST only).
     // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.

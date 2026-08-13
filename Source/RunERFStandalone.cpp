@@ -96,6 +96,13 @@ ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land)
     if (is_land) { *is_land = lmask; }
 }
 
+bool
+ERFHasRadiation(void* erf_handle)
+{
+    if (erf_handle == nullptr) { return false; }
+    return static_cast<ERF*>(erf_handle)->HasRadiation();
+}
+
 void
 ERFApplyOceanSurfaceState(void* erf_handle,
                           const amrex::Vector<amrex::MultiFab*>& state,

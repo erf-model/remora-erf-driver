@@ -1652,6 +1652,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     // detail; SCRIP itself has no fixed per-cell cap.
     int max_stencil_used = 0;
     amrex::Long dropped_overlaps = 0;
+    amrex::Long donor_filled = 0;
     Vector<int> candidates;
     Vector<std::pair<Real,IntVect>> overlaps;
 
@@ -1671,6 +1672,16 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
 
         const IntVect stagger = kExpectedFamilyStagger[f];
 
+        // Each family's mask must sit on that family's stagger, or const_array()
+        // would be reading a differently shaped array.
+        const MultiFab* family_mask = remora_mskr;
+        if (f == static_cast<int>(WeightFamily::TAUX_FACE))      { family_mask = remora_msku; }
+        else if (f == static_cast<int>(WeightFamily::TAUY_FACE)) { family_mask = remora_mskv; }
+        if (family_mask != nullptr &&
+            family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+            family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
+        }
+
         for (MFIter mfi(*weight_mf); mfi.isValid(); ++mfi) {
             Box bx = mfi.validbox();
             auto weight_arr = weight_mf->array(mfi);
@@ -1682,13 +1693,18 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             SourceSearchGrid search;
             Array4<const Real> erf_node{};
             Array4<const Real> erf_land{};
+            Box erf_staged_box;
             if (m_remap_spherical) {
                 erf_node = m_staging_plan->node_mf->const_array(mfi);
                 erf_land = m_staging_plan->land_mf->const_array(mfi);
-                const Box erf_staged_box = m_staging_plan->land_mf->boxArray()[mfi.index()];
+                erf_staged_box = m_staging_plan->land_mf->boxArray()[mfi.index()];
                 search.define(erf_staged_box, Array4<const Real>(erf_node, 0),
                               Array4<const Real>(erf_node, 1), m_remap_bin_cells);
             }
+            // REMORA wet/dry mask on this family's stagger, used to decide which
+            // empty destination cells deserve a donor search.
+            const Array4<const Real> wet_arr =
+                (family_mask != nullptr) ? family_mask->const_array(mfi) : Array4<const Real>{};
             const Array4<const Real> remora_lon_arr =
                 m_remap_spherical ? remora_lon->const_array(mfi) : Array4<const Real>{};
             const Array4<const Real> remora_lat_arr =
@@ -1789,6 +1805,55 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                         }
                     }
 
+                    // Nearest-valid-donor fill, ported from COAWST's check_weights
+                    // (Lib/SCRIP_COAWST/scrip.f:343). A wet destination cell whose
+                    // overlapping source cells are all land gets no stencil at all;
+                    // COAWST detects exactly this case as
+                    // (dst_mask_unlim - dst_mask) == 1 and hands the cell the
+                    // nearest valid donor rather than leaving it empty. Searching
+                    // the staged source cells keeps this rank-local: the staged
+                    // region already covers this destination box's footprint plus
+                    // margin, so the donor is in hand without a cross-rank search.
+                    //
+                    // Only wet holes are searched. Dry holes are both uninteresting
+                    // and numerous (they are the land-shadowed majority), and
+                    // scanning for them would cost orders of magnitude more.
+                    if (overlaps.empty() && m_remap_spherical && wet_arr &&
+                        wet_arr(i,j,0) > Real(0.5)) {
+                        Real dst_cx = 0.0, dst_cy = 0.0;
+                        for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }
+                        dst_cx /= static_cast<Real>(remora_poly.size());
+                        dst_cy /= static_cast<Real>(remora_poly.size());
+                        // Longitude degrees are shorter than latitude degrees away
+                        // from the equator; without this the nearest donor would be
+                        // biased along the meridian.
+                        const Real cos_lat = std::max(std::cos(dst_cy * Real(M_PI) / Real(180.0)),
+                                                      Real(1.0e-6));
+
+                        Real best_d2 = std::numeric_limits<Real>::max();
+                        IntVect best_ij(-1,-1,0);
+                        for (int sj = erf_staged_box.smallEnd(1); sj <= erf_staged_box.bigEnd(1); ++sj) {
+                            for (int si = erf_staged_box.smallEnd(0); si <= erf_staged_box.bigEnd(0); ++si) {
+                                if (erf_land(si, sj, 0) >= Real(0.5)) { continue; }
+                                const Real sx = Real(0.25) * (erf_node(si  ,sj  ,0,0) + erf_node(si+1,sj  ,0,0)
+                                                            + erf_node(si+1,sj+1,0,0) + erf_node(si  ,sj+1,0,0));
+                                const Real sy = Real(0.25) * (erf_node(si  ,sj  ,0,1) + erf_node(si+1,sj  ,0,1)
+                                                            + erf_node(si+1,sj+1,0,1) + erf_node(si  ,sj+1,0,1));
+                                const Real dx = (sx - dst_cx) * cos_lat;
+                                const Real dy = (sy - dst_cy);
+                                const Real d2 = dx*dx + dy*dy;
+                                if (d2 < best_d2) { best_d2 = d2; best_ij = IntVect(si,sj,0); }
+                            }
+                        }
+
+                        if (best_ij[0] >= 0) {
+                            // Full weight to the donor: after fracarea normalization
+                            // this cell takes the donor's value exactly.
+                            overlaps.emplace_back(remora_area, best_ij);
+                            ++donor_filled;
+                        }
+                    }
+
                     if (overlaps.empty()) { continue; }
 
                     max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
@@ -1815,20 +1880,18 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
             "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
         };
-        // Each family's mask must sit on that family's stagger, or const_array()
-        // below would be reading a differently shaped array.
-        const MultiFab* family_mask = remora_mskr;
-        if (f == static_cast<int>(WeightFamily::TAUX_FACE))      { family_mask = remora_msku; }
-        else if (f == static_cast<int>(WeightFamily::TAUY_FACE)) { family_mask = remora_mskv; }
-        if (family_mask != nullptr &&
-            family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
-            family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
-        }
         NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask, kFamilyLabel[f]);
     }
 
     ParallelDescriptor::ReduceIntMax(max_stencil_used);
     ParallelDescriptor::ReduceLongSum(dropped_overlaps);
+    ParallelDescriptor::ReduceLongSum(donor_filled);
+    if (donor_filled > 0) {
+        amrex::Print() << "[driver] remap: " << donor_filled
+                       << " wet destination cells had no valid source overlap and were filled from "
+                       << "their nearest non-land source cell (COAWST check_weights behaviour). "
+                       << "These carry a neighbour's atmospheric state rather than their own.\n";
+    }
     if (dropped_overlaps > 0) {
         amrex::Print() << "[driver] WARNING BuildRemapWeights: " << dropped_overlaps
                        << " source overlaps dropped because a destination cell exceeded "

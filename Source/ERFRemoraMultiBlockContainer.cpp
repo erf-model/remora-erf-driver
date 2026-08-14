@@ -918,8 +918,11 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     if (wet_mask != nullptr) {
         if (n_wet_uncovered > 0) {
             amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_wet_uncovered
-                           << " of " << n_wet << " REMORA wet cells have no source overlap and will "
-                           << "receive zero forcing.\n";
+                           << " of " << n_wet << " REMORA wet cells have no ERF source overlap. "
+                           << "They fall back to the standard-atmosphere placeholders in "
+                           << "ERF_Coupling.cpp rather than coupled values, so they are forced but "
+                           << "not coupled. Expect these along coastlines where the two land masks "
+                           << "disagree, or where the ocean grid reaches past the atmosphere.\n";
         } else if (ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
             amrex::Print() << "[driver] remap coverage (" << label << "): all " << n_wet
                            << " wet cells covered, min wet frac=" << wet_frac_min << "\n";

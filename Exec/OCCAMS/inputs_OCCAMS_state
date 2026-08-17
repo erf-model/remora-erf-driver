@@ -1,0 +1,23 @@
+# OCCAMS state-passing two-way run.
+
+FILE = inputs_REMORA
+FILE = inputs_ERF
+
+amrex.fpe_trap_invalid = 1
+fabarray.mfiter_tile_size = 1024 1024 1024
+
+driver.coupling_direction = two_way
+driver.atm2ocn_mode       = state
+driver.ocean_time_offset  = 49939200.0
+
+max_step = 1
+start_datetime = "2021-08-01 00:00:00"
+
+erf.fixed_dt    = 10.0
+remora.fixed_dt = 300.0
+
+erf.plot_file_1 = occams_state_erf_plt
+erf.check_file  = occams_state_erf_chk
+
+remora.plot_file = occams_state_remora_plt
+remora.check_file = occams_state_remora_chk

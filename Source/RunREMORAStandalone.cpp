@@ -45,6 +45,12 @@ ConfigureREMORADriverAtmosToOceanCoupling(void* remora_handle,
 }
 
 void
+SetREMORAStartTime(void* remora_handle, amrex::Real time)
+{
+    static_cast<REMORA*>(remora_handle)->SetStartTime(time);
+}
+
+void
 SetREMORADriverAtmosToOceanStateContract(void* remora_handle,
                                          bool use_state_contract)
 {
@@ -85,11 +91,55 @@ REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
 }
 
 void
+REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
+                                    const amrex::MultiFab** x_psi,
+                                    const amrex::MultiFab** y_psi)
+{
+    const amrex::MultiFab* xp = nullptr;
+    const amrex::MultiFab* yp = nullptr;
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanPsiCoordinates(xp, yp);
+    if (x_psi) { *x_psi = xp; }
+    if (y_psi) { *y_psi = yp; }
+}
+
+void
+REMORAGetAtmosToOceanPsiLonLat(void* remora_handle,
+                               const amrex::MultiFab** lon_psi,
+                               const amrex::MultiFab** lat_psi)
+{
+    const amrex::MultiFab* lonp = nullptr;
+    const amrex::MultiFab* latp = nullptr;
+    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanPsiLonLat(lonp, latp);
+    if (lon_psi) { *lon_psi = lonp; }
+    if (lat_psi) { *lat_psi = latp; }
+}
+
+void
+REMORAGetMasks(void* remora_handle,
+              const amrex::MultiFab** mskr,
+              const amrex::MultiFab** msku,
+              const amrex::MultiFab** mskv)
+{
+    const amrex::MultiFab* r = nullptr;
+    const amrex::MultiFab* u = nullptr;
+    const amrex::MultiFab* v = nullptr;
+    static_cast<REMORA*>(remora_handle)->GetLandSeaMasks(r, u, v);
+    if (mskr) { *mskr = r; }
+    if (msku) { *msku = u; }
+    if (mskv) { *mskv = v; }
+}
+
+void
 REMORAPackSurfaceState(void* remora_handle,
                        amrex::Vector<amrex::MultiFab*>& state,
-                       amrex::Real time)
+                       amrex::Real time,
+                       const amrex::MultiFab* weight_o2a_mf,
+                       const amrex::iMultiFab* index_o2a_mf,
+                       int max_stencil_size,
+                       const amrex::iMultiFab* dst_land_mask)
 {
-    static_cast<REMORA*>(remora_handle)->PackSurfaceState(state, time);
+    static_cast<REMORA*>(remora_handle)->PackSurfaceState(
+        state, time, weight_o2a_mf, index_o2a_mf, max_stencil_size, dst_land_mask);
 }
 
 void

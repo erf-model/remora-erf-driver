@@ -77,6 +77,33 @@ ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
 }
 
 void
+ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
+                                    const amrex::MultiFab** x_corner,
+                                    const amrex::MultiFab** y_corner)
+{
+    const amrex::MultiFab* xc = nullptr;
+    const amrex::MultiFab* yc = nullptr;
+    static_cast<ERF*>(erf_handle)->GetOceanToAtmosCornerCoordinates(xc, yc);
+    if (x_corner) { *x_corner = xc; }
+    if (y_corner) { *y_corner = yc; }
+}
+
+void
+ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land)
+{
+    const amrex::iMultiFab* lmask = nullptr;
+    static_cast<ERF*>(erf_handle)->GetLandMask(lmask);
+    if (is_land) { *is_land = lmask; }
+}
+
+bool
+ERFHasRadiation(void* erf_handle)
+{
+    if (erf_handle == nullptr) { return false; }
+    return static_cast<ERF*>(erf_handle)->HasRadiation();
+}
+
+void
 ERFApplyOceanSurfaceState(void* erf_handle,
                           const amrex::Vector<amrex::MultiFab*>& state,
                           amrex::Real time)
@@ -87,9 +114,17 @@ ERFApplyOceanSurfaceState(void* erf_handle,
 void
 ERFPackAtmosphericStates(void* erf_handle,
                          amrex::Vector<amrex::MultiFab*>& states,
-                         amrex::Real time)
+                         amrex::Real time,
+                         const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
+                         const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
+                         int max_stencil_size,
+                         const amrex::MultiFab* dst_mskr,
+                         const amrex::MultiFab* dst_msku,
+                         const amrex::MultiFab* dst_mskv)
 {
-    static_cast<ERF*>(erf_handle)->PackAtmosphericStates(states, time);
+    static_cast<ERF*>(erf_handle)->PackAtmosphericStates(
+        states, time, weight_mf_by_family, index_mf_by_family, max_stencil_size,
+        dst_mskr, dst_msku, dst_mskv);
 }
 
 amrex::Real
@@ -117,6 +152,9 @@ RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
             "erf");
     erf.InitData();
     erf.Evolve();
-    erf.PackAtmosphericStates(states, time);
+    // Uncoupled/standalone path: no driver-owned remap stencils available.
+    const amrex::Vector<const amrex::MultiFab*> no_weight(4, nullptr);
+    const amrex::Vector<const amrex::iMultiFab*> no_index(4, nullptr);
+    erf.PackAtmosphericStates(states, time, no_weight, no_index, 0);
 }
 } // namespace erf_remora

@@ -4,6 +4,7 @@
 #include "ERFRemoraMultiBlockContainer.H"
 
 #include <AMReX_MultiFab.H>
+#include <AMReX_iMultiFab.H>
 #include <AMReX_REAL.H>
 #include <AMReX_Vector.H>
 
@@ -34,12 +35,29 @@ void InitERFSolver(void* erf_handle);
 void ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
                                      amrex::BoxArray& ba,
                                      amrex::DistributionMapping& dm);
+void ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
+                                         const amrex::MultiFab** x_corner,
+                                         const amrex::MultiFab** y_corner);
+// Land mask (1 = land, 0 = water) at ERF level-0, cell-centered on the rho grid.
+void ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land);
+// Whether ERF has an active radiation model producing fluxes. False means the
+// SWrad/LWrad atmos->ocean lanes would carry zeros, which REMORA treats as
+// authoritative and lets suppress its own NetCDF radiative forcing.
+bool ERFHasRadiation(void* erf_handle);
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time);
+// weight_mf_by_family/index_mf_by_family are keyed by WeightFamily slot order
+// {SCALAR_CENTERED, TAUX_FACE, TAUY_FACE, WIND_FACE_TO_CENTER}.
 void ERFPackAtmosphericStates(void* erf_handle,
                               amrex::Vector<amrex::MultiFab*>& states,
-                              amrex::Real time);
+                              amrex::Real time,
+                              const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
+                              const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
+                              int max_stencil_size,
+                              const amrex::MultiFab* dst_mskr = nullptr,
+                              const amrex::MultiFab* dst_msku = nullptr,
+                              const amrex::MultiFab* dst_mskv = nullptr);
 amrex::Real ERFEvolveOneStep(void* erf_handle, amrex::Real time, amrex::Real dt_request);
 void ERFWriteAtFinalTime(void* erf_handle);
 
@@ -49,6 +67,7 @@ void ConfigureREMORADriverAtmosToOceanCoupling(void* remora_handle,
                                                bool use_coupling_driver,
                                                bool use_two_way_coupling,
                                                bool use_state_contract);
+void SetREMORAStartTime(void* remora_handle, amrex::Real time);
 void SetREMORADriverAtmosToOceanStateContract(void* remora_handle,
                                               bool use_state_contract);
 void InitREMORASolver(void* remora_handle);
@@ -61,9 +80,27 @@ void REMORAGetAtmosToOceanUFaceLayout(void* remora_handle,
 void REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
                                       amrex::BoxArray& ba,
                                       amrex::DistributionMapping& dm);
+void REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
+                                         const amrex::MultiFab** x_psi,
+                                         const amrex::MultiFab** y_psi);
+// Spherical (degrees east/north) psi-point corner coordinates. Null when the
+// REMORA grid file carried no lon_psi/lat_psi, which is the signal that the
+// spherical remap frame is unavailable for this case.
+void REMORAGetAtmosToOceanPsiLonLat(void* remora_handle,
+                                    const amrex::MultiFab** lon_psi,
+                                    const amrex::MultiFab** lat_psi);
+// Wet/dry masks (1 = wet, 0 = land) at rho, u-face, and v-face points.
+void REMORAGetMasks(void* remora_handle,
+                    const amrex::MultiFab** mskr,
+                    const amrex::MultiFab** msku,
+                    const amrex::MultiFab** mskv);
 void REMORAPackSurfaceState(void* remora_handle,
                             amrex::Vector<amrex::MultiFab*>& state,
-                            amrex::Real time);
+                            amrex::Real time,
+                            const amrex::MultiFab* weight_o2a_mf,
+                            const amrex::iMultiFab* index_o2a_mf,
+                            int max_stencil_size,
+                            const amrex::iMultiFab* dst_land_mask = nullptr);
 void REMORAApplyAtmosphericStates(void* remora_handle,
                                   const amrex::Vector<amrex::MultiFab*>& states,
                                   amrex::Real time);

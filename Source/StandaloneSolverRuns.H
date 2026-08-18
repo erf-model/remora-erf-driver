@@ -109,13 +109,6 @@ void REMORAApplyAtmosphericFluxes(void* remora_handle,
                                   amrex::Real time);
 amrex::Real REMORAEvolveOneStep(void* remora_handle, amrex::Real time, amrex::Real dt_request);
 void REMORAWriteAtFinalTime(void* remora_handle);
-
-// Coupled one-step path: container provides driver-owned topology so each solver
-// is constructed via its explicit-topology constructor instead of parsing amr.*/geometry.*.
-void RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
-                           amrex::Vector<amrex::MultiFab*>& states, amrex::Real time);
-void RunREMORAApplyAndOneStep(const ERFRemoraMultiBlockContainer& container,
-                               const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time);
 } // namespace erf_remora
 
 #endif

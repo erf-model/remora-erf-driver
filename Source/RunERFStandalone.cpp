@@ -138,23 +138,4 @@ ERFWriteAtFinalTime(void* erf_handle)
 {
     return static_cast<ERF*>(erf_handle)->WriteAtFinalTime();
 }
-
-void
-RunERFOneStepAndPack(const ERFRemoraMultiBlockContainer& container,
-                      amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
-{
-    ERF erf(container.GetAtmRealBox(),
-            container.GetMaxLevel(),
-            container.GetAtmNCell(),
-            container.GetCoord(),
-            container.GetRefRatio(),
-            container.GetIsPeriodic(),
-            "erf");
-    erf.InitData();
-    erf.Evolve();
-    // Uncoupled/standalone path: no driver-owned remap stencils available.
-    const amrex::Vector<const amrex::MultiFab*> no_weight(4, nullptr);
-    const amrex::Vector<const amrex::iMultiFab*> no_index(4, nullptr);
-    erf.PackAtmosphericStates(states, time, no_weight, no_index, 0);
-}
 } // namespace erf_remora

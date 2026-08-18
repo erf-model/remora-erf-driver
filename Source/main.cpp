@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <string>
 
 std::string inputs_name;
@@ -120,6 +121,11 @@ int
 main (int argc, char* argv[])
 {
     amrex::Initialize(argc, argv);
+
+    if (argc < 2) {
+        amrex::Abort("No input file provided."
+                     " Usage: erf-remora-driver <inputs-file> [<key>=<value> ...]");
+    }
 
     if (!strchr(argv[1], '=')) {
       inputs_name = argv[1];
@@ -459,6 +465,13 @@ main (int argc, char* argv[])
         container.AdvanceBlocks(ocean_steps);
     }
     amrex::Print() << "erf-remora-driver run completed\n";
+
+#ifdef ERF_USE_KOKKOS
+    if (Kokkos::is_initialized()) {
+        Kokkos::finalize();
+    }
+#endif
+
     amrex::Finalize();
 
     return 0;

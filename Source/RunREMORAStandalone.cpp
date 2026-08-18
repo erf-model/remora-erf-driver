@@ -169,15 +169,4 @@ REMORAWriteAtFinalTime(void* remora_handle)
 {
     return static_cast<REMORA*>(remora_handle)->WriteAtFinalTime();
 }
-
-void
-RunREMORAApplyAndOneStep(const ERFRemoraMultiBlockContainer& container,
-                          const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time)
-{
-    static_cast<void>(container);
-    REMORA remora;
-    remora.InitData();
-    remora.ApplyAtmosphericStates(states, time);
-    remora.Evolve();
-}
 } // namespace erf_remora

@@ -211,8 +211,24 @@ main (int argc, char* argv[])
         pp_erf.get("fixed_dt", erf_dt);
         pp_rem.get("fixed_dt", ocean_macro_dt);
 
-        int atm_substeps_per_ocean_step = static_cast<int>(ocean_macro_dt / erf_dt);
-        if (atm_substeps_per_ocean_step * erf_dt != ocean_macro_dt) {
+        // Both dts divide or scale the cadence arithmetic below, so reject
+        // non-positive values before dividing rather than letting a non-finite
+        // quotient reach std::llround.
+        if (erf_dt <= amrex::Real(0.0)) {
+            amrex::Abort("erf.fixed_dt must be positive; got " + std::to_string(erf_dt));
+        }
+        if (ocean_macro_dt <= amrex::Real(0.0)) {
+            amrex::Abort("remora.fixed_dt must be positive; got " + std::to_string(ocean_macro_dt));
+        }
+
+        // Round the ratio and validate within tolerance rather than truncating and
+        // testing exact equality: decimal dt pairs with mathematically integral
+        // ratios (e.g. 0.1 and 0.3) are not exactly representable in binary, and
+        // both the truncation and the multiply-back can land off by 1 ulp.
+        const long long substep_ratio = std::llround(ocean_macro_dt / erf_dt);
+        int atm_substeps_per_ocean_step = static_cast<int>(substep_ratio);
+        if (substep_ratio < 1 ||
+            !NearlyEqual(static_cast<amrex::Real>(substep_ratio) * erf_dt, ocean_macro_dt)) {
             amrex::Print() << "ERF    dt " << erf_dt << std::endl;
             amrex::Print() << "REMORA dt " << ocean_macro_dt << std::endl;
             amrex::Abort("Ocean dt is not a multiple of atmosphere dt");
@@ -220,7 +236,15 @@ main (int argc, char* argv[])
 
         amrex::Real stop_time = -1.0;
         const bool has_stop_time = amrex::ParmParse().query("stop_time", stop_time);
-        const int stop_time_macro_steps = static_cast<int>(stop_time / ocean_macro_dt);
+        // Round when stop_time sits (within tolerance) on a macro-step boundary;
+        // otherwise keep truncating to the previous boundary, since stop_time is
+        // legitimately allowed to fall between boundaries.
+        const amrex::Real stop_time_ratio = stop_time / ocean_macro_dt;
+        const long long stop_time_ratio_rounded = std::llround(stop_time_ratio);
+        const int stop_time_macro_steps =
+            NearlyEqual(static_cast<amrex::Real>(stop_time_ratio_rounded) * ocean_macro_dt, stop_time)
+                ? static_cast<int>(stop_time_ratio_rounded)
+                : static_cast<int>(stop_time_ratio);
         int top_level_max_step = -1;
         const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
 

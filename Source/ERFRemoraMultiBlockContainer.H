@@ -247,6 +247,7 @@ private:
     // handed to REMORA; diagnostics keep using the unmasked one.
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_apply_view;
     bool m_warned_no_erf_radiation = false;
+    bool m_warned_no_erf_cloud_water = false;
 
     // Ocean -> atmosphere state cache (currently SST only).
     // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.

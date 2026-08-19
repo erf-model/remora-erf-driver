@@ -103,6 +103,13 @@ ERFHasRadiation(void* erf_handle)
     return static_cast<ERF*>(erf_handle)->HasRadiation();
 }
 
+bool
+ERFHasCloudWater(void* erf_handle)
+{
+    if (erf_handle == nullptr) { return false; }
+    return static_cast<ERF*>(erf_handle)->HasCloudWater();
+}
+
 void
 ERFApplyOceanSurfaceState(void* erf_handle,
                           const amrex::Vector<amrex::MultiFab*>& state,

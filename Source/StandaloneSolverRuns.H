@@ -44,6 +44,10 @@ void ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land);
 // SWrad/LWrad atmos->ocean lanes would carry zeros, which REMORA treats as
 // authoritative and lets suppress its own NetCDF radiative forcing.
 bool ERFHasRadiation(void* erf_handle);
+// Whether ERF can fill the atmos->ocean Cloud lane (moisture active and carrying
+// cloud liquid or ice). False means the lane would only carry the driver prefill,
+// which REMORA would otherwise treat as an authoritative atmospheric value.
+bool ERFHasCloudWater(void* erf_handle);
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time);

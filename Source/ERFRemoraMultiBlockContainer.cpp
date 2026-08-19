@@ -2336,15 +2336,33 @@ ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView (long long ocean_step
     // statement that the atmosphere computed none.
     m_atmos_to_ocean_apply_view = m_atmos_to_ocean_active;
     if (active_contract == coupling::AtmosToOceanContract::StatePassing &&
-        m_erf != nullptr && !ERFHasRadiation(m_erf)) {
+        m_erf != nullptr) {
+        const bool has_radiation = ERFHasRadiation(m_erf);
+        // ERF fills the Cloud lane only when moisture is active and carries cloud
+        // liquid or ice; otherwise the lane holds just the driver prefill, and
+        // passing it would mark it authoritative in REMORA and suppress REMORA's
+        // own cloud forcing (remora.cloud_type).
+        const bool has_cloud_water = ERFHasCloudWater(m_erf);
         for (int local_idx = 0;
              local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
             const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
-            if (global_idx == coupling::SWrad || global_idx == coupling::LWrad) {
+            if (!has_radiation &&
+                (global_idx == coupling::SWrad || global_idx == coupling::LWrad)) {
+                m_atmos_to_ocean_apply_view[local_idx] = nullptr;
+            }
+            if (!has_cloud_water && global_idx == coupling::Cloud) {
                 m_atmos_to_ocean_apply_view[local_idx] = nullptr;
             }
         }
-        if (!m_warned_no_erf_radiation) {
+        if (!has_cloud_water && !m_warned_no_erf_cloud_water) {
+            m_warned_no_erf_cloud_water = true;
+            amrex::Print() << "[driver] ERF has no cloud condensate (no moisture model, or one "
+                              "without cloud liquid/ice), so the Cloud atmos->ocean lane is "
+                              "withheld rather than passed as the constant driver prefill. REMORA "
+                              "keeps whatever cloud forcing its own configuration provides "
+                              "(remora.cloud_type).\n";
+        }
+        if (!has_radiation && !m_warned_no_erf_radiation) {
             m_warned_no_erf_radiation = true;
             amrex::Print() << "[driver] ERF reports no active radiation model, so the SWrad/LWrad "
                               "atmos->ocean lanes are withheld rather than passed as zeros. REMORA "

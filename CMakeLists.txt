@@ -301,21 +301,6 @@ if(ERF_REMORA_ENABLE_TESTS)
       LABELS "compile"
   )
 
-  add_test(
-    NAME reproducer_coupling_infrastructure_check
-    COMMAND
-      "${CMAKE_COMMAND}"
-      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_coupling_infrastructure_check
-      -DERF_REMORA_ARGS=
-      -P "${ERF_REMORA_TEST_SCRIPT}"
-  )
-  set_tests_properties(reproducer_coupling_infrastructure_check
-    PROPERTIES
-      LABELS "reproducer"
-  )
-
   # Coupled SST must reach ERF only where the ocean grid covers it, and ERF must
   # keep its own lower-boundary value everywhere else. See issue #13.
   add_test(
@@ -347,66 +332,6 @@ if(ERF_REMORA_ENABLE_TESTS)
       -P "${ERF_REMORA_TEST_SCRIPT}"
   )
   set_tests_properties(reproducer_one_step_solver_initialization_check
-    PROPERTIES
-      LABELS "reproducer"
-  )
-
-  add_test(
-    NAME reproducer_erftoremora_coupleToERF
-    COMMAND
-      "${CMAKE_COMMAND}"
-      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/IdealizedFlows/inputs_ERFtoREMORA_coupleToERF
-      -DERF_REMORA_ARGS=max_step=10
-      -P "${ERF_REMORA_TEST_SCRIPT}"
-  )
-  set_tests_properties(reproducer_erftoremora_coupleToERF
-    PROPERTIES
-      LABELS "reproducer"
-  )
-
-  add_test(
-    NAME reproducer_two_way_coupleToERF
-    COMMAND
-      "${CMAKE_COMMAND}"
-      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CouplingReproducers/inputs_two_way_coupleToERF
-      "-DERF_REMORA_ARGS=max_step=600;remora.v=1;erf.v=1;amr.v=1;amrex.tiny_profiler=1"
-      -P "${ERF_REMORA_TEST_SCRIPT}"
-  )
-  set_tests_properties(reproducer_two_way_coupleToERF
-    PROPERTIES
-      LABELS "reproducer"
-  )
-
-  add_test(
-    NAME reproducer_two_way_ABL
-    COMMAND
-      "${CMAKE_COMMAND}"
-      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/IdealizedFlows/inputs_two_way_ABL
-      -DERF_REMORA_ARGS=
-      -P "${ERF_REMORA_TEST_SCRIPT}"
-  )
-  set_tests_properties(reproducer_two_way_ABL
-    PROPERTIES
-      LABELS "reproducer"
-  )
-
-  add_test(
-    NAME reproducer_two_way_couette
-    COMMAND
-      "${CMAKE_COMMAND}"
-      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/IdealizedFlows/inputs_two_way_couette
-      -DERF_REMORA_ARGS=
-      -P "${ERF_REMORA_TEST_SCRIPT}"
-  )
-  set_tests_properties(reproducer_two_way_couette
     PROPERTIES
       LABELS "reproducer"
   )

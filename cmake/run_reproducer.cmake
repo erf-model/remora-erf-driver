@@ -16,22 +16,11 @@ if(NOT EXISTS "${_input_file}")
   message(FATAL_ERROR "Missing reproducer deck: ${_input_file}")
 endif()
 
+# Per-deck dependency lists go here, keyed on ERF_REMORA_INPUT_FILE. The decks
+# that needed one (the CouplingReproducers and IdealizedFlows coupleToERF/ABL/
+# couette cases, which imported base decks from ERF's .Exec_dev) were removed,
+# so there is nothing to declare at present.
 set(_required_files "")
-if(ERF_REMORA_INPUT_FILE STREQUAL "Exec/CouplingReproducers/inputs_two_way_coupleToERF")
-  list(APPEND _required_files
-    "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_two_way"
-    "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding")
-elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/IdealizedFlows/inputs_ERFtoREMORA_coupleToERF")
-  list(APPEND _required_files
-    "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_shear_ERFtoREMORA"
-    "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/input_sounding")
-elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/IdealizedFlows/inputs_two_way_ABL")
-  list(APPEND _required_files
-    "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_abl")
-elseif(ERF_REMORA_INPUT_FILE STREQUAL "Exec/IdealizedFlows/inputs_two_way_couette")
-  list(APPEND _required_files
-    "${ERF_REMORA_SOURCE_DIR}/Submodules/ERF/.Exec_dev/RemoraCoupling/inputs_couette")
-endif()
 
 foreach(_required_file IN LISTS _required_files)
   if(NOT EXISTS "${_required_file}")

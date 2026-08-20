@@ -102,6 +102,18 @@ if(ERF_REMORA_ENABLE_FCOMPARE)
         CACHE STRING "Path to fcompare executable for regression tests" FORCE)
   endif()
   message(STATUS "Top-level fcompare executable: ${FCOMPARE_EXE}")
+
+  # Built alongside fcompare by the same AMReX Plotfile target. Used where a
+  # check needs a field's range rather than a comparison against a reference.
+  if(WIN32)
+    set(FEXTREMA_EXE
+        "${CMAKE_BINARY_DIR}/amrex-build/Tools/Plotfile/*/amrex_fextrema.exe"
+        CACHE STRING "Path to fextrema executable for regression tests" FORCE)
+  else()
+    set(FEXTREMA_EXE
+        "${CMAKE_BINARY_DIR}/amrex-build/Tools/Plotfile/amrex_fextrema"
+        CACHE STRING "Path to fextrema executable for regression tests" FORCE)
+  endif()
 endif()
 
 add_executable(
@@ -274,6 +286,8 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_mpi_upwelling_smoke.cmake")
   set(ERF_REMORA_MPI_COMPARE_TEST_SCRIPT
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_mpi_upwelling_compare.cmake")
+  set(ERF_REMORA_SST_COVERAGE_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_coupled_sst_coverage.cmake")
 
   add_test(
     NAME compile_erf_remora_driver
@@ -300,6 +314,26 @@ if(ERF_REMORA_ENABLE_TESTS)
   set_tests_properties(reproducer_coupling_infrastructure_check
     PROPERTIES
       LABELS "reproducer"
+  )
+
+  # Coupled SST must reach ERF only where the ocean grid covers it, and ERF must
+  # keep its own lower-boundary value everywhere else. See issue #13.
+  add_test(
+    NAME reproducer_coupled_sst_coverage
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/Upwelling/inputs_twoway
+      -DFEXTREMA_EXE=${FEXTREMA_EXE}
+      -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+      -DERF_REMORA_MAX_STEP=2
+      -P "${ERF_REMORA_SST_COVERAGE_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_coupled_sst_coverage
+    PROPERTIES
+      LABELS "reproducer;coupling"
+      PROCESSORS 1
   )
 
   add_test(

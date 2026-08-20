@@ -113,9 +113,10 @@ ERFHasCloudWater(void* erf_handle)
 void
 ERFApplyOceanSurfaceState(void* erf_handle,
                           const amrex::Vector<amrex::MultiFab*>& state,
-                          amrex::Real time)
+                          amrex::Real time,
+                          const amrex::iMultiFab* erf_coverage)
 {
-    static_cast<ERF*>(erf_handle)->ApplyOceanSurfaceState(state, time);
+    static_cast<ERF*>(erf_handle)->ApplyOceanSurfaceState(state, time, erf_coverage);
 }
 
 void

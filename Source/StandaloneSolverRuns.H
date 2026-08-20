@@ -48,9 +48,15 @@ bool ERFHasRadiation(void* erf_handle);
 // cloud liquid or ice). False means the lane would only carry the driver prefill,
 // which REMORA would otherwise treat as an authoritative atmospheric value.
 bool ERFHasCloudWater(void* erf_handle);
+// erf_coverage is the per-cell ocean->atmos coverage flag on the layout returned by
+// ERFGetOceanToAtmosSurfaceLayout: nonzero where the remap found at least one
+// ocean donor for that ERF cell. Where it is zero, state[0] holds the remap's
+// zero fill rather than an ocean value, and ERF keeps its own lower-boundary SST.
+// Passing nullptr therefore means "nothing is covered", not "everything is".
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
-                               amrex::Real time);
+                               amrex::Real time,
+                               const amrex::iMultiFab* erf_coverage = nullptr);
 // weight_mf_by_family/index_mf_by_family are keyed by WeightFamily slot order
 // {SCALAR_CENTERED, TAUX_FACE, TAUY_FACE, WIND_FACE_TO_CENTER}.
 void ERFPackAtmosphericStates(void* erf_handle,

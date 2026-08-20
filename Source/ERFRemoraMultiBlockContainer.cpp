@@ -735,6 +735,8 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     if (m_use_two_way_coupling) {
         m_weight_o2a_mf = std::make_unique<amrex::MultiFab>(m_ba, m_dm, MAX_STENCIL_SIZE, 0);
         m_index_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 3 * MAX_STENCIL_SIZE, 0);
+        m_valid_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 1, 0);
+        m_valid_o2a_mf->setVal(0);
     }
 
     m_atmos_to_ocean_state_active.resize(m_atmos_to_ocean_state_active_indices.size());
@@ -1913,11 +1915,13 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
     if (m_use_two_way_coupling && m_weight_o2a_mf && m_index_o2a_mf) {
         m_weight_o2a_mf->setVal(0.0);
         m_index_o2a_mf->setVal(-1);
+        m_valid_o2a_mf->setVal(0);
 
         for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
             Box bx = mfi.validbox();
             auto weight_arr = m_weight_o2a_mf->array(mfi);
             auto index_arr = m_index_o2a_mf->array(mfi);
+            auto valid_arr = m_valid_o2a_mf->array(mfi);
 
             for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
                 for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
@@ -1970,6 +1974,15 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                             }
                         }
                     }
+
+                    // Coverage for this destination cell. Equivalent to
+                    // index_arr(i,j,0,0) >= 0, which is the predicate the
+                    // ocean->atmos contract documents; kept here because the
+                    // stencil count is already in hand. Note this is geometric
+                    // coverage only -- whether an ocean cell overlaps -- and
+                    // says nothing about whether that ocean cell is wet. Land
+                    // exclusion stays with ERF's own lmask on the apply side.
+                    valid_arr(i, j, 0) = (stencil_idx > 0) ? 1 : 0;
                 }
             }
         }
@@ -2189,7 +2202,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
         },
         [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
             BL_PROFILE("Driver::Apply_Surface");
-            ERFApplyOceanSurfaceState(m_erf, state, time);
+            // Hand the coverage flag over with the SST. Without it ERF cannot
+            // tell an uncovered cell's zero fill from a genuine ocean value,
+            // and would overwrite its own wrflowinp SST with 0 K wherever the
+            // ocean grid does not reach the atmosphere footprint.
+            ERFApplyOceanSurfaceState(m_erf, state, time, m_valid_o2a_mf.get());
         },
         [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
             BL_PROFILE("Driver::Pack_Atmos");

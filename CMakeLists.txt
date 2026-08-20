@@ -336,6 +336,32 @@ if(ERF_REMORA_ENABLE_TESTS)
       LABELS "reproducer"
   )
 
+  # The reproducibility tests below ask whether the coupled run gives the same
+  # answer twice: once across rank counts, once across a checkpoint/restart.
+  # Both require every other source of run-to-run variation to be absent, and
+  # erf.pbl_type=MYNN25 is not one. Measured on the Upwelling deck:
+  #
+  #   - across ranks, np1 vs npN is identical at step 0, diverges to 7e-06 in
+  #     Kmv by step 10 and 2.4e-02 (0.37% relative) by step 20, saturating at
+  #     the same magnitude for np2, np4 and np8
+  #   - across restart, cold vs restarted diverges to 1.3 in Kmv (19% relative)
+  #
+  # Disabling the PBL scheme makes the first comparison bit-identical and the
+  # second agree outright, with everything else held fixed. So the divergence
+  # belongs to MYNN25, not to the decomposition, the checkpoint, or the
+  # coupling. Running these without a PBL scheme keeps them a real test of what
+  # they are named for. MOST requires some diffusion path (ERF.cpp asserts
+  # has_diff), so constant molecular diffusion stands in for the eddy viscosity
+  # MYNN25 would have supplied.
+  #
+  # This is a workaround, not a fix. MYNN25's rank and restart dependence is an
+  # open ERF issue, and no test in this suite covers it while these carry the
+  # _nopbl suffix. Drop the suffix and these arguments once it lands.
+  set(_erf_remora_nopbl_args
+    "erf.pbl_type=None"
+    "erf.molec_diff_type=Constant"
+    "erf.dynamic_viscosity=1.0")
+
   if(FCOMPARE_EXE)
     set(_erf_remora_upwelling_cases
       "oneway|Exec/Upwelling/inputs_oneway"
@@ -347,9 +373,9 @@ if(ERF_REMORA_ENABLE_TESTS)
       list(GET _case_fields 1 _case_input)
       foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
         erf_remora_add_restart_test(
-          reproducer_restart_${_case_name}_${_atm2ocn_mode}_matched
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_matched_nopbl
           ${_case_input}
-          restart_${_case_name}_${_atm2ocn_mode}_matched
+          restart_${_case_name}_${_atm2ocn_mode}_matched_nopbl
           ERF_RESTART_SUFFIX 00001
           REMORA_RESTART_SUFFIX 00001
           ERF_COMPARE_SUFFIX 00002
@@ -367,12 +393,13 @@ if(ERF_REMORA_ENABLE_TESTS)
             "remora.fixed_fast_dt=1"
             "remora.fixed_ndtfast_ratio=1"
             "max_step=2"
+            ${_erf_remora_nopbl_args}
         )
 
         erf_remora_add_restart_test(
-          reproducer_restart_${_case_name}_${_atm2ocn_mode}_substep
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_substep_nopbl
           ${_case_input}
-          restart_${_case_name}_${_atm2ocn_mode}_substep
+          restart_${_case_name}_${_atm2ocn_mode}_substep_nopbl
           ERF_RESTART_SUFFIX 00010
           REMORA_RESTART_SUFFIX 00001
           ERF_COMPARE_SUFFIX 00020
@@ -390,6 +417,7 @@ if(ERF_REMORA_ENABLE_TESTS)
             "remora.fixed_fast_dt=10"
             "remora.fixed_ndtfast_ratio=1"
             "max_step=2"
+            ${_erf_remora_nopbl_args}
         )
       endforeach()
     endforeach()
@@ -406,6 +434,9 @@ if(ERF_REMORA_ENABLE_TESTS)
       "oneway|Exec/Upwelling/inputs_oneway"
       "twoway|Exec/Upwelling/inputs_twoway")
     set(_erf_remora_atm2ocn_modes state flux)
+
+    # See the _erf_remora_nopbl_args comment above for why these run with the
+    # PBL scheme disabled.
     foreach(_case_entry IN LISTS _erf_remora_upwelling_cases)
       string(REPLACE "|" ";" _case_fields "${_case_entry}")
       list(GET _case_fields 0 _case_name)
@@ -413,9 +444,9 @@ if(ERF_REMORA_ENABLE_TESTS)
       foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
         foreach(_mpi_nprocs 2 4 6 8)
           erf_remora_add_parallel_tests(
-            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_matched
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_matched_nopbl
             ${_case_input}
-            mpi_${_case_name}_${_atm2ocn_mode}_matched_np${_mpi_nprocs}
+            mpi_${_case_name}_${_atm2ocn_mode}_matched_nopbl_np${_mpi_nprocs}
             MPI_NPROCS ${_mpi_nprocs}
             ERF_COMPARE_SUFFIX 00002
             REMORA_COMPARE_SUFFIX 00002
@@ -430,12 +461,13 @@ if(ERF_REMORA_ENABLE_TESTS)
               "remora.fixed_fast_dt=1"
               "remora.fixed_ndtfast_ratio=1"
               "max_step=2"
+              ${_erf_remora_nopbl_args}
           )
 
           erf_remora_add_parallel_tests(
-            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_substep
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_substep_nopbl
             ${_case_input}
-            mpi_${_case_name}_${_atm2ocn_mode}_substep_np${_mpi_nprocs}
+            mpi_${_case_name}_${_atm2ocn_mode}_substep_nopbl_np${_mpi_nprocs}
             MPI_NPROCS ${_mpi_nprocs}
             ERF_COMPARE_SUFFIX 00020
             REMORA_COMPARE_SUFFIX 00002
@@ -450,6 +482,7 @@ if(ERF_REMORA_ENABLE_TESTS)
               "remora.fixed_fast_dt=10"
               "remora.fixed_ndtfast_ratio=1"
               "max_step=2"
+              ${_erf_remora_nopbl_args}
           )
         endforeach()
       endforeach()

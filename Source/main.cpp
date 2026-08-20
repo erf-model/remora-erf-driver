@@ -355,18 +355,16 @@ main (int argc, char* argv[])
 
         bool use_two_way_coupling = false;
         const std::string coupling_direction_lc = lowercase(coupling_direction);
-        std::string land_surface_model;
-
-        const bool has_land_surface_model = pp_erf.query("land_surface_model", land_surface_model);
-        const std::string land_surface_model_lc = lowercase(land_surface_model);
 
         if (coupling_direction_lc == "two_way") {
             use_two_way_coupling = true;
-            if (!has_land_surface_model) {
-                pp_erf.add("land_surface_model","OceanSurf");
-            } else if (land_surface_model_lc != "oceansurf") {
-                amrex::Abort("In two-way coupling, ERF applies SST through LSM path, so set erf.land_surface_model=OceanSurf or omit the line");
-            }
+            // Tell ERF to expect coupled SST. This used to inject
+            // land_surface_model=OceanSurf, which consumed ERF's one land
+            // surface model slot and so made a two-way run mutually exclusive
+            // with Noah-MP. Coupled SST now arrives through the lower-boundary
+            // path instead, leaving erf.land_surface_model free for whatever
+            // land surface the deck actually wants.
+            pp_erf.add("use_coupled_sst", 1);
         } else if (coupling_direction_lc == "erftoremora") {
             use_two_way_coupling = false;
         } else {

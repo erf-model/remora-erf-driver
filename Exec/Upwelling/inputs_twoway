@@ -1,4 +1,4 @@
-# Two-way ERF<->REMORA run with OceanSurf SST feedback active in ERF.
+# Two-way ERF<->REMORA run with coupled SST feedback active in ERF.
 #
 # Coastal idealization target:
 #   - horizontal domain: 50 km x 20 km

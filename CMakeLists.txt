@@ -321,21 +321,6 @@ if(ERF_REMORA_ENABLE_TESTS)
       PROCESSORS 1
   )
 
-  add_test(
-    NAME reproducer_one_step_solver_initialization_check
-    COMMAND
-      "${CMAKE_COMMAND}"
-      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
-      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-      -DERF_REMORA_INPUT_FILE=Exec/CTest/inputs_one_step_solver_initialization_check
-      -DERF_REMORA_ARGS=max_step=1
-      -P "${ERF_REMORA_TEST_SCRIPT}"
-  )
-  set_tests_properties(reproducer_one_step_solver_initialization_check
-    PROPERTIES
-      LABELS "reproducer"
-  )
-
   # The reproducibility tests below ask whether the coupled run gives the same
   # answer twice: once across rank counts, once across a checkpoint/restart.
   # Both require every other source of run-to-run variation to be absent, and

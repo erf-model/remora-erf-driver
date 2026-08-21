@@ -74,10 +74,11 @@ RequireIntegralTick (const char* label, amrex::Real time, amrex::Real dt)
 }
 
 void
-RequireCheckpointSelfConsistency (const erf_remora::restart::CheckpointHeaderMetadata& meta)
+RequireCheckpointSelfConsistency (const erf_remora::restart::CheckpointHeaderMetadata& meta,
+                                  amrex::Real time_offset = amrex::Real(0.0))
 {
     const amrex::Real reconstructed_time =
-        static_cast<amrex::Real>(meta.step) * meta.dt;
+        time_offset + static_cast<amrex::Real>(meta.step) * meta.dt;
     if (!NearlyEqual(reconstructed_time, meta.time)) {
         amrex::Abort(std::string("Restart header for ") + erf_remora::restart::SolverKindName(meta.solver) +
                      " is internally inconsistent:"
@@ -91,19 +92,23 @@ RestartState
 BuildRestartState (const erf_remora::restart::CheckpointHeaderMetadata& erf_meta,
                    const erf_remora::restart::CheckpointHeaderMetadata& rem_meta,
                    amrex::Real erf_dt,
-                   amrex::Real ocean_macro_dt)
+                   amrex::Real ocean_macro_dt,
+                   amrex::Real ocean_time_offset)
 {
     RequireCheckpointSelfConsistency(erf_meta);
-    RequireCheckpointSelfConsistency(rem_meta);
+    RequireCheckpointSelfConsistency(rem_meta, ocean_time_offset);
 
-    if (!NearlyEqual(erf_meta.time, rem_meta.time)) {
+    // REMORA checkpoint time includes driver.ocean_time_offset; ERF uses elapsed time.
+    const amrex::Real rem_elapsed_time = rem_meta.time - ocean_time_offset;
+
+    if (!NearlyEqual(erf_meta.time, rem_elapsed_time)) {
         amrex::Abort("ERF and REMORA restart checkpoints do not represent the same coupled time.");
     }
 
     const long long restored_atm_tick =
         RequireIntegralTick("ERF", erf_meta.time, erf_dt);
     const long long restored_ocean_tick =
-        RequireIntegralTick("REMORA", rem_meta.time, ocean_macro_dt);
+        RequireIntegralTick("REMORA", rem_elapsed_time, ocean_macro_dt);
 
     WarnIfDtChanged("ERF", erf_meta.dt, erf_dt);
     WarnIfDtChanged("REMORA", rem_meta.dt, ocean_macro_dt);
@@ -206,6 +211,9 @@ main (int argc, char* argv[])
         int driver_verbose = 0;
         pp_driver.query("v", driver_verbose);
 
+        amrex::Real ocean_time_offset = 0.0;
+        pp_driver.query("ocean_time_offset", ocean_time_offset);
+
         amrex::Real erf_dt;
         amrex::Real ocean_macro_dt;
         pp_erf.get("fixed_dt", erf_dt);
@@ -248,6 +256,13 @@ main (int argc, char* argv[])
         int top_level_max_step = -1;
         const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
 
+        // ERF consumes amr.restart inside InitializeSolvers(), before the scrub below.
+        std::string amr_restart_path;
+        if (pp_amr.query("restart", amr_restart_path)) {
+            amrex::Abort("amr.restart is not supported by the coupled driver; "
+                         "set erf.restart and remora.restart together instead.");
+        }
+
         std::string erf_restart_path;
         std::string remora_restart_path;
         const bool has_erf_restart = pp_erf.query("restart", erf_restart_path);
@@ -264,7 +279,8 @@ main (int argc, char* argv[])
             const auto rem_meta =
                 erf_remora::restart::ReadCheckpointHeaderMetadata(
                     remora_restart_path, erf_remora::restart::SolverKind::REMORA);
-            restart_state = BuildRestartState(erf_meta, rem_meta, erf_dt, ocean_macro_dt);
+            restart_state = BuildRestartState(erf_meta, rem_meta, erf_dt,
+                                              ocean_macro_dt, ocean_time_offset);
         }
 
         if (pp_driver.contains("coupled_one_step")) {

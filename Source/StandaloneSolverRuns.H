@@ -49,10 +49,11 @@ bool ERFHasRadiation(void* erf_handle);
 // which REMORA would otherwise treat as an authoritative atmospheric value.
 bool ERFHasCloudWater(void* erf_handle);
 // erf_coverage is the per-cell ocean->atmos coverage flag on the layout returned by
-// ERFGetOceanToAtmosSurfaceLayout: nonzero where the remap found at least one
-// ocean donor for that ERF cell. Where it is zero, state[0] holds the remap's
-// zero fill rather than an ocean value, and ERF keeps its own lower-boundary SST.
-// Passing nullptr therefore means "nothing is covered", not "everything is".
+// ERFGetOceanToAtmosSurfaceLayout: nonzero where the remap found enough wet
+// REMORA rho-cell source area and at least one ocean donor for that ERF cell.
+// Where it is zero, state[0] holds the remap's zero fill rather than an ocean
+// value, and ERF keeps its own lower-boundary SST. Passing nullptr therefore
+// means "nothing is covered", not "everything is".
 void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time,

@@ -951,6 +951,39 @@ CellBoundsFromGeom (const amrex::Geometry& g, int i, int j)
     return amrex::RealBox({xlo, ylo, 0.0}, {xhi, yhi, 0.0});
 }
 
+amrex::Long
+FlatIndexInBox (const amrex::Box& domain, int i, int j, int k)
+{
+    const amrex::Long nx = domain.length(0);
+    const amrex::Long ny = domain.length(1);
+    return ((static_cast<amrex::Long>(k - domain.smallEnd(2)) * ny
+             + static_cast<amrex::Long>(j - domain.smallEnd(1))) * nx
+            + static_cast<amrex::Long>(i - domain.smallEnd(0)));
+}
+
+amrex::Vector<amrex::Real>
+BuildReplicatedMaskLookup (const amrex::MultiFab& mask_mf, const amrex::Box& domain)
+{
+    using namespace amrex;
+
+    Vector<Real> mask_values(domain.numPts(), Real(0.0));
+    for (MFIter mfi(mask_mf); mfi.isValid(); ++mfi) {
+        const Box bx = mfi.validbox() & domain;
+        if (!bx.ok()) { continue; }
+        auto const& mask_arr = mask_mf.const_array(mfi);
+
+        for (int k = bx.smallEnd(2); k <= bx.bigEnd(2); ++k) {
+            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                    mask_values[FlatIndexInBox(domain, i, j, k)] = mask_arr(i, j, k);
+                }
+            }
+        }
+    }
+    ParallelDescriptor::ReduceRealSum(mask_values.dataPtr(), mask_values.size());
+    return mask_values;
+}
+
 // Control-volume bounds for a face-staggered destination point on a uniform grid.
 //
 // The u-cell at face index i is centered on the face, spanning half a cell either
@@ -2011,6 +2044,25 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         amrex::Long dropped_overlaps = 0;
         Vector<std::pair<Real,IntVect>> overlaps;
 
+        const MultiFab* remora_mskr = nullptr;
+        if (m_remora != nullptr) {
+            REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
+        }
+
+        const Box remora_cell_domain = m_geom_ocn.Domain();
+        const bool use_remora_mskr =
+            remora_mskr != nullptr &&
+            remora_mskr->boxArray().ixType() == m_ba_ocn.ixType();
+        const Vector<Real> remora_mskr_lookup =
+            use_remora_mskr ? BuildReplicatedMaskLookup(*remora_mskr, remora_cell_domain)
+                            : Vector<Real>{};
+        auto remora_rho_is_wet = [&] (int src_i, int src_j) -> bool {
+            if (!use_remora_mskr) { return true; }
+            const int src_k = remora_cell_domain.smallEnd(2);
+            return remora_mskr_lookup[FlatIndexInBox(remora_cell_domain, src_i, src_j, src_k)]
+                   > Real(0.5);
+        };
+
         for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
             Box bx = mfi.validbox();
             auto weight_arr = m_weight_o2a_mf->array(mfi);
@@ -2043,13 +2095,15 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                     ocn_j_hi = std::min(remora_candidate_box.bigEnd(1), ocn_j_hi + 1);
 
                     overlaps.clear();
-                    // Fraction of this ERF cell that ocean cells actually cover.
+                    // Fraction of this ERF cell covered by wet REMORA rho cells.
                     // The raw intersect_area/dst_area weights are the destination
                     // fraction; after normalization their sum is one and cannot
                     // drive the uncovered-cell threshold.
                     Real covered_frac = 0.0;
                     for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
                         for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
+                            if (!remora_rho_is_wet(src_i, src_j)) { continue; }
+
                             RealBox remora_cell_bounds = CellBoundsFromGeom(m_geom_ocn, src_i, src_j);
                             Vector<Point2D> remora_poly = {
                                 {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
@@ -2082,9 +2136,9 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                     // below a destination fraction of 0.001, OASIS/CERFACS at
                     // 1/1000.
                     //
-                    // Geometric coverage only -- this says an ocean cell
-                    // overlaps, not that it is wet. Land exclusion stays with
-                    // ERF's own lmask on the apply side.
+                    // Wet REMORA coverage only: dry rho cells do not contribute
+                    // to coverage or to the SST stencil. ERF's lmask is still
+                    // applied on the destination side after the remap.
                     // The overlap count is tested as well as the fraction: with
                     // remap_min_coverage_frac set to 0, a cell no ocean cell
                     // touches has covered_frac == 0, and 0 >= 0 would otherwise

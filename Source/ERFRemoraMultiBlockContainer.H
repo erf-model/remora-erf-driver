@@ -273,10 +273,12 @@ private:
     // rather than a full per-family array until O2A gains more lanes.
     std::unique_ptr<amrex::MultiFab> m_weight_o2a_mf;
     std::unique_ptr<amrex::iMultiFab> m_index_o2a_mf;
-    // Per-cell ocean->atmos coverage: 1 where m_index_o2a_mf holds at least one
-    // ocean donor for that ERF cell, 0 otherwise. Handed to ERF alongside the
-    // SST slab so ERF can tell "the ocean says 0 K here" from "the ocean does
-    // not reach here" -- the remapped slab is zero-filled in both cases.
+    // Per-cell ocean->atmos coverage: 1 where wet REMORA rho-cell source area
+    // exceeds the configured coverage threshold and m_index_o2a_mf holds at
+    // least one ocean donor for that ERF cell, 0 otherwise. Handed to ERF
+    // alongside the SST slab so ERF can tell "the ocean says 0 K here" from
+    // "the wet ocean does not reach here" -- the remapped slab is zero-filled
+    // in both cases.
     std::unique_ptr<amrex::iMultiFab> m_valid_o2a_mf;
 
     void* m_erf = nullptr;

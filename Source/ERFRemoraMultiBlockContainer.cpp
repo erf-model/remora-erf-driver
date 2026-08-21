@@ -1903,13 +1903,28 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
 
                         Real best_d2 = std::numeric_limits<Real>::max();
                         IntVect best_ij(-1,-1,0);
-                        for (int sj = erf_staged_box.smallEnd(1); sj <= erf_staged_box.bigEnd(1); ++sj) {
-                            for (int si = erf_staged_box.smallEnd(0); si <= erf_staged_box.bigEnd(0); ++si) {
-                                if (erf_land(si, sj, 0) >= Real(0.5)) { continue; }
-                                const Real sx = Real(0.25) * (erf_node(si  ,sj  ,0,0) + erf_node(si+1,sj  ,0,0)
-                                                            + erf_node(si+1,sj+1,0,0) + erf_node(si  ,sj+1,0,0));
-                                const Real sy = Real(0.25) * (erf_node(si  ,sj  ,0,1) + erf_node(si+1,sj  ,0,1)
-                                                            + erf_node(si+1,sj+1,0,1) + erf_node(si  ,sj+1,0,1));
+                        // The donor index is stored in index_arr and dereferenced by
+                        // ApplyConservativeRemap against this family's source layout,
+                        // so it has to be selected in the same index space the main
+                        // overlap loop uses. For the face families that is face
+                        // space: one extra index in the active direction, face
+                        // centroids rather than cell centroids, and the bracketing
+                        // land rule. A cell index here would be legal but would
+                        // reintroduce the half-cell displacement on donor-filled
+                        // coastal cells, which is the defect this change removes.
+                        const int donor_i_hi =
+                            erf_staged_box.bigEnd(0) + ((src_face_dir == 0) ? 1 : 0);
+                        const int donor_j_hi =
+                            erf_staged_box.bigEnd(1) + ((src_face_dir == 1) ? 1 : 0);
+                        for (int sj = erf_staged_box.smallEnd(1); sj <= donor_j_hi; ++sj) {
+                            for (int si = erf_staged_box.smallEnd(0); si <= donor_i_hi; ++si) {
+                                if (erf_src_is_land(si, sj)) { continue; }
+                                const Vector<Point2D> src_poly = erf_src_poly(si, sj);
+                                if (src_poly.empty()) { continue; }
+                                Real sx = 0.0, sy = 0.0;
+                                for (const auto& p : src_poly) { sx += p.x; sy += p.y; }
+                                sx /= static_cast<Real>(src_poly.size());
+                                sy /= static_cast<Real>(src_poly.size());
                                 const Real dx = (sx - dst_cx) * cos_lat;
                                 const Real dy = (sy - dst_cy);
                                 const Real d2 = dx*dx + dy*dy;

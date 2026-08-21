@@ -1918,6 +1918,16 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         m_index_o2a_mf->setVal(-1);
         m_valid_o2a_mf->setVal(0);
 
+        if (m_remap_spherical) {
+            amrex::Print() << "[driver] WARNING BuildOceanToAtmosWeights: spherical O2A SST remap "
+                           << "is not implemented; leaving coverage empty so ERF keeps its own SST.\n";
+            return;
+        }
+
+        int max_stencil_used = 0;
+        amrex::Long dropped_overlaps = 0;
+        Vector<std::pair<Real,IntVect>> overlaps;
+
         for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
             Box bx = mfi.validbox();
             auto weight_arr = m_weight_o2a_mf->array(mfi);
@@ -1949,17 +1959,14 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                     ocn_j_lo = std::max(remora_candidate_box.smallEnd(1), ocn_j_lo - 1);
                     ocn_j_hi = std::min(remora_candidate_box.bigEnd(1), ocn_j_hi + 1);
 
-                    int stencil_idx = 0;
+                    overlaps.clear();
                     // Fraction of this ERF cell that ocean cells actually cover.
-                    // The weights below are intersect_area/dst_area and are NOT
-                    // normalized on this direction, so their sum is the coverage
-                    // fraction. Anything that normalizes them must capture this
-                    // first or the threshold below silently stops working.
+                    // The raw intersect_area/dst_area weights are the destination
+                    // fraction; after normalization their sum is one and cannot
+                    // drive the uncovered-cell threshold.
                     Real covered_frac = 0.0;
                     for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
                         for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
-                            if (stencil_idx >= MAX_STENCIL_SIZE) break;
-
                             RealBox remora_cell_bounds = CellBoundsFromGeom(m_geom_ocn, src_i, src_j);
                             Vector<Point2D> remora_poly = {
                                 {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
@@ -1972,26 +1979,22 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                             Real intersect_area = PolygonArea(clipped_poly);
 
                             if (intersect_area > 0.0) {
-                                Real weight = intersect_area / dst_area;
-                                covered_frac += weight;
-                                weight_arr(i, j, 0, stencil_idx) = weight;
-                                index_arr(i, j, 0, stencil_idx * 3) = src_i;
-                                index_arr(i, j, 0, stencil_idx * 3 + 1) = src_j;
-                                index_arr(i, j, 0, stencil_idx * 3 + 2) = 0;
-                                stencil_idx++;
+                                covered_frac += intersect_area / dst_area;
+                                overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
                             }
                         }
                     }
 
+                    if (overlaps.empty()) { continue; }
+
                     // Coverage for this destination cell, thresholded on area
                     // rather than on whether any overlap exists at all.
                     //
-                    // A sliver overlap is worse than no overlap. These weights
-                    // are not normalized, so a cell clipped by 1e-6 of its area
-                    // receives 1e-6 of one ocean cell's SST and nothing else --
-                    // a value near zero that is not the ocean's answer and not
-                    // ERF's either. Treating it as uncovered keeps ERF's own
-                    // lower-boundary SST, which is the better of the two.
+                    // A sliver overlap is worse than no overlap. The weights are
+                    // normalized below before REMORA's raw weighted sum, but
+                    // normalization cannot turn 1e-6 destination coverage into
+                    // a trustworthy ocean answer. Treating it as uncovered keeps
+                    // ERF's own lower-boundary SST.
                     // Thresholds of this kind are standard: CESM drops mapping
                     // below a destination fraction of 0.001, OASIS/CERFACS at
                     // 1/1000.
@@ -2000,9 +2003,43 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                     // overlaps, not that it is wet. Land exclusion stays with
                     // ERF's own lmask on the apply side.
                     valid_arr(i, j, 0) =
-                        (stencil_idx > 0 && covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
+                        (covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
+
+                    max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
+                    if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
+                        dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
+                        std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
+                                          overlaps.end(),
+                                          [] (const std::pair<Real,IntVect>& a,
+                                              const std::pair<Real,IntVect>& b) {
+                                              return a.first > b.first;
+                                          });
+                        overlaps.resize(MAX_STENCIL_SIZE);
+                    }
+
+                    for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
+                        weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
+                        index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
+                        index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
+                        index_arr(i, j, 0, m * 3 + 2) = 0;
+                    }
                 }
             }
+        }
+
+        NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf, nullptr, "O2A SST");
+
+        ParallelDescriptor::ReduceIntMax(max_stencil_used);
+        ParallelDescriptor::ReduceLongSum(dropped_overlaps);
+        if (dropped_overlaps > 0) {
+            amrex::Print() << "[driver] WARNING BuildOceanToAtmosWeights: " << dropped_overlaps
+                           << " ocean overlaps dropped because a destination cell exceeded "
+                           << "MAX_STENCIL_SIZE=" << MAX_STENCIL_SIZE
+                           << " (max overlaps seen = " << max_stencil_used
+                           << "); weights normalized over the largest-area overlaps kept.\n";
+        } else if (m_remap_verbose >= 1) {
+            amrex::Print() << "[driver] O2A remap stencils: max overlaps per destination cell = "
+                           << max_stencil_used << " of " << MAX_STENCIL_SIZE << "\n";
         }
     }
 }

@@ -1674,6 +1674,11 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         index_mf->setVal(-1);
 
         const IntVect stagger = kExpectedFamilyStagger[f];
+        // TauX/TauY carry a face-staggered ERF source as well (tau13/tau23 on
+        // x-/y-faces), so their source control volumes and stored indices must
+        // be face-staggered too.
+        const int src_face_dir =
+            (stagger == IntVect(1,0,0)) ? 0 : ((stagger == IntVect(0,1,0)) ? 1 : -1);
 
         // Each family's mask must sit on that family's stagger, or const_array()
         // would be reading a differently shaped array.
@@ -1697,13 +1702,42 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             Array4<const Real> erf_node{};
             Array4<const Real> erf_land{};
             Box erf_staged_box;
+            Box erf_staged_node_box;
             if (m_remap_spherical) {
                 erf_node = m_staging_plan->node_mf->const_array(mfi);
                 erf_land = m_staging_plan->land_mf->const_array(mfi);
                 erf_staged_box = m_staging_plan->land_mf->boxArray()[mfi.index()];
+                erf_staged_node_box = m_staging_plan->node_mf->boxArray()[mfi.index()];
                 search.define(erf_staged_box, Array4<const Real>(erf_node, 0),
                               Array4<const Real>(erf_node, 1), m_remap_bin_cells);
             }
+            // Spherical ERF source geometry on the active source stagger. A
+            // face is treated as land when either bracketing ERF cell is land,
+            // matching REMORA's own msku/mskv convention.
+            auto erf_src_poly = [&] (int si, int sj) {
+                if (src_face_dir >= 0) {
+                    return FaceCellQuadFromNodes(si, sj, src_face_dir,
+                                                 Array4<const Real>(erf_node, 0),
+                                                 Array4<const Real>(erf_node, 1),
+                                                 erf_staged_node_box);
+                }
+                return ExtractCellQuadFromCoords(si, sj,
+                                                 Array4<const Real>(erf_node, 0),
+                                                 Array4<const Real>(erf_node, 1));
+            };
+            auto erf_src_is_land = [&] (int si, int sj) -> bool {
+                if (src_face_dir == 0) {
+                    const int im = std::max(si - 1, erf_staged_box.smallEnd(0));
+                    const int ip = std::min(si,     erf_staged_box.bigEnd(0));
+                    return erf_land(im, sj, 0) >= Real(0.5) || erf_land(ip, sj, 0) >= Real(0.5);
+                }
+                if (src_face_dir == 1) {
+                    const int jm = std::max(sj - 1, erf_staged_box.smallEnd(1));
+                    const int jp = std::min(sj,     erf_staged_box.bigEnd(1));
+                    return erf_land(si, jm, 0) >= Real(0.5) || erf_land(si, jp, 0) >= Real(0.5);
+                }
+                return erf_land(si, sj, 0) >= Real(0.5);
+            };
             // REMORA wet/dry mask on this family's stagger, used to decide which
             // empty destination cells deserve a donor search.
             const Array4<const Real> wet_arr =
@@ -1761,20 +1795,48 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                     overlaps.clear();
                     if (m_remap_spherical) {
                         search.query(remora_bbox, candidates);
-                        for (const int item : candidates) {
-                            const IntVect erf_ij = search.itemIndex(item);
-                            const int erf_i = erf_ij[0], erf_j = erf_ij[1];
-                            // Wet/dry masking only (no vector rotation): skip land
-                            // ERF cells so atmospheric land fluxes cannot bleed
-                            // into coastal ocean cells via the remap stencil.
-                            if (erf_land(erf_i, erf_j, 0) >= Real(0.5)) { continue; }
+                        if (src_face_dir >= 0 && !candidates.empty()) {
+                            // SourceSearchGrid indexes source cells. For face
+                            // families, scan the candidate-cell hull and include
+                            // the high face in the staggered direction.
+                            int ci_lo = std::numeric_limits<int>::max();
+                            int ci_hi = std::numeric_limits<int>::min();
+                            int cj_lo = std::numeric_limits<int>::max();
+                            int cj_hi = std::numeric_limits<int>::min();
+                            for (const int item : candidates) {
+                                const IntVect cij = search.itemIndex(item);
+                                ci_lo = std::min(ci_lo, cij[0]); ci_hi = std::max(ci_hi, cij[0]);
+                                cj_lo = std::min(cj_lo, cij[1]); cj_hi = std::max(cj_hi, cij[1]);
+                            }
+                            ci_hi += (src_face_dir == 0) ? 1 : 0;
+                            cj_hi += (src_face_dir == 1) ? 1 : 0;
+                            for (int erf_j = cj_lo; erf_j <= cj_hi; ++erf_j) {
+                                for (int erf_i = ci_lo; erf_i <= ci_hi; ++erf_i) {
+                                    if (erf_src_is_land(erf_i, erf_j)) { continue; }
+                                    const Real area = PolygonArea(
+                                        ClipPolygon(remora_poly, erf_src_poly(erf_i, erf_j)));
+                                    if (area > 0.0) {
+                                        overlaps.emplace_back(area, IntVect(erf_i, erf_j, 0));
+                                    }
+                                }
+                            }
+                        } else {
+                            for (const int item : candidates) {
+                                const IntVect erf_ij = search.itemIndex(item);
+                                const int erf_i = erf_ij[0], erf_j = erf_ij[1];
+                                // Wet/dry masking only (no vector rotation): skip
+                                // land ERF cells so atmospheric land fluxes cannot
+                                // bleed into coastal ocean cells via the remap
+                                // stencil.
+                                if (erf_land(erf_i, erf_j, 0) >= Real(0.5)) { continue; }
 
-                            const Vector<Point2D> erf_poly =
-                                ExtractCellQuadFromCoords(erf_i, erf_j,
-                                                          Array4<const Real>(erf_node, 0),
-                                                          Array4<const Real>(erf_node, 1));
-                            const Real area = PolygonArea(ClipPolygon(remora_poly, erf_poly));
-                            if (area > 0.0) { overlaps.emplace_back(area, erf_ij); }
+                                const Vector<Point2D> erf_poly =
+                                    ExtractCellQuadFromCoords(erf_i, erf_j,
+                                                              Array4<const Real>(erf_node, 0),
+                                                              Array4<const Real>(erf_node, 1));
+                                const Real area = PolygonArea(ClipPolygon(remora_poly, erf_poly));
+                                if (area > 0.0) { overlaps.emplace_back(area, erf_ij); }
+                            }
                         }
                     } else {
                         // Cartesian frame: both sides are uniform in the shared
@@ -1787,13 +1849,19 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                         int erf_j_hi = std::ceil((remora_bbox.yhi - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
 
                         erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 2);
-                        erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 2);
+                        erf_i_hi = std::min(erf_candidate_box.bigEnd(0) + ((src_face_dir == 0) ? 1 : 0),
+                                            erf_i_hi + 2);
                         erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 2);
-                        erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 2);
+                        erf_j_hi = std::min(erf_candidate_box.bigEnd(1) + ((src_face_dir == 1) ? 1 : 0),
+                                            erf_j_hi + 2);
 
                         for (int erf_j = erf_j_lo; erf_j <= erf_j_hi; ++erf_j) {
                             for (int erf_i = erf_i_lo; erf_i <= erf_i_hi; ++erf_i) {
-                                RealBox erf_bounds = CellBoundsFromGeom(m_geom, erf_i, erf_j);
+                                RealBox erf_bounds =
+                                    (src_face_dir >= 0)
+                                        ? FaceCellBoundsFromGeom(m_geom, erf_candidate_box,
+                                                                 erf_i, erf_j, src_face_dir)
+                                        : CellBoundsFromGeom(m_geom, erf_i, erf_j);
                                 const Vector<Point2D> erf_poly = {
                                     {erf_bounds.lo(0), erf_bounds.lo(1)},
                                     {erf_bounds.hi(0), erf_bounds.lo(1)},

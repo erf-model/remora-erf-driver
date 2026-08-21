@@ -425,6 +425,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_frame", m_remap_frame_request);
     pp_driver.query("remap_extend_corner_ring", m_remap_extend_corner_ring);
     pp_driver.query("remap_bin_cells", m_remap_bin_cells);
+    pp_driver.query("remap_min_coverage_frac", m_remap_min_coverage_frac);
 
     DriverPrintHeader(
         m_driver_verbose,
@@ -1949,6 +1950,12 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                     ocn_j_hi = std::min(remora_candidate_box.bigEnd(1), ocn_j_hi + 1);
 
                     int stencil_idx = 0;
+                    // Fraction of this ERF cell that ocean cells actually cover.
+                    // The weights below are intersect_area/dst_area and are NOT
+                    // normalized on this direction, so their sum is the coverage
+                    // fraction. Anything that normalizes them must capture this
+                    // first or the threshold below silently stops working.
+                    Real covered_frac = 0.0;
                     for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
                         for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
                             if (stencil_idx >= MAX_STENCIL_SIZE) break;
@@ -1966,6 +1973,7 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
 
                             if (intersect_area > 0.0) {
                                 Real weight = intersect_area / dst_area;
+                                covered_frac += weight;
                                 weight_arr(i, j, 0, stencil_idx) = weight;
                                 index_arr(i, j, 0, stencil_idx * 3) = src_i;
                                 index_arr(i, j, 0, stencil_idx * 3 + 1) = src_j;
@@ -1975,14 +1983,24 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                         }
                     }
 
-                    // Coverage for this destination cell. Equivalent to
-                    // index_arr(i,j,0,0) >= 0, which is the predicate the
-                    // ocean->atmos contract documents; kept here because the
-                    // stencil count is already in hand. Note this is geometric
-                    // coverage only -- whether an ocean cell overlaps -- and
-                    // says nothing about whether that ocean cell is wet. Land
-                    // exclusion stays with ERF's own lmask on the apply side.
-                    valid_arr(i, j, 0) = (stencil_idx > 0) ? 1 : 0;
+                    // Coverage for this destination cell, thresholded on area
+                    // rather than on whether any overlap exists at all.
+                    //
+                    // A sliver overlap is worse than no overlap. These weights
+                    // are not normalized, so a cell clipped by 1e-6 of its area
+                    // receives 1e-6 of one ocean cell's SST and nothing else --
+                    // a value near zero that is not the ocean's answer and not
+                    // ERF's either. Treating it as uncovered keeps ERF's own
+                    // lower-boundary SST, which is the better of the two.
+                    // Thresholds of this kind are standard: CESM drops mapping
+                    // below a destination fraction of 0.001, OASIS/CERFACS at
+                    // 1/1000.
+                    //
+                    // Geometric coverage only -- this says an ocean cell
+                    // overlaps, not that it is wet. Land exclusion stays with
+                    // ERF's own lmask on the apply side.
+                    valid_arr(i, j, 0) =
+                        (stencil_idx > 0 && covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
                 }
             }
         }

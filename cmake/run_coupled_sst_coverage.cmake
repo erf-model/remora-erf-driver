@@ -187,9 +187,71 @@ if(_tsurf_min LESS ERF_REMORA_TSURF_FLOOR_K)
     "ERF's own lower-boundary temperature, which is the defect issue #13 fixed.")
 endif()
 
+# ---- sliver coverage: an ocean edge that barely clips an ERF column --------
+#
+# The ocean is offset by 999.5 m on a 1000 m ERF grid, so ERF's first column is
+# overlapped across 0.5 m -- an area fraction of 5e-4. Such a cell is worse than
+# an uncovered one: the weights are unnormalized, so it would receive 5e-4 of a
+# single ocean cell's SST, roughly 0.14 K, which is neither the ocean's answer
+# nor ERF's. It must be reported uncovered so ERF keeps its own value.
+#
+# This is the case a coverage flag keyed on "does any overlap exist" gets wrong,
+# and it is invisible to the aligned-grid cases above, where every cell is either
+# wholly covered or wholly outside.
+set(_sliver_args
+  "remora.prob_lo=999.5 0. -300."
+  "remora.prob_hi=25999.5 10000. 0."
+  "remora.n_cell=25 10 40"
+  "erf.plot2d_vars_1=t_surf"
+  "erf.plot2d_file_1=tsurf_sliver"
+  "erf.plot2d_int_1=1"
+)
+_run_case("sliver" "${_sliver_args}" _sliver_covered _sliver_total)
+
+if(NOT _sliver_covered LESS _sliver_total)
+  message(FATAL_ERROR
+    "Sliver-coverage run reported ${_sliver_covered} of ${_sliver_total} cells "
+    "covered; coverage must still be partial here.")
+endif()
+
+file(GLOB _sliver_plots "${_work_dir}/tsurf_sliver?????")
+if(NOT _sliver_plots)
+  message(FATAL_ERROR "Sliver-coverage run produced no t_surf plotfile in ${_work_dir}")
+endif()
+list(SORT _sliver_plots)
+list(GET _sliver_plots -1 _sliver_last)
+
+execute_process(
+  COMMAND "${FEXTREMA_EXE}" "${_sliver_last}"
+  OUTPUT_VARIABLE _sliver_extrema
+  ERROR_VARIABLE  _sliver_extrema_err
+  RESULT_VARIABLE _sliver_extrema_result
+)
+if(NOT _sliver_extrema_result EQUAL 0)
+  message(FATAL_ERROR
+    "fextrema failed on ${_sliver_last}\n${_sliver_extrema}${_sliver_extrema_err}")
+endif()
+if(NOT _sliver_extrema MATCHES "t_surf[ \t]+([0-9.eE+-]+)[ \t]+([0-9.eE+-]+)")
+  message(FATAL_ERROR "Could not read t_surf extrema from:\n${_sliver_extrema}")
+endif()
+set(_sliver_tsurf_min "${CMAKE_MATCH_1}")
+
+if(_sliver_tsurf_min LESS ERF_REMORA_TSURF_FLOOR_K)
+  message(FATAL_ERROR
+    "t_surf fell to ${_sliver_tsurf_min} K (floor ${ERF_REMORA_TSURF_FLOOR_K} K) in "
+    "${_sliver_last}.\n"
+    "The ocean clips ERF's first column across 5e-4 of its area. That cell was "
+    "treated as covered and took a fraction of one ocean cell's SST instead of "
+    "keeping ERF's own value. Coverage must be thresholded on area, not on "
+    "whether any overlap exists.")
+endif()
+
 message(STATUS
   "===== COUPLED SST COVERAGE SUMMARY =====\n"
   "  - full coverage:    ${_full_covered} of ${_full_total} cells covered\n"
   "  - partial coverage: ${_partial_covered} of ${_partial_total} cells covered\n"
-  "  - t_surf range over the whole domain: ${_tsurf_min} / ${_tsurf_max} K\n"
-  "  - uncovered cells retained ERF's own value (floor ${ERF_REMORA_TSURF_FLOOR_K} K)")
+  "  - sliver coverage:  ${_sliver_covered} of ${_sliver_total} cells covered\n"
+  "  - t_surf range, partial run: ${_tsurf_min} / ${_tsurf_max} K\n"
+  "  - t_surf min, sliver run:    ${_sliver_tsurf_min} K\n"
+  "  - uncovered and sliver-covered cells both retained ERF's own value "
+  "(floor ${ERF_REMORA_TSURF_FLOOR_K} K)")

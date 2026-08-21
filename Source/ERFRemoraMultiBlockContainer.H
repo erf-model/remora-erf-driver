@@ -218,6 +218,12 @@ private:
     bool m_remap_extend_corner_ring = false;
     // Target ERF cells per search bin (SCRIP restrict_type=latlon analogue).
     int m_remap_bin_cells = 4;
+    // Least ocean area fraction that counts as covering an ERF cell on the
+    // ocean->atmos direction. Below this the cell is reported uncovered and ERF
+    // keeps its own lower-boundary SST, rather than accepting a value built from
+    // a sliver of one ocean cell. Matches CESM's 0.001 destination-fraction cut
+    // (OASIS/CERFACS use 1/1000).
+    amrex::Real m_remap_min_coverage_frac = amrex::Real(0.001);
 
     // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
     // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.

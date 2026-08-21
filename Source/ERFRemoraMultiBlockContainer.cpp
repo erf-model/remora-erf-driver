@@ -2002,8 +2002,12 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                     // Geometric coverage only -- this says an ocean cell
                     // overlaps, not that it is wet. Land exclusion stays with
                     // ERF's own lmask on the apply side.
+                    // The overlap count is tested as well as the fraction: with
+                    // remap_min_coverage_frac set to 0, a cell no ocean cell
+                    // touches has covered_frac == 0, and 0 >= 0 would otherwise
+                    // report every uncovered cell as covered.
                     valid_arr(i, j, 0) =
-                        (covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
+                        (!overlaps.empty() && covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
 
                     max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
                     if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {

@@ -190,14 +190,22 @@ endif()
 # ---- sliver coverage: an ocean edge that barely clips an ERF column --------
 #
 # The ocean is offset by 999.5 m on a 1000 m ERF grid, so ERF's first column is
-# overlapped across 0.5 m -- an area fraction of 5e-4. Such a cell is worse than
-# an uncovered one: the weights are unnormalized, so it would receive 5e-4 of a
-# single ocean cell's SST, roughly 0.14 K, which is neither the ocean's answer
-# nor ERF's. It must be reported uncovered so ERF keeps its own value.
+# overlapped across 0.5 m -- an area fraction of 5e-4. Such a cell must be
+# reported uncovered so ERF keeps its own lower-boundary value: assigning it an
+# ocean SST attributes a whole cell's temperature on a twentieth of a percent of
+# geometric overlap.
 #
 # This is the case a coverage flag keyed on "does any overlap exist" gets wrong,
 # and it is invisible to the aligned-grid cases above, where every cell is either
 # wholly covered or wholly outside.
+#
+# The check is a comparison against the same run with the threshold disabled,
+# NOT an inspection of t_surf. Before the weights were normalized, a sliver cell
+# took 5e-4 of one ocean SST -- about 0.14 K -- so a temperature floor caught it.
+# Normalization rescales the surviving weight to one, so the cell now receives a
+# physically plausible SST that no floor can distinguish from a correct value.
+# The defect is geometric, so the test has to measure geometry: with the
+# threshold active, strictly fewer cells must be reported covered.
 set(_sliver_args
   "remora.prob_lo=999.5 0. -300."
   "remora.prob_hi=25999.5 10000. 0."
@@ -236,6 +244,27 @@ if(NOT _sliver_extrema MATCHES "t_surf[ \t]+([0-9.eE+-]+)[ \t]+([0-9.eE+-]+)")
 endif()
 set(_sliver_tsurf_min "${CMAKE_MATCH_1}")
 
+# The threshold has to be shown to do something. Re-run the same geometry with
+# it disabled: that run must report strictly MORE covered cells, because the
+# sliver column crosses from uncovered to covered. If the two counts agree the
+# threshold is inert and this test is proving nothing, which is the state
+# normalization silently produced when it removed the temperature symptom.
+set(_sliver_off_args ${_sliver_args} "driver.remap_min_coverage_frac=0.0")
+list(REMOVE_ITEM _sliver_off_args
+  "erf.plot2d_vars_1=t_surf" "erf.plot2d_file_1=tsurf_sliver" "erf.plot2d_int_1=1")
+_run_case("sliver_nothreshold" "${_sliver_off_args}" _sliver_off_covered _sliver_off_total)
+
+if(NOT _sliver_covered LESS _sliver_off_covered)
+  message(FATAL_ERROR
+    "The coverage threshold is inert.\n"
+    "With remap_min_coverage_frac at its configured value the run "
+    "reported ${_sliver_covered} of ${_sliver_total} cells covered; with the "
+    "threshold disabled it reported ${_sliver_off_covered}. The thresholded run "
+    "must report strictly fewer, because ERF's first column is clipped across "
+    "5e-4 of its area and must fall below the cut. Equal counts mean the "
+    "threshold is not excluding the sliver column at all.")
+endif()
+
 if(_sliver_tsurf_min LESS ERF_REMORA_TSURF_FLOOR_K)
   message(FATAL_ERROR
     "t_surf fell to ${_sliver_tsurf_min} K (floor ${ERF_REMORA_TSURF_FLOOR_K} K) in "
@@ -251,6 +280,8 @@ message(STATUS
   "  - full coverage:    ${_full_covered} of ${_full_total} cells covered\n"
   "  - partial coverage: ${_partial_covered} of ${_partial_total} cells covered\n"
   "  - sliver coverage:  ${_sliver_covered} of ${_sliver_total} cells covered\n"
+  "  - same, threshold disabled: ${_sliver_off_covered} covered "
+  "(must exceed ${_sliver_covered}, or the threshold is inert)\n"
   "  - t_surf range, partial run: ${_tsurf_min} / ${_tsurf_max} K\n"
   "  - t_surf min, sliver run:    ${_sliver_tsurf_min} K\n"
   "  - uncovered and sliver-covered cells both retained ERF's own value "

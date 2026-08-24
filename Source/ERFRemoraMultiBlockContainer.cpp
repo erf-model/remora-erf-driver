@@ -2240,6 +2240,26 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         Vector<int> candidates;
         Vector<std::pair<Real,IntVect>> overlaps;
 
+        // Why each uncovered destination cell is uncovered. All three end as
+        // valid = 0 and all three correctly leave ERF's own SST in place, but
+        // they mean different things and only one of them is ever suspicious:
+        //
+        //   outside   no ocean cell overlaps at all -- the ocean footprint does
+        //             not reach here. Expected around the edge of the ocean grid.
+        //   masked    ocean cells do overlap, but every one of them is dry. That
+        //             is REMORA calling land what ERF calls water, so it is a
+        //             mask disagreement: legitimate along a real coastline,
+        //             but also exactly what a grid misalignment or a stale mask
+        //             looks like. Collapsing it into the other two is how such a
+        //             bug hides, since a silent withhold reads as correct.
+        //   thin      wet overlap exists but falls under remap_min_coverage_frac.
+        //
+        // ESMF draws the same first distinction in ESMF_REGRIDSTATUS, which
+        // separates OUTSIDE from SRCMASKED for this reason.
+        amrex::Long uncovered_outside = 0;
+        amrex::Long uncovered_masked  = 0;
+        amrex::Long uncovered_thin    = 0;
+
         // O2A deliberately does not donor-fill uncovered ERF cells. They keep
         // ERF's own wrflowinp SST, which is better than a distant ocean donor.
         if (m_remap_spherical) {
@@ -2286,11 +2306,17 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                         // fraction; after normalization their sum is one and cannot
                         // drive the uncovered-cell threshold.
                         Real covered_frac = 0.0;
+                        // Dry cells are clipped as well as wet ones, but only to
+                        // learn whether the ocean grid reaches this cell at all.
+                        // They contribute nothing to coverage or to the stencil.
+                        // Skipping them before the clip would be cheaper but would
+                        // make "outside the ocean footprint" and "ocean says land"
+                        // indistinguishable, which is the pair worth telling apart.
+                        bool any_geometric_overlap = false;
                         for (const int item : candidates) {
                             const IntVect remora_ij = search.itemIndex(item);
                             const int src_i = remora_ij[0];
                             const int src_j = remora_ij[1];
-                            if (remora_wet(src_i, src_j, 0) <= Real(0.5)) { continue; }
 
                             const Vector<Point2D> remora_poly =
                                 ExtractCellQuadFromCoords(src_i, src_j,
@@ -2298,14 +2324,21 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                                                           Array4<const Real>(remora_node, 1));
                             const Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
                             const Real intersect_area = PolygonArea(clipped_poly);
+                            if (intersect_area <= 0.0) { continue; }
 
-                            if (intersect_area > 0.0) {
-                                covered_frac += intersect_area / dst_area;
-                                overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
-                            }
+                            any_geometric_overlap = true;
+                            if (remora_wet(src_i, src_j, 0) <= Real(0.5)) { continue; }
+
+                            covered_frac += intersect_area / dst_area;
+                            overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
                         }
 
-                        if (overlaps.empty()) { continue; }
+                        if (overlaps.empty()) {
+                            if (any_geometric_overlap) { ++uncovered_masked; }
+                            else                       { ++uncovered_outside; }
+                            continue;
+                        }
+                        if (covered_frac < m_remap_min_coverage_frac) { ++uncovered_thin; }
 
                         // Coverage for this destination cell, thresholded on area
                         // rather than on whether any overlap exists at all.
@@ -2410,10 +2443,12 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                         // fraction; after normalization their sum is one and cannot
                         // drive the uncovered-cell threshold.
                         Real covered_frac = 0.0;
+                        // See the spherical branch: dry cells are clipped too,
+                        // solely to distinguish "the ocean does not reach here"
+                        // from "the ocean calls this land".
+                        bool any_geometric_overlap = false;
                         for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
                             for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
-                                if (!remora_rho_is_wet(src_i, src_j)) { continue; }
-
                                 RealBox remora_cell_bounds = CellBoundsFromGeom(m_geom_ocn, src_i, src_j);
                                 Vector<Point2D> remora_poly = {
                                     {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
@@ -2424,15 +2459,22 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
 
                                 Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
                                 Real intersect_area = PolygonArea(clipped_poly);
+                                if (intersect_area <= 0.0) { continue; }
 
-                                if (intersect_area > 0.0) {
-                                    covered_frac += intersect_area / dst_area;
-                                    overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
-                                }
+                                any_geometric_overlap = true;
+                                if (!remora_rho_is_wet(src_i, src_j)) { continue; }
+
+                                covered_frac += intersect_area / dst_area;
+                                overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
                             }
                         }
 
-                        if (overlaps.empty()) { continue; }
+                        if (overlaps.empty()) {
+                            if (any_geometric_overlap) { ++uncovered_masked; }
+                            else                       { ++uncovered_outside; }
+                            continue;
+                        }
+                        if (covered_frac < m_remap_min_coverage_frac) { ++uncovered_thin; }
 
                         // Coverage for this destination cell, thresholded on area
                         // rather than on whether any overlap exists at all.
@@ -2480,6 +2522,21 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         }
 
         NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf, nullptr, "O2A SST");
+
+        ParallelDescriptor::ReduceLongSum(uncovered_outside);
+        ParallelDescriptor::ReduceLongSum(uncovered_masked);
+        ParallelDescriptor::ReduceLongSum(uncovered_thin);
+
+        // Reported unconditionally: an uncovered cell is invisible in the SST
+        // field, because ERF simply keeps its own value there, so the only way a
+        // mask disagreement surfaces is if the split is written down. A large
+        // masked count against a short coastline is the signature of a grid
+        // misalignment or a stale ocean mask rather than of correct withholding.
+        amrex::Print() << "[driver] O2A coverage: uncovered "
+                       << uncovered_outside << " outside ocean footprint, "
+                       << uncovered_masked  << " source-masked, "
+                       << uncovered_thin    << " below coverage threshold ("
+                       << m_remap_min_coverage_frac << ")\n";
 
         ParallelDescriptor::ReduceIntMax(max_stencil_used);
         ParallelDescriptor::ReduceLongSum(dropped_overlaps);

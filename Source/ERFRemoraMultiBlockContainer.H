@@ -237,8 +237,7 @@ private:
     // there. Reused every remap apply, not just at weight-build time.
     std::unique_ptr<RemapStagingPlan> m_staging_plan;
     // REMORA psi-corner coordinates and rho wet mask staged onto the ERF layout
-    // for spherical ocean->atmosphere SST remapping. The weight loop is built
-    // separately from this staging infrastructure.
+    // for spherical ocean->atmosphere SST remapping.
     std::unique_ptr<REMORAStagingPlan> m_remora_staging_plan;
 
     // Atmosphere -> ocean cache slab vector.

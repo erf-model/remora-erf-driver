@@ -2235,138 +2235,245 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         m_index_o2a_mf->setVal(-1);
         m_valid_o2a_mf->setVal(0);
 
-        if (m_remap_spherical) {
-            amrex::Print() << "[driver] WARNING BuildOceanToAtmosWeights: spherical O2A SST remap "
-                           << "is not implemented; leaving coverage empty so ERF keeps its own SST.\n";
-            return;
-        }
-
-        // Cartesian O2A still uses a replicated rho-mask lookup because it has
-        // no staged REMORA source layout. Spherical O2A uses
-        // m_remora_staging_plan->wet_mf instead once its weight loop is enabled.
         int max_stencil_used = 0;
         amrex::Long dropped_overlaps = 0;
+        Vector<int> candidates;
         Vector<std::pair<Real,IntVect>> overlaps;
 
-        const MultiFab* remora_mskr = nullptr;
-        if (m_remora != nullptr) {
-            REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
-        }
+        // O2A deliberately does not donor-fill uncovered ERF cells. They keep
+        // ERF's own wrflowinp SST, which is better than a distant ocean donor.
+        if (m_remap_spherical) {
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                m_erf_node_coords != nullptr,
+                "BuildOceanToAtmosWeights spherical path requires ERF corner coordinates.");
+            AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                m_remora_staging_plan != nullptr &&
+                m_remora_staging_plan->node_mf != nullptr &&
+                m_remora_staging_plan->wet_mf != nullptr,
+                "BuildOceanToAtmosWeights spherical path requires the staged REMORA corner mesh and wet mask.");
 
-        const Box remora_cell_domain = m_geom_ocn.Domain();
-        const bool use_remora_mskr =
-            remora_mskr != nullptr &&
-            remora_mskr->boxArray().ixType() == m_ba_ocn.ixType();
-        const Vector<Real> remora_mskr_lookup =
-            use_remora_mskr ? BuildReplicatedMaskLookup(*remora_mskr, remora_cell_domain)
-                            : Vector<Real>{};
-        auto remora_rho_is_wet = [&] (int src_i, int src_j) -> bool {
-            if (!use_remora_mskr) { return true; }
-            const int src_k = remora_cell_domain.smallEnd(2);
-            return remora_mskr_lookup[FlatIndexInBox(remora_cell_domain, src_i, src_j, src_k)]
-                   > Real(0.5);
-        };
+            for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
+                Box bx = mfi.validbox();
+                auto weight_arr = m_weight_o2a_mf->array(mfi);
+                auto index_arr = m_index_o2a_mf->array(mfi);
+                auto valid_arr = m_valid_o2a_mf->array(mfi);
+                auto const& erf_node = m_erf_node_coords->const_array(mfi);
+                auto const& remora_node = m_remora_staging_plan->node_mf->const_array(mfi);
+                auto const& remora_wet = m_remora_staging_plan->wet_mf->const_array(mfi);
+                const Box remora_staged_box = m_remora_staging_plan->wet_mf->boxArray()[mfi.index()];
 
-        for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
-            Box bx = mfi.validbox();
-            auto weight_arr = m_weight_o2a_mf->array(mfi);
-            auto index_arr = m_index_o2a_mf->array(mfi);
-            auto valid_arr = m_valid_o2a_mf->array(mfi);
+                SourceSearchGrid search;
+                search.define(remora_staged_box,
+                              Array4<const Real>(remora_node, 0),
+                              Array4<const Real>(remora_node, 1),
+                              m_remap_bin_cells);
 
-            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
-                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
-                    RealBox erf_bounds = CellBoundsFromGeom(m_geom, i, j);
-                    Vector<Point2D> erf_poly = {
-                        {erf_bounds.lo(0), erf_bounds.lo(1)},
-                        {erf_bounds.hi(0), erf_bounds.lo(1)},
-                        {erf_bounds.hi(0), erf_bounds.hi(1)},
-                        {erf_bounds.lo(0), erf_bounds.hi(1)}
-                    };
+                for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                    for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                        const Vector<Point2D> erf_poly =
+                            ExtractCellQuadFromCoords(i, j,
+                                                      Array4<const Real>(erf_node, 0),
+                                                      Array4<const Real>(erf_node, 1));
+                        const Real dst_area = PolygonArea(erf_poly);
+                        if (dst_area <= 0.0) continue;
 
-                    Real dst_area = PolygonArea(erf_poly);
-                    if (dst_area <= 0.0) continue;
+                        const PlanarBBox erf_bbox = BBoxOfPolygon(erf_poly);
+                        search.query(erf_bbox, candidates);
 
-                    RealBox erf_bbox = erf_bounds;
-                    Box remora_candidate_box = m_geom_ocn.Domain();
-                    int ocn_i_lo = std::floor((erf_bbox.lo(0) - m_ocn_rb.lo(0)) / (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) * m_ocn_n_cell[0]);
-                    int ocn_i_hi = std::ceil((erf_bbox.hi(0) - m_ocn_rb.lo(0)) / (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) * m_ocn_n_cell[0]);
-                    int ocn_j_lo = std::floor((erf_bbox.lo(1) - m_ocn_rb.lo(1)) / (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) * m_ocn_n_cell[1]);
-                    int ocn_j_hi = std::ceil((erf_bbox.hi(1) - m_ocn_rb.lo(1)) / (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) * m_ocn_n_cell[1]);
+                        overlaps.clear();
+                        // Fraction of this ERF cell covered by wet REMORA rho cells.
+                        // The raw intersect_area/dst_area weights are the destination
+                        // fraction; after normalization their sum is one and cannot
+                        // drive the uncovered-cell threshold.
+                        Real covered_frac = 0.0;
+                        for (const int item : candidates) {
+                            const IntVect remora_ij = search.itemIndex(item);
+                            const int src_i = remora_ij[0];
+                            const int src_j = remora_ij[1];
+                            if (remora_wet(src_i, src_j, 0) <= Real(0.5)) { continue; }
 
-                    ocn_i_lo = std::max(remora_candidate_box.smallEnd(0), ocn_i_lo - 1);
-                    ocn_i_hi = std::min(remora_candidate_box.bigEnd(0), ocn_i_hi + 1);
-                    ocn_j_lo = std::max(remora_candidate_box.smallEnd(1), ocn_j_lo - 1);
-                    ocn_j_hi = std::min(remora_candidate_box.bigEnd(1), ocn_j_hi + 1);
-
-                    overlaps.clear();
-                    // Fraction of this ERF cell covered by wet REMORA rho cells.
-                    // The raw intersect_area/dst_area weights are the destination
-                    // fraction; after normalization their sum is one and cannot
-                    // drive the uncovered-cell threshold.
-                    Real covered_frac = 0.0;
-                    for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
-                        for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
-                            if (!remora_rho_is_wet(src_i, src_j)) { continue; }
-
-                            RealBox remora_cell_bounds = CellBoundsFromGeom(m_geom_ocn, src_i, src_j);
-                            Vector<Point2D> remora_poly = {
-                                {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
-                                {remora_cell_bounds.hi(0), remora_cell_bounds.lo(1)},
-                                {remora_cell_bounds.hi(0), remora_cell_bounds.hi(1)},
-                                {remora_cell_bounds.lo(0), remora_cell_bounds.hi(1)}
-                            };
-
-                            Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
-                            Real intersect_area = PolygonArea(clipped_poly);
+                            const Vector<Point2D> remora_poly =
+                                ExtractCellQuadFromCoords(src_i, src_j,
+                                                          Array4<const Real>(remora_node, 0),
+                                                          Array4<const Real>(remora_node, 1));
+                            const Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
+                            const Real intersect_area = PolygonArea(clipped_poly);
 
                             if (intersect_area > 0.0) {
                                 covered_frac += intersect_area / dst_area;
                                 overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
                             }
                         }
+
+                        if (overlaps.empty()) { continue; }
+
+                        // Coverage for this destination cell, thresholded on area
+                        // rather than on whether any overlap exists at all.
+                        //
+                        // A sliver overlap is worse than no overlap. The weights are
+                        // normalized below before REMORA's raw weighted sum, but
+                        // normalization cannot turn 1e-6 destination coverage into
+                        // a trustworthy ocean answer. Treating it as uncovered keeps
+                        // ERF's own lower-boundary SST.
+                        // Thresholds of this kind are standard: CESM drops mapping
+                        // below a destination fraction of 0.001, OASIS/CERFACS at
+                        // 1/1000.
+                        //
+                        // Wet REMORA coverage only: dry rho cells do not contribute
+                        // to coverage or to the SST stencil. ERF's lmask is still
+                        // applied on the destination side after the remap.
+                        // The overlap count is tested as well as the fraction: with
+                        // remap_min_coverage_frac set to 0, a cell no ocean cell
+                        // touches has covered_frac == 0, and 0 >= 0 would otherwise
+                        // report every uncovered cell as covered.
+                        valid_arr(i, j, 0) =
+                            (!overlaps.empty() && covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
+
+                        max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
+                        if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
+                            dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
+                            std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
+                                              overlaps.end(),
+                                              [] (const std::pair<Real,IntVect>& a,
+                                                  const std::pair<Real,IntVect>& b) {
+                                                  return a.first > b.first;
+                                              });
+                            overlaps.resize(MAX_STENCIL_SIZE);
+                        }
+
+                        for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
+                            weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
+                            index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
+                            index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
+                            index_arr(i, j, 0, m * 3 + 2) = 0;
+                        }
                     }
+                }
+            }
+        } else {
+            // Cartesian O2A still uses a replicated rho-mask lookup because it has
+            // no staged REMORA source layout. Spherical O2A consumes
+            // m_remora_staging_plan->wet_mf instead.
+            const MultiFab* remora_mskr = nullptr;
+            if (m_remora != nullptr) {
+                REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
+            }
 
-                    if (overlaps.empty()) { continue; }
+            const Box remora_cell_domain = m_geom_ocn.Domain();
+            const bool use_remora_mskr =
+                remora_mskr != nullptr &&
+                remora_mskr->boxArray().ixType() == m_ba_ocn.ixType();
+            const Vector<Real> remora_mskr_lookup =
+                use_remora_mskr ? BuildReplicatedMaskLookup(*remora_mskr, remora_cell_domain)
+                                : Vector<Real>{};
+            auto remora_rho_is_wet = [&] (int src_i, int src_j) -> bool {
+                if (!use_remora_mskr) { return true; }
+                const int src_k = remora_cell_domain.smallEnd(2);
+                return remora_mskr_lookup[FlatIndexInBox(remora_cell_domain, src_i, src_j, src_k)]
+                       > Real(0.5);
+            };
 
-                    // Coverage for this destination cell, thresholded on area
-                    // rather than on whether any overlap exists at all.
-                    //
-                    // A sliver overlap is worse than no overlap. The weights are
-                    // normalized below before REMORA's raw weighted sum, but
-                    // normalization cannot turn 1e-6 destination coverage into
-                    // a trustworthy ocean answer. Treating it as uncovered keeps
-                    // ERF's own lower-boundary SST.
-                    // Thresholds of this kind are standard: CESM drops mapping
-                    // below a destination fraction of 0.001, OASIS/CERFACS at
-                    // 1/1000.
-                    //
-                    // Wet REMORA coverage only: dry rho cells do not contribute
-                    // to coverage or to the SST stencil. ERF's lmask is still
-                    // applied on the destination side after the remap.
-                    // The overlap count is tested as well as the fraction: with
-                    // remap_min_coverage_frac set to 0, a cell no ocean cell
-                    // touches has covered_frac == 0, and 0 >= 0 would otherwise
-                    // report every uncovered cell as covered.
-                    valid_arr(i, j, 0) =
-                        (!overlaps.empty() && covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
+            for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
+                Box bx = mfi.validbox();
+                auto weight_arr = m_weight_o2a_mf->array(mfi);
+                auto index_arr = m_index_o2a_mf->array(mfi);
+                auto valid_arr = m_valid_o2a_mf->array(mfi);
 
-                    max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
-                    if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
-                        dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
-                        std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
-                                          overlaps.end(),
-                                          [] (const std::pair<Real,IntVect>& a,
-                                              const std::pair<Real,IntVect>& b) {
-                                              return a.first > b.first;
-                                          });
-                        overlaps.resize(MAX_STENCIL_SIZE);
-                    }
+                for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                    for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                        RealBox erf_bounds = CellBoundsFromGeom(m_geom, i, j);
+                        Vector<Point2D> erf_poly = {
+                            {erf_bounds.lo(0), erf_bounds.lo(1)},
+                            {erf_bounds.hi(0), erf_bounds.lo(1)},
+                            {erf_bounds.hi(0), erf_bounds.hi(1)},
+                            {erf_bounds.lo(0), erf_bounds.hi(1)}
+                        };
 
-                    for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
-                        weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
-                        index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
-                        index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
-                        index_arr(i, j, 0, m * 3 + 2) = 0;
+                        Real dst_area = PolygonArea(erf_poly);
+                        if (dst_area <= 0.0) continue;
+
+                        RealBox erf_bbox = erf_bounds;
+                        Box remora_candidate_box = m_geom_ocn.Domain();
+                        int ocn_i_lo = std::floor((erf_bbox.lo(0) - m_ocn_rb.lo(0)) / (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) * m_ocn_n_cell[0]);
+                        int ocn_i_hi = std::ceil((erf_bbox.hi(0) - m_ocn_rb.lo(0)) / (m_ocn_rb.hi(0) - m_ocn_rb.lo(0)) * m_ocn_n_cell[0]);
+                        int ocn_j_lo = std::floor((erf_bbox.lo(1) - m_ocn_rb.lo(1)) / (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) * m_ocn_n_cell[1]);
+                        int ocn_j_hi = std::ceil((erf_bbox.hi(1) - m_ocn_rb.lo(1)) / (m_ocn_rb.hi(1) - m_ocn_rb.lo(1)) * m_ocn_n_cell[1]);
+
+                        ocn_i_lo = std::max(remora_candidate_box.smallEnd(0), ocn_i_lo - 1);
+                        ocn_i_hi = std::min(remora_candidate_box.bigEnd(0), ocn_i_hi + 1);
+                        ocn_j_lo = std::max(remora_candidate_box.smallEnd(1), ocn_j_lo - 1);
+                        ocn_j_hi = std::min(remora_candidate_box.bigEnd(1), ocn_j_hi + 1);
+
+                        overlaps.clear();
+                        // Fraction of this ERF cell covered by wet REMORA rho cells.
+                        // The raw intersect_area/dst_area weights are the destination
+                        // fraction; after normalization their sum is one and cannot
+                        // drive the uncovered-cell threshold.
+                        Real covered_frac = 0.0;
+                        for (int src_j = ocn_j_lo; src_j <= ocn_j_hi; ++src_j) {
+                            for (int src_i = ocn_i_lo; src_i <= ocn_i_hi; ++src_i) {
+                                if (!remora_rho_is_wet(src_i, src_j)) { continue; }
+
+                                RealBox remora_cell_bounds = CellBoundsFromGeom(m_geom_ocn, src_i, src_j);
+                                Vector<Point2D> remora_poly = {
+                                    {remora_cell_bounds.lo(0), remora_cell_bounds.lo(1)},
+                                    {remora_cell_bounds.hi(0), remora_cell_bounds.lo(1)},
+                                    {remora_cell_bounds.hi(0), remora_cell_bounds.hi(1)},
+                                    {remora_cell_bounds.lo(0), remora_cell_bounds.hi(1)}
+                                };
+
+                                Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
+                                Real intersect_area = PolygonArea(clipped_poly);
+
+                                if (intersect_area > 0.0) {
+                                    covered_frac += intersect_area / dst_area;
+                                    overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
+                                }
+                            }
+                        }
+
+                        if (overlaps.empty()) { continue; }
+
+                        // Coverage for this destination cell, thresholded on area
+                        // rather than on whether any overlap exists at all.
+                        //
+                        // A sliver overlap is worse than no overlap. The weights are
+                        // normalized below before REMORA's raw weighted sum, but
+                        // normalization cannot turn 1e-6 destination coverage into
+                        // a trustworthy ocean answer. Treating it as uncovered keeps
+                        // ERF's own lower-boundary SST.
+                        // Thresholds of this kind are standard: CESM drops mapping
+                        // below a destination fraction of 0.001, OASIS/CERFACS at
+                        // 1/1000.
+                        //
+                        // Wet REMORA coverage only: dry rho cells do not contribute
+                        // to coverage or to the SST stencil. ERF's lmask is still
+                        // applied on the destination side after the remap.
+                        // The overlap count is tested as well as the fraction: with
+                        // remap_min_coverage_frac set to 0, a cell no ocean cell
+                        // touches has covered_frac == 0, and 0 >= 0 would otherwise
+                        // report every uncovered cell as covered.
+                        valid_arr(i, j, 0) =
+                            (!overlaps.empty() && covered_frac >= m_remap_min_coverage_frac) ? 1 : 0;
+
+                        max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
+                        if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
+                            dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
+                            std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
+                                              overlaps.end(),
+                                              [] (const std::pair<Real,IntVect>& a,
+                                                  const std::pair<Real,IntVect>& b) {
+                                                  return a.first > b.first;
+                                              });
+                            overlaps.resize(MAX_STENCIL_SIZE);
+                        }
+
+                        for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
+                            weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
+                            index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
+                            index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
+                            index_arr(i, j, 0, m * 3 + 2) = 0;
+                        }
                     }
                 }
             }

@@ -29,15 +29,22 @@ NRANKS="${NRANKS:-16}"
 NNODES="${NNODES:-1}"
 LOGDIR="${LOGDIR:-.}"
 
+# Overrides applied to the production cases only.
+#
 # FPE trapping is disabled because the coupled OCCAMS case currently raises
 # invalid operations during startup. This is a workaround, not a setting to
 # keep: if the run is clean, drop it and let the trap catch real problems.
 # Note the parameter is amrex.fpe_trap_invalid -- amrex.trap_fpe_invalid is not
 # a real AMReX parameter and is silently ignored.
-FPE_ARGS=(amrex.fpe_trap_invalid=0)
-
-# A fixed ocean timestep keeps the three cases comparable.
-DT_ARGS=(remora.fixed_dt=10)
+#
+# The fixed ocean timestep keeps the production cases comparable.
+#
+# These are NOT applied to inputs_OCCAMS_smoke. AMReX reads the inputs file
+# first and then the command line (ppinit in AMReX_ParmParse.cpp), so command
+# line entries win -- and the smoke deck deliberately sets
+# amrex.fpe_trap_invalid = 1 and remora.fixed_dt = 20.0 to trap FPEs and to get
+# two ERF steps per ocean step. Overriding either one defeats the deck.
+CASE_ARGS=(amrex.fpe_trap_invalid=0 remora.fixed_dt=10)
 
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -96,14 +103,22 @@ for case_name in "${CASES[@]}"; do
         exit 1
     fi
 
+    # The smoke deck is self-contained and its settings are the point of it,
+    # so it runs with no overrides.
+    args=()
+    if [[ "${case_name}" != "smoke" ]]; then
+        args=("${CASE_ARGS[@]}")
+    fi
+
     echo "========================================================"
     echo "case ${case_name}: ${deck} -> ${log}"
+    echo "overrides: ${args[*]:-none} ${EXTRA_ARGS}"
     echo "========================================================"
 
     # Each case gets its own log. Reusing one filename across cases silently
     # discards the earlier run.
     if srun -N "${NNODES}" -n "${NRANKS}" "${DRIVER}" "${deck}" \
-            "${FPE_ARGS[@]}" "${DT_ARGS[@]}" ${EXTRA_ARGS} 2>&1 | tee "${log}"; then
+            ${args[@]+"${args[@]}"} ${EXTRA_ARGS} 2>&1 | tee "${log}"; then
         summarize "${log}"
     else
         echo "case ${case_name} FAILED; see ${log}" >&2

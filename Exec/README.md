@@ -106,11 +106,43 @@ cd Exec/OCCAMS
 srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_flux
 ```
 
-#### OCCAMS notes, common to all three
+### `OCCAMS/inputs_OCCAMS_smoke`
+
+Purpose:
+
+- Fast guard on everything expensive to reach: ERF WRF-init, REMORA NetCDF init
+  (grid, masks, boundaries, forcings), spherical remap weight construction, the
+  ERF-to-REMORA staging copy, and one full pack/apply exchange. One ocean step,
+  two ERF steps — minutes rather than a queue slot, so it can be rerun after
+  every pull.
+
+Run:
+
+```bash
+cd Exec/OCCAMS
+srun -N 1 -n 16 ../../build_ncutil/erf-remora-driver inputs_OCCAMS_smoke
+```
+
+Unlike the production decks it sets `amrex.fpe_trap_invalid = 1`, so floating
+point problems abort instead of propagating. It also pins
+`driver.remap_frame = spherical` and `driver.remap_v = 1`, and writes no
+plotfiles or checkpoints — the coupling diagnostics are the pass/fail signal.
+
+What it does not do: two ERF steps are not enough to expose dynamical
+instability, so a blowup that appears at step 5 of a production run will not
+show up here. Use `inputs_OCCAMS_oneway` for that.
+
+Status: committed but not yet run. Treat the first execution as a test of the
+deck as much as of the code.
+
+---
+
+#### OCCAMS notes, common to all four
 
 Deck naming: the two-way decks are `inputs_OCCAMS_state` and
 `inputs_OCCAMS_flux`, distinguished by contract. There is no
-`inputs_OCCAMS_twoway`.
+`inputs_OCCAMS_twoway`. `inputs_OCCAMS_smoke` and `inputs_OCCAMS_oneway` are
+both `ERFtoREMORA`.
 
 External data: these decks reference absolute NERSC paths for `wrfinput_d01`,
 `wrfbdy_d01`, the REMORA initial/grid/boundary files, and the forcing file.

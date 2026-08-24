@@ -44,6 +44,7 @@ WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
 // (destination) layout. Defined in the implementation file so this header stays
 // free of AMReX_NonLocalBC.H.
 struct RemapStagingPlan;
+struct REMORAStagingPlan;
 
 /**
  * ERFRemoraMultiBlockContainer is the driver-owned "conductor" object.
@@ -166,6 +167,9 @@ private:
     // Geographic overlap -> per-REMORA-box ERF index regions -> cached
     // NonLocalBC comm plan -> staged copies on the REMORA layout.
     void BuildERFStagingPlan();
+    // Geographic overlap -> per-ERF-box REMORA index regions -> cached
+    // NonLocalBC comm plan -> staged copies on the ERF layout.
+    void BuildREMORAStagingPlan();
 
     void BuildAtmosToOceanWeights();
     void BuildOceanToAtmosWeights();
@@ -232,6 +236,10 @@ private:
     // Same data staged onto the REMORA layout, with the comm plan that put it
     // there. Reused every remap apply, not just at weight-build time.
     std::unique_ptr<RemapStagingPlan> m_staging_plan;
+    // REMORA psi-corner coordinates and rho wet mask staged onto the ERF layout
+    // for spherical ocean->atmosphere SST remapping. The weight loop is built
+    // separately from this staging infrastructure.
+    std::unique_ptr<REMORAStagingPlan> m_remora_staging_plan;
 
     // Atmosphere -> ocean cache slab vector.
     // TODO(initial-temporal-interpolation): add old/new temporal copies for interpolation

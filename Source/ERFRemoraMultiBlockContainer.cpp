@@ -348,6 +348,35 @@ struct RemapStagingPlan
     int empty_boxes = 0;
 };
 
+// Staging plan for REMORA-to-ERF SST data routing. Each ERF box gets the
+// REMORA rho index region its geographic footprint needs, and the REMORA
+// psi-point lon/lat corners plus rho wet mask are cached on the ERF layout.
+//
+// This is deliberately separate from RemapStagingPlan so the existing A2O
+// staging contract keeps its ERF-source assumptions unchanged.
+struct REMORAStagingPlan
+{
+    // REMORA regions per ERF box, in REMORA index space.
+    amrex::BoxArray node_ba;   // nodal: psi-point corner coordinates
+    amrex::BoxArray cell_ba;   // cell-centered: rho wet mask and SST source
+
+    // Staged copies, living on the ERF DistributionMapping.
+    std::unique_ptr<amrex::MultiFab> node_mf;
+    std::unique_ptr<amrex::MultiFab> wet_mf;
+
+    std::unique_ptr<amrex::NonLocalBC::MultiBlockCommMetaData> node_cmd;
+    std::unique_ptr<amrex::NonLocalBC::MultiBlockCommMetaData> cell_cmd;
+
+    amrex::Box remora_node_domain;
+    amrex::Box remora_cell_domain;
+
+    // Diagnostics
+    long long staged_cells = 0;
+    long long remora_domain_cells = 0;
+    int max_box_cells = 0;
+    int empty_boxes = 0;
+};
+
 ERFRemoraMultiBlockContainer::~ERFRemoraMultiBlockContainer()
 {
     if (m_erf != nullptr) {
@@ -1275,6 +1304,9 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     if (m_remap_spherical) {
         BuildERFCornerMesh();
         BuildERFStagingPlan();
+        if (m_use_two_way_coupling) {
+            BuildREMORAStagingPlan();
+        }
     }
 
     BuildAtmosToOceanWeights();
@@ -1650,6 +1682,175 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
                        << " (erf domain " << plan.erf_domain_cells << ")"
                        << " max_box_cells=" << plan.max_box_cells
                        << " remora_boxes_without_overlap=" << plan.empty_boxes << "\n";
+    }
+}
+
+// Route the REMORA psi corner mesh and rho wet mask onto the ERF layout.
+//
+// This mirrors BuildERFStagingPlan() with the source and destination reversed:
+// each ERF box gets told which REMORA rho-cell index region its geographic
+// footprint needs, and amrex::NonLocalBC moves that region onto the ERF
+// DistributionMapping. O2A is SST-only today, so there is no weight-family loop
+// and only the rho mask is staged.
+void
+ERFRemoraMultiBlockContainer::BuildREMORAStagingPlan()
+{
+    using namespace amrex;
+
+    m_remora_staging_plan = std::make_unique<REMORAStagingPlan>();
+    REMORAStagingPlan& plan = *m_remora_staging_plan;
+
+    const MultiFab* remora_lon = nullptr;
+    const MultiFab* remora_lat = nullptr;
+    REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon, &remora_lat);
+    AMREX_ALWAYS_ASSERT(remora_lon != nullptr && remora_lat != nullptr);
+
+    const MultiFab* remora_mskr = nullptr;
+    REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        remora_mskr != nullptr,
+        "BuildREMORAStagingPlan requires REMORA's rho wet mask for spherical O2A SST remap.");
+
+    const BoxArray& remora_cell_ba = remora_mskr->boxArray();
+    const BoxArray remora_node_ba = convert(remora_cell_ba, IntVect(1,1,0));
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        remora_lon->boxArray() == remora_node_ba,
+        "BuildREMORAStagingPlan requires REMORA psi coordinates to be nodal rho boxes.");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        remora_lat->boxArray() == remora_lon->boxArray(),
+        "BuildREMORAStagingPlan requires REMORA lon_psi and lat_psi to share box indexing.");
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        remora_lat->DistributionMap().ProcessorMap() == remora_lon->DistributionMap().ProcessorMap(),
+        "BuildREMORAStagingPlan requires REMORA lon_psi and lat_psi to share a DistributionMapping.");
+
+    const MultiFab& erf_node = *m_erf_node_coords;
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_weight_o2a_mf != nullptr,
+        "BuildREMORAStagingPlan requires the ERF-layout O2A SST weights to be allocated.");
+    const BoxArray& erf_cell_ba = m_weight_o2a_mf->boxArray();
+    const DistributionMapping& erf_dm = m_weight_o2a_mf->DistributionMap();
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        erf_node.boxArray() == convert(erf_cell_ba, IntVect(1,1,0)),
+        "BuildREMORAStagingPlan requires ERF corner coordinates to be nodal O2A weight boxes.");
+
+    plan.remora_cell_domain = remora_cell_ba.minimalBox();
+    plan.remora_node_domain = remora_lon->boxArray().minimalBox();
+    plan.remora_domain_cells = static_cast<long long>(plan.remora_cell_domain.numPts());
+
+    // REMORA box bounds in the shared frame, reduced so every rank sees all
+    // source boxes. REMORA lon_psi/lat_psi are already psi-point cell corners,
+    // so unlike the ERF mesh construction there is no averaging step here.
+    const int n_remora_boxes = static_cast<int>(remora_cell_ba.size());
+    Vector<Real> remora_lo(2 * n_remora_boxes,  std::numeric_limits<Real>::max());
+    Vector<Real> remora_hi(2 * n_remora_boxes, -std::numeric_limits<Real>::max());
+    for (MFIter mfi(*remora_lon); mfi.isValid(); ++mfi) {
+        const int b = mfi.index();
+        const Box nbx = mfi.validbox();
+        auto const& lon = remora_lon->const_array(mfi);
+        auto const& lat = remora_lat->const_array(mfi);
+        PlanarBBox bb;
+        for (int j = nbx.smallEnd(1); j <= nbx.bigEnd(1); ++j) {
+            for (int i = nbx.smallEnd(0); i <= nbx.bigEnd(0); ++i) {
+                bb.include(lon(i,j,0), lat(i,j,0));
+            }
+        }
+        remora_lo[2*b  ] = bb.xlo; remora_hi[2*b  ] = bb.xhi;
+        remora_lo[2*b+1] = bb.ylo; remora_hi[2*b+1] = bb.yhi;
+    }
+    ParallelDescriptor::ReduceRealMin(remora_lo.dataPtr(), remora_lo.size());
+    ParallelDescriptor::ReduceRealMax(remora_hi.dataPtr(), remora_hi.size());
+
+    // ERF box bounds, same treatment. The destination is SST on ERF cells, so
+    // the cell footprint from the nodal corner mesh is sufficient.
+    const int n_erf_boxes = static_cast<int>(erf_cell_ba.size());
+    Vector<Real> erf_lo(2 * n_erf_boxes,  std::numeric_limits<Real>::max());
+    Vector<Real> erf_hi(2 * n_erf_boxes, -std::numeric_limits<Real>::max());
+    for (MFIter mfi(erf_node); mfi.isValid(); ++mfi) {
+        const int b = mfi.index();
+        const Box nbx = mfi.validbox();
+        auto const& node = erf_node.const_array(mfi);
+        PlanarBBox bb;
+        for (int j = nbx.smallEnd(1); j <= nbx.bigEnd(1); ++j) {
+            for (int i = nbx.smallEnd(0); i <= nbx.bigEnd(0); ++i) {
+                bb.include(node(i,j,0,0), node(i,j,0,1));
+            }
+        }
+        erf_lo[2*b  ] = bb.xlo; erf_hi[2*b  ] = bb.xhi;
+        erf_lo[2*b+1] = bb.ylo; erf_hi[2*b+1] = bb.yhi;
+    }
+    ParallelDescriptor::ReduceRealMin(erf_lo.dataPtr(), erf_lo.size());
+    ParallelDescriptor::ReduceRealMax(erf_hi.dataPtr(), erf_hi.size());
+
+    // Every rank now derives the same staging BoxArray.
+    BoxList cell_bl, node_bl;
+    for (int d = 0; d < n_erf_boxes; ++d) {
+        PlanarBBox erf_bb;
+        erf_bb.xlo = erf_lo[2*d  ]; erf_bb.xhi = erf_hi[2*d  ];
+        erf_bb.ylo = erf_lo[2*d+1]; erf_bb.yhi = erf_hi[2*d+1];
+
+        Box need;
+        for (int s = 0; s < n_remora_boxes; ++s) {
+            PlanarBBox remora_bb;
+            remora_bb.xlo = remora_lo[2*s  ]; remora_bb.xhi = remora_hi[2*s  ];
+            remora_bb.ylo = remora_lo[2*s+1]; remora_bb.yhi = remora_hi[2*s+1];
+            if (!erf_bb.ok() || !remora_bb.ok() || !erf_bb.intersects(remora_bb)) { continue; }
+            need = need.ok() ? minBox(need, remora_cell_ba[s]) : remora_cell_ba[s];
+        }
+
+        if (!need.ok()) {
+            // No geographic overlap for this ERF box. A BoxArray cannot hold an
+            // empty box, so park a 1-cell placeholder inside the REMORA domain;
+            // the later O2A weight loop will leave coverage empty for it.
+            ++plan.empty_boxes;
+            need = Box(plan.remora_cell_domain.smallEnd(), plan.remora_cell_domain.smallEnd());
+        } else {
+            need &= plan.remora_cell_domain;
+        }
+
+        plan.staged_cells += static_cast<long long>(need.numPts());
+        plan.max_box_cells = std::max(plan.max_box_cells, static_cast<int>(need.numPts()));
+        cell_bl.push_back(need);
+        node_bl.push_back(convert(need, IntVect(1,1,0)));
+    }
+
+    plan.cell_ba = BoxArray(std::move(cell_bl));
+    plan.node_ba = BoxArray(std::move(node_bl));
+
+    // Staged copies live on the ERF DistributionMapping, so box index d is
+    // owned by the same rank that owns ERF/O2A box d. The staging boxes overlap
+    // where neighboring ERF boxes need overlapping REMORA regions; that is fine
+    // for a copy, since MultiBlockCommMetaData::define builds tags per
+    // destination box independently.
+    plan.node_mf = std::make_unique<MultiFab>(plan.node_ba, erf_dm, 2, 0);
+    plan.wet_mf = std::make_unique<MultiFab>(plan.cell_ba, erf_dm, 1, 0);
+    plan.node_mf->setVal(0.0);
+    plan.wet_mf->setVal(0.0);
+
+    // Identity index mapping: the staging BoxArrays are already expressed in
+    // REMORA index space, so no shift or permutation is needed.
+    NonLocalBC::MultiBlockIndexMapping dtos;
+    dtos.permutation = IntVect(AMREX_D_DECL(0,1,2));
+    dtos.sign        = IntVect(AMREX_D_DECL(1,1,1));
+    dtos.offset      = IntVect(AMREX_D_DECL(0,0,0));
+
+    plan.node_cmd = std::make_unique<NonLocalBC::MultiBlockCommMetaData>(
+        plan.node_ba, erf_dm, plan.remora_node_domain,
+        remora_lon->boxArray(), remora_lon->DistributionMap(), IntVect(0), dtos);
+    plan.cell_cmd = std::make_unique<NonLocalBC::MultiBlockCommMetaData>(
+        plan.cell_ba, erf_dm, plan.remora_cell_domain,
+        remora_cell_ba, remora_mskr->DistributionMap(), IntVect(0), dtos);
+
+    NonLocalBC::ParallelCopy(*plan.node_mf, *remora_lon, *plan.node_cmd, 0, 0, 1, dtos);
+    NonLocalBC::ParallelCopy(*plan.node_mf, *remora_lat, *plan.node_cmd, 0, 1, 1, dtos);
+    NonLocalBC::ParallelCopy(*plan.wet_mf, *remora_mskr, *plan.cell_cmd, 0, 0, 1, dtos);
+
+    if (m_remap_verbose >= 1) {
+        amrex::Print() << "[driver] O2A remap staging plan: erf_boxes=" << n_erf_boxes
+                       << " remora_boxes=" << n_remora_boxes
+                       << " staged_cells=" << plan.staged_cells
+                       << " (remora domain " << plan.remora_domain_cells << ")"
+                       << " max_box_cells=" << plan.max_box_cells
+                       << " erf_boxes_without_overlap=" << plan.empty_boxes << "\n";
     }
 }
 
@@ -2040,6 +2241,9 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
             return;
         }
 
+        // Cartesian O2A still uses a replicated rho-mask lookup because it has
+        // no staged REMORA source layout. Spherical O2A uses
+        // m_remora_staging_plan->wet_mf instead once its weight loop is enabled.
         int max_stencil_used = 0;
         amrex::Long dropped_overlaps = 0;
         Vector<std::pair<Real,IntVect>> overlaps;

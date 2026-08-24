@@ -50,26 +50,30 @@ model.
 
 ## Test Problems
 
-### CouplingReproducers
-
-`Exec/CouplingReproducers` contains small coupled test cases for checking
-driver behavior, state exchange, and two-way SST feedback:
-
-- `inputs_coupling_infrastructure_check`
-- `inputs_one_step_solver_initialization_check`
-- `inputs_ERFtoREMORA_coupleToERF`
-- `inputs_two_way_coupleToERF`
-
 ### Upwelling
 
-`Exec/Upwelling` contains the coastal Perlin/upwelling problem used validation testing as well as for MPI
-rank, OpenMP, and restart verification:
+`Exec/Upwelling` contains the coastal upwelling problem of Perlin et al. (2007),
+<https://doi.org/10.1175/JPO3104.1>, used for validation as well as for MPI
+rank, OpenMP, and restart verification. It needs no external data:
 
-- `inputs_perlin_ERF_REMORA`
-- `inputs_debug_cold_start_substep`
-- `inputs_debug_restart_substep`
-- `inputs_debug_cold_start`
-- `inputs_debug_restart`
+- `inputs_oneway` — `ERFtoREMORA`
+- `inputs_twoway` — `two_way`, with REMORA SST feeding ERF's surface layer
+
+### OCCAMS
+
+`Exec/OCCAMS` contains the real coupled domain. These decks reference absolute
+NERSC paths for their WRF and REMORA input files and are not runnable elsewhere
+without editing them:
+
+- `inputs_OCCAMS_smoke` — fast startup and exchange guard
+- `inputs_OCCAMS_oneway` — `ERFtoREMORA`
+- `inputs_OCCAMS_state` — `two_way`, state-passing contract
+- `inputs_OCCAMS_flux` — `two_way`, flux-passing contract
+
+`Exec/OCCAMS/run_occams.sh` runs them and summarizes the coupling diagnostics.
+
+See `Exec/README.md` for what each deck covers and how to read driver output,
+and `INSTALL.md` for build and verification workflows.
 
 ## Coupling Roadmap
 

@@ -7,8 +7,12 @@ git clone --recursive git@github.com:erf-model/remora-erf-driver
 cd remora-erf-driver
 cmake -S . -B build
 cmake --build build -j 8 --target erf-remora-driver
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF max_step=10
+cd Exec/Upwelling
+../../build/erf-remora-driver inputs_oneway max_step=10
 ```
+
+Run coupled decks from their own directory: they import their solver decks with
+relative `FILE =` paths.
 
 ## Prerequisites
 
@@ -202,189 +206,131 @@ cd Exec/OCCAMS
 ./run_occams.sh
 ```
 
+After a pull, the cheap check first — one ocean step and two ERF steps, minutes
+rather than a queue slot:
+
+```bash
+./run_occams.sh smoke
+```
+
+That reaches ERF WRF-init, REMORA NetCDF init, spherical remap weight
+construction and one full exchange, with FPE trapping left on. It is not long
+enough to expose dynamical instability, so it guards startup and coupling, not
+the solution. Run `oneway` for that.
+
 See `Exec/OCCAMS/run_occams.sh` for per-case runs and rank overrides, and
 `Exec/README.md` for how to read the coupling diagnostics it prints.
 
 ---
 
-## Ordered Reproducer Set
+## Reproducer Decks
 
-### Reproducer A — Coupling infrastructure control (`driver.synthetic_only = 1`)
+The `driver.synthetic_only` control and the `Exec/CouplingReproducers` decks it
+drove have been removed, as has `OceanSurf` — ERF now aborts on
+`erf.land_surface_model = OceanSurf` and the coupled SST path is selected with
+`erf.use_coupled_sst`, which the driver sets for you.
 
-```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_coupling_infrastructure_check
-```
+The decks that exist:
 
-Scientific intent: verify coupling cadence and subcycling bookkeeping; verify
-cache slab ownership and update path without solver-physics confounders.
+| Deck | Direction | Notes |
+|---|---|---|
+| `Exec/Upwelling/inputs_oneway` | `ERFtoREMORA` | Idealized; needs no external data. Run this first on a new build. |
+| `Exec/Upwelling/inputs_twoway` | `two_way` | REMORA SST into ERF's surface layer. |
+| `Exec/OCCAMS/inputs_OCCAMS_smoke` | `ERFtoREMORA` | Fast startup and exchange guard; minutes, not a queue slot. |
+| `Exec/OCCAMS/inputs_OCCAMS_oneway` | `ERFtoREMORA` | Real OCCAMS domain. |
+| `Exec/OCCAMS/inputs_OCCAMS_state` | `two_way` | State-passing contract. |
+| `Exec/OCCAMS/inputs_OCCAMS_flux` | `two_way` | Flux-passing contract. |
 
-### Reproducer B — One-step standalone solver initialization (`driver.synthetic_only = 0`)
+Each coupled deck pulls its two solver decks in with `FILE =`; run the coupled
+deck, not `inputs_ERF` or `inputs_REMORA` directly. The OCCAMS decks reference
+absolute NERSC paths and are not runnable elsewhere without editing them.
 
-```bash
-./build/erf-remora-driver \
-  Exec/CouplingReproducers/inputs_one_step_solver_initialization_check \
-  max_step=1
-```
-
-Scientific intent: verify both solvers initialize and advance prognostic state
-in the shared executable; separate initialization issues from coupling-path
-issues.
-
-### Reproducer C — `ERFtoREMORA` state-exchange baseline
-
-```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_ERFtoREMORA_coupleToERF
-```
-
-Scientific intent: verify atmosphere-state transfer and ocean application at
-each coupled step; establish baseline coupled behavior before enabling SST
-feedback.
-
-### Reproducer D — `two_way` SST feedback into ERF (`OceanSurf` active)
-
-```bash
-./build/erf-remora-driver Exec/CouplingReproducers/inputs_two_way_coupleToERF \
-  max_step=600
-```
-
-Scientific intent: verify SST from REMORA is injected into ERF `OceanSurf`
-`t_surf`; verify ERF surface-layer fluxes respond to ocean state (`Cd`, `Ch`,
-`Cq` nonzero); produce measurable thermodynamic response in `temp` and `theta`
-over long windows.
+`Exec/README.md` documents each deck and how to read the driver's coupling
+diagnostics.
 
 ---
 
 ## Verification Runs
 
-These runs assume you are in the repository root and that `RRTMGP_DIR` and
-`FCOMPARE_EXE` are set (see Prerequisites above).
+Most of what this section used to describe by hand is now in the CTest suite
+(see "Local CTest workflow" above). Prefer the suite: it covers more cases, and
+the manual procedures it replaced drifted out of date faster than they were run.
 
-### 1. Upwelling smoke test
+**Run the suite at `-j1`.** The harnesses `file(REMOVE_RECURSE)` their working
+directories, so concurrent tests delete each other's output and fail in ways
+that look like solver bugs.
 
-Runs one coupled ocean step using the Perlin upwelling case:
+### 1. Rank comparison — automated
 
 ```bash
-mpirun -n 1 ./build/erf-remora-driver Exec/Upwelling/inputs_perlin_ERF_REMORA \
-  max_step=1 \
-  erf.rrtmgp_file_path="${RRTMGP_DIR}"
+ctest --test-dir build_ci -L parallel --output-on-failure --no-tests=error
 ```
 
-### 2. Upwelling MPI rank comparison
+64 tests: `np2`, `np4`, `np6` and `np8`, each as a smoke run and as an
+`fcompare` against the serial baseline. This replaces the manual
+`/tmp/upwelling_mpi` procedure that used to live here.
 
-The equal-spacing configuration uses `Exec/Upwelling/inputs_perlin_ERF_REMORA`:
-
-- `driver.atm.n_cell = 50 20 48`
-- `driver.ocn.n_cell = 50 20 40`
-
-Create output directories:
+One test at a time:
 
 ```bash
-mkdir -p /tmp/upwelling_mpi/n1 /tmp/upwelling_mpi/n2 \
-         /tmp/upwelling_mpi/n4 /tmp/upwelling_mpi/n6 /tmp/upwelling_mpi/n8
+ctest --test-dir build_ci \
+  -R '^parallel_upwelling_twoway_state_matched_nopbl_np4_compare_to_np1$' \
+  --output-on-failure
 ```
 
-Run at each MPI size. Shown for `n=1`; repeat with `-n 2`, `-n 4`, `-n 6`,
-`-n 8`, changing only the output directory:
+### 2. Restart validation — automated
 
 ```bash
-mpirun -n 1 ./build/erf-remora-driver Exec/Upwelling/inputs_perlin_ERF_REMORA \
-  max_step=10 erf.rrtmgp_file_path="${RRTMGP_DIR}" \
-  erf.plot_file_1=/tmp/upwelling_mpi/n1/erfplt \
-  remora.plot_file=/tmp/upwelling_mpi/n1/remoraplt \
-  driver.plot_file_exchange_a2o=/tmp/upwelling_mpi/n1/exchange_a2o \
-  driver.plot_file_exchange_o2a=/tmp/upwelling_mpi/n1/exchange_o2a
+ctest --test-dir build_ci -L restart --output-on-failure --no-tests=error
 ```
 
-Compare each run against the `n=1` baseline:
+8 tests across direction, contract, and cadence. Each runs a cold start and a
+restart and compares the two.
+
+### 3. Coverage contract — automated
 
 ```bash
-"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n2/remoraplt00010
-"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n4/remoraplt00010
-"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n6/remoraplt00010
-"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 /tmp/upwelling_mpi/n8/remoraplt00010
+ctest --test-dir build_ci -R reproducer_coupled_sst_coverage --output-on-failure
 ```
 
-Expected result for the equal-spacing configuration: `PLOTFILE AGREE`.
+Drives `inputs_twoway` four times and asserts on covered-cell counts rather than
+temperature. The only test that exercises the coverage threshold.
 
-For the complete rank-matrix automation see
-`scripts/run_rank_matrix_and_fcompare.sh`.
-
-### 3. Upwelling OpenMP comparison
+### 4. Flux coupling — manual
 
 ```bash
-export OMP_NUM_THREADS=4
-mpirun -n 1 ./build_omp/erf-remora-driver Exec/Upwelling/inputs_perlin_ERF_REMORA \
-  max_step=10 erf.rrtmgp_file_path="${RRTMGP_DIR}"
-```
-
-To compare the MPI-only and OpenMP results:
-
-```bash
-"${FCOMPARE_EXE}" -a /tmp/upwelling_mpi/n1/remoraplt00010 \
-                     /tmp/upwelling_omp/n1/remoraplt00010
-```
-
-### 4. Restart validation
-
-The restart test checks whether a cold-start run and a restarted run produce
-the same solution at a later step.
-
-Cold-start run:
-
-```bash
-mpirun -n 1 ./build/erf-remora-driver \
-  Exec/Upwelling/inputs_debug_cold_start_substep \
-  erf.rrtmgp_file_path="${RRTMGP_DIR}"
-```
-
-Restarted run (uses `erf.restart` to resume from the checkpoint written by the
-cold-start run):
-
-```bash
-mpirun -n 1 ./build/erf-remora-driver \
-  Exec/Upwelling/inputs_debug_restart_substep \
-  erf.rrtmgp_file_path="${RRTMGP_DIR}"
-```
-
-Compare the final plotfiles:
-
-```bash
-cd Exec/Upwelling
-"${FCOMPARE_EXE}" -a cold_remoraplt00002  remoraplt00002
-"${FCOMPARE_EXE}" -a cold_erfplt00020     restart_erfplt00020
-```
-
-Expected behavior:
-
-- REMORA plotfiles agree exactly (bitwise).
-- ERF plotfiles agree to floating-point roundoff; very small differences in
-  fields such as velocity or pressure are normal and expected.
-
-### 5. Flux-coupling debug run
-
-This short run exercises `driver.atm2ocn_mode=flux` on the Upwelling debug
-deck. The coefficient overrides below are important for this setup because the
-base `inputs_ERF` file sets `erf.most.Cd = 0`, `erf.most.Ch = 0`, and
-`erf.most.Cq = 0`, which suppresses ERF surface stress and heat/moisture
-fluxes.
-
-```bash
-mpirun -n 1 ./build/erf-remora-driver \
-  Exec/Upwelling/inputs_debug_cold_start_substep \
+mpirun -n 1 ./build/erf-remora-driver Exec/Upwelling/inputs_twoway \
   driver.atm2ocn_mode=flux \
-  driver.plot_int_exchange=1 \
-  erf.rrtmgp_file_path="${RRTMGP_DIR}" \
-  erf.most.Cd=0.0014 \
-  erf.most.Ch=0.0012 \
-  erf.most.Cq=0.0012
+  driver.plot_int_exchange=1
 ```
 
 Expected behavior:
 
-- step 0 bootstraps REMORA from ERF state lanes
+- step 0 bootstraps REMORA from ERF state lanes,
 - step 1 exports live flux lanes including stress, sensible heat, latent heat,
-  longwave radiation, and evaporation
-- the driver writes exchange diagnostics when `driver.plot_int_exchange=1`
+  longwave radiation, and evaporation,
+- the driver writes exchange diagnostics when `driver.plot_int_exchange=1`.
+
+`Exec/Upwelling/inputs_ERF` already sets `erf.most.Cd = 0.0014`,
+`erf.most.Ch = 0.0012` and `erf.most.Cq = 0.0012`, so no coefficient overrides
+are needed. Earlier versions of this guide said those were zero and told you to
+override them; that is no longer true, and passing the same values changes
+nothing.
+
+### 5. What the suite does not cover
+
+The Upwelling decks are matched 1:1, all sea, with uniform SST and uniform
+surface stress. They are structurally blind to the spherical remap, wet-mask
+exclusion, non-conformal coverage, and donor fill. A green suite means "no
+regression against the idealized case", not that those paths work.
+
+Those first execute on OCCAMS:
+
+```bash
+cd Exec/OCCAMS
+./run_occams.sh smoke      # startup and one exchange
+./run_occams.sh            # oneway, state, flux
+```
 
 ---
 
@@ -402,34 +348,40 @@ Key dispatch:
 Example inputs file:
 
 ```text
+# Import the two solver decks (relative to this file's directory)
+FILE = inputs_REMORA
+FILE = inputs_ERF
+
 # Driver control
-driver.synthetic_only              = 0
-driver.coupling_direction          = two_way
-driver.atm2ocn_mode                = state
-driver.dt_atm                      = 2.0
-driver.atm_substeps_per_ocean_step = 5
-driver.ocean_steps                 = 1
+driver.coupling_direction = two_way
+driver.atm2ocn_mode       = state
 
-# Driver domain topology
-driver.atm.prob_lo = 0.0 0.0  0.0
-driver.atm.prob_hi = 1.0 1.0  1.0
-driver.atm.n_cell  = 32 32 32
-driver.ocn.prob_lo = 0.0 0.0 -1.0
-driver.ocn.prob_hi = 1.0 1.0  0.0
-driver.ocn.n_cell  = 32 32 10
-amr.max_level      = 0
-amr.max_grid_size  = 32
+# Coupling cadence is derived, not declared: the driver computes
+# atm_substeps_per_ocean_step = remora.fixed_dt / erf.fixed_dt and aborts
+# unless that ratio rounds to an integer within tolerance.
+erf.fixed_dt    = 3.0
+remora.fixed_dt = 300.0
 
-# ERF controls
-erf.fixed_dt    = 0.5
-erf.les_type    = None
-erf.use_gravity = false
+max_step = 864
 
-# REMORA controls
-remora.ic_type         = analytic
-remora.grid_scale_type = constant
-remora.sum_interval    = -1
+# Domain topology lives on the solvers, not the driver
+erf.n_cell    = 50 20 48
+remora.n_cell = 50 20 40
+
+# Optional driver controls
+driver.remap_frame       = auto     # auto | spherical | cartesian
+driver.remap_v           = 1        # remap geometry and coverage detail
+driver.v                 = 0        # driver lifecycle detail
+driver.plot_int_exchange = -1       # exchange-field plotfiles
 ```
+
+Retired keys, for anyone reading an old deck: `driver.synthetic_only`,
+`driver.dt_atm`, `driver.atm_substeps_per_ocean_step`, `driver.ocean_steps`,
+and the `driver.atm.*` / `driver.ocn.*` topology keys no longer exist. Domain
+size is read from `erf.n_cell` and `remora.n_cell`. `ParmParse` ignores unknown
+keys silently, so a stale deck will run and quietly disregard them.
+`driver.coupled_one_step` is still parsed but deprecated, and the driver warns
+that it is ignored.
 
 Run with:
 

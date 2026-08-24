@@ -9,6 +9,13 @@ deck, not the solver decks.
 
 ## Inputs
 
+### The Upwelling case
+
+Both Upwelling decks are the coastal upwelling problem of Perlin et al. (2007),
+<https://doi.org/10.1175/JPO3104.1>, used for validation as well as for MPI
+regression. They descend from `inputs_perlin_ERF_REMORA`, which was split into
+the one-way and two-way decks below.
+
 ### `Upwelling/inputs_oneway`
 
 Purpose:
@@ -226,10 +233,18 @@ Uncovered cells are not a hole: ERF keeps its own `wrflowinp` SST there. That is
 the withholding contract, and it is why the count being large is informative
 rather than fatal.
 
-The threshold is `driver.remap_min_coverage_frac`, default `0.001`, matching
-CESM's destination-fraction cutoff and OASIS/CERFACS at 1/1000. A sliver overlap
-is worse than no overlap: normalization would turn 1e-6 of coverage into a
-confident-looking answer.
+The threshold is `driver.remap_min_coverage_frac`, default `0.001`. A sliver
+overlap is worse than no overlap: normalization would turn 1e-6 of coverage into
+a confident-looking answer. Discarding negligible destination fractions is
+ordinary practice in conservative remapping — see Jones (1999) for the scheme
+this remap follows, and the CESM and OASIS3-MCT couplers for production
+implementations.
+
+The specific value is inherited from the driver's source comment, which cites
+CESM at a destination fraction of 0.001 and OASIS/CERFACS at 1/1000. Those two
+numbers have not been checked against either code's source; they are plausible
+and conventional, but treat them as unverified until someone reads the couplers
+directly.
 
 ### Coverage, atmosphere to ocean
 
@@ -263,7 +278,8 @@ These do not stop the run and nothing downstream reports them:
 filled from their nearest non-land source cell (COAWST check_weights behaviour).
 ```
 
-By design, and it matches COAWST. Those cells carry a neighbour's atmospheric
+By design, and it matches COAWST (Warner et al. 2010), the coupled system this
+driver's remap was ported from. Those cells carry a neighbour's atmospheric
 state rather than their own. Watch the trend: a count that *rises* between runs
 means the two land masks are drifting apart.
 
@@ -405,3 +421,27 @@ surface stress. That makes them structurally blind to the spherical remap, the
 wet-mask exclusion, non-conformal coverage, and donor fill. A green suite means
 "no regression against the idealized case" — it is not evidence that the
 coverage or masking paths work. Those first execute on OCCAMS.
+
+## References
+
+All DOIs below were verified against CrossRef.
+
+- Perlin, N., E. D. Skyllingstad, R. M. Samelson, and P. L. Barbour (2007).
+  "Numerical Simulation of Air–Sea Coupling during Coastal Upwelling."
+  *Journal of Physical Oceanography*. <https://doi.org/10.1175/JPO3104.1>
+  — the Upwelling case.
+- Warner, J. C., B. Armstrong, R. He, and J. B. Zambon (2010). "Development of a
+  Coupled Ocean–Atmosphere–Wave–Sediment Transport (COAWST) Modeling System."
+  *Ocean Modelling*. <https://doi.org/10.1016/j.ocemod.2010.07.010>
+  — the coupled system this driver's remap and donor fill were ported from.
+- Jones, P. W. (1999). "First- and Second-Order Conservative Remapping Schemes
+  for Grids in Spherical Coordinates." *Monthly Weather Review*.
+  <https://doi.org/10.1175/1520-0493(1999)127%3C2204:FASOCR%3E2.0.CO;2>
+  — SCRIP; the conservative remapping scheme and the `fracarea`/`dstarea`
+  normalization distinction.
+- Craig, A., S. Valcke, and L. Coquart (2017). "Development and performance of a
+  new version of the OASIS coupler, OASIS3-MCT_3.0." *Geoscientific Model
+  Development*. <https://doi.org/10.5194/gmd-10-3297-2017>
+- Danabasoglu, G., et al. (2020). "The Community Earth System Model Version 2
+  (CESM2)." *Journal of Advances in Modeling Earth Systems*.
+  <https://doi.org/10.1029/2019MS001916>

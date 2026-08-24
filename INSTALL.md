@@ -139,6 +139,72 @@ cmake -S . -B build_omp \
 cmake --build build_omp -j 8 --target erf-remora-driver
 ```
 
+### 3. Perlmutter (NERSC)
+
+This is the build used for the OCCAMS cases, which need NetCDF and PNetCDF for
+the WRF input and the REMORA grid/forcing files.
+
+Environment:
+
+```bash
+source Submodules/ERF/Build/machines/perlmutter_erf.profile
+module load cray-parallel-netcdf
+```
+
+The profile loads `gcc-native`, `cmake`, `cudatoolkit`, `cray-hdf5-parallel`,
+`cray-netcdf-hdf5parallel` and `cray-libsci`. It has `cray-parallel-netcdf`
+commented out, which is why that one is loaded separately — without it, REMORA's
+PNetCDF reads of the `pnetcdf_compat` files will not link.
+
+Configure:
+
+```bash
+cmake -S . -B build_ncutil \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=cc \
+  -DCMAKE_CXX_COMPILER=CC
+```
+
+That is deliberately short. Everything else the coupled OCCAMS build needs is
+already a default or is forced by this repository's own `CMakeLists.txt`:
+
+- `ERF_ENABLE_MULTIBLOCK`, `ERF_ENABLE_TINY_PROFILE`,
+  `REMORA_ENABLE_TINY_PROFILE` are forced ON, and `ERF_ENABLE_HDF5` forced OFF.
+- `ERF_ENABLE_NETCDF`, `ERF_ENABLE_PNETCDF`, `REMORA_ENABLE_PNETCDF`,
+  `ERF_ENABLE_RRTMGP` and `ERF_REMORA_ENABLE_MPI` all default ON here.
+- `ERF_ENABLE_CRAY_AUTO_FIXES` defaults ON and detects Cray itself.
+
+Build:
+
+```bash
+cmake --build build_ncutil -j12
+```
+
+Build once, and let a failure stop you. `cmake --build` leaves the previous
+executable in place when it fails, so a broken rebuild followed by a run
+silently exercises the old binary — which is the worst case when you are looking
+for diagnostics that only the new code emits.
+
+Notes on this configuration:
+
+- `ERF_ENABLE_RRTMGP` is ON. The OCCAMS decks enable no radiation, so it is
+  compiled but unused; turning it off would speed the build but changes nothing
+  at runtime and forces a full rebuild.
+- `ERF_ENABLE_NOAHMP` is OFF. The coupled-SST path works regardless, but the
+  Noah-MP/REMORA-SST coexistence that the coupled-SST design exists to permit is
+  not exercised by this build.
+
+Run:
+
+```bash
+salloc -N 1 --constraint cpu -A m4304 -t 01:00:00 --qos interactive
+cd Exec/OCCAMS
+./run_occams.sh
+```
+
+See `Exec/OCCAMS/run_occams.sh` for per-case runs and rank overrides, and
+`Exec/README.md` for how to read the coupling diagnostics it prints.
+
 ---
 
 ## Ordered Reproducer Set

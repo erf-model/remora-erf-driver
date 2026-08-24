@@ -1,0 +1,49 @@
+# OCCAMS coupling smoke test: one ocean step, two ERF steps.
+#
+# Purpose: a fast regression guard on everything that is expensive to reach --
+# ERF WRF-init, REMORA NetCDF init (grid/masks/bry/forcings), spherical remap
+# weight construction, the ERF->REMORA staging copy, and one full pack/apply
+# exchange. Runs in minutes rather than a queue slot, so it can be rerun after
+# every pull.
+#
+# What it does NOT do: exercise the atmosphere long enough to expose dynamical
+# instability. The atmosphere only takes two steps here, so a blowup that appears
+# at ERF step 5 of a production run will not show up. Use inputs_OCCAMS_oneway
+# for that.
+#
+# The ocean timestep is shortened only to make the cadence 2 ERF steps per ocean
+# step; the driver derives atm_substeps = remora.fixed_dt / erf.fixed_dt and
+# aborts unless that ratio rounds to an integer within tolerance (see the
+# substep_ratio check in main.cpp).
+
+FILE = inputs_REMORA
+FILE = inputs_ERF
+
+amrex.fpe_trap_invalid = 1
+fabarray.mfiter_tile_size = 1024 1024 1024
+
+driver.coupling_direction = ERFtoREMORA
+driver.atm2ocn_mode       = state
+driver.ocean_time_offset  = 49939200.0
+
+driver.remap_frame = spherical
+driver.remap_v     = 1
+
+max_step = 1
+start_datetime = "2021-08-01 00:00:00"
+
+erf.fixed_dt    = 10.0
+remora.fixed_dt = 20.0
+
+# No plotfiles or checkpoints: this test is about reaching the exchange cleanly,
+# and the coverage diagnostics above are the actual pass/fail signal.
+erf.plot_int_1    = -1
+erf.check_int     = -1
+remora.plot_int   = -1
+remora.check_int  = -1
+
+erf.plot_file_1 = occams_smoke_erf_plt
+erf.check_file  = occams_smoke_erf_chk
+
+remora.plot_file  = occams_smoke_remora_plt
+remora.check_file = occams_smoke_remora_chk

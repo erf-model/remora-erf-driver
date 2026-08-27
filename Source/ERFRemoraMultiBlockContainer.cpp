@@ -2802,12 +2802,19 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                     }
                     const bool is_cloud_lane = (idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()) &&
                                                 m_atmos_to_ocean_active_indices[idx] == coupling::Cloud);
-                    if (is_cloud_lane && cloud_warn_count < cloud_warn_limit) {
+                    if (is_cloud_lane) {
+                        // min/max are collective (MPI_Allreduce), so they are issued
+                        // unconditionally here, exactly as the finite check above does.
+                        // cloud_warn_count is a process-local static; gating the
+                        // reductions on it is what let the IO rank stop entering
+                        // collectives that every other rank still executed. The counter
+                        // now limits printing only.
                         const amrex::Real cmin = mf->min(0);
                         const amrex::Real cmax = mf->max(0);
-                        if (amrex::ParallelDescriptor::IOProcessor()) {
-                            if (cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) {
-                                ++cloud_warn_count;
+                        if ((cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) &&
+                            cloud_warn_count < cloud_warn_limit) {
+                            ++cloud_warn_count;
+                            if (amrex::ParallelDescriptor::IOProcessor()) {
                                 amrex::Print() << "WARNING: packed cloud lane outside tolerance [-1e-6,1+1e-6]: min="
                                                 << cmin << " max=" << cmax << "\n";
                             }

@@ -76,6 +76,9 @@ public:
 
     void InitializeBlocks();
     void InitializeSolvers();
+    // Ocean-frame (absolute) stop time for REMORA, or a negative value to leave
+    // REMORA's stop_time alone. Must be set before InitializeSolvers().
+    void SetOceanFrameStopTime(amrex::Real ocean_frame_stop_time);
     void PrefillAtmosToOceanFallbacks();
     void SetAtmosphereTick(long long atm_tick);
     void AdvanceBlocks(int ocean_steps);
@@ -193,6 +196,8 @@ private:
 
     amrex::Real m_erf_dt;
     amrex::Real m_ocean_time_offset = 0.0;
+    // Negative means "leave REMORA's stop_time alone"; see SetOceanFrameStopTime.
+    amrex::Real m_ocean_frame_stop_time = -1.0;
     int m_atm_substeps_per_ocean_step;
     long long m_atm_tick = 0;
     int m_plot_int_exchange = -1;

@@ -492,6 +492,35 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
     DriverPrintLine(m_driver_verbose, "constructing ERF solver from driver-owned atmosphere topology");
     m_erf = CreateERFSolver(*this);
     DriverPrintLine(m_driver_verbose, "ERF constructor complete");
+
+    // Re-key stop_time for REMORA, after ERF has read it and before REMORA is built.
+    //
+    // ERF and REMORA both read the unprefixed stop_time, and the deck expresses it as
+    // elapsed-from-zero. REMORA, however, runs on the absolute ocean clock once
+    // driver.ocean_time_offset is applied, so an elapsed value makes
+    // REMORA::EvolveOneStep return dt=0 on the first macro step.
+    //
+    // The placement matters. ERF captured stop_time into its own state during
+    // CreateERFSolver above, so removing the key now cannot un-read it and ERF keeps
+    // the dt clamp that makes its last step land on stop_time. Removing it earlier --
+    // in main.cpp, before either solver exists -- silently changed ERF's dt and its
+    // checkpoint metadata under offset decks.
+    //
+    // REMORA aborts if both stop_time and remora.stop_time are set
+    // (REMORA::ReadParameters), so the unprefixed key must go, not merely be shadowed.
+    if (m_ocean_frame_stop_time >= amrex::Real(0.0)) {
+        // No warning about a user-supplied remora.stop_time here: main.cpp scrubs that
+        // key long before this point, so querying it now would always miss. The warning
+        // lives at the scrub site, which is the only place it can still be observed.
+        amrex::ParmParse pp_top;
+        pp_top.remove("stop_time");
+        pp_top.remove("remora.stop_time");
+        pp_top.add("remora.stop_time", m_ocean_frame_stop_time);
+        DriverPrintLine(m_driver_verbose,
+                        std::string("re-keyed REMORA stop_time to ocean frame: ") +
+                            std::to_string(m_ocean_frame_stop_time));
+    }
+
     DriverPrintLine(m_driver_verbose, "constructing REMORA solver from driver-owned ocean topology");
     m_remora = CreateREMORASolver(*this);
     DriverPrintLine(m_driver_verbose, "REMORA constructor complete");
@@ -568,6 +597,12 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
             break;
         }
     }
+}
+
+void
+ERFRemoraMultiBlockContainer::SetOceanFrameStopTime (amrex::Real ocean_frame_stop_time)
+{
+    m_ocean_frame_stop_time = ocean_frame_stop_time;
 }
 
 void

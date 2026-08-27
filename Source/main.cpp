@@ -170,6 +170,13 @@ main (int argc, char* argv[])
 
         // The driver owns the combined ParmParse environment, so drop
         // the prefixed alias; the canonical max_step/stop_time keys remain.
+        // Capture remora.stop_time before removing it: under a nonzero
+        // ocean_time_offset the driver later re-keys an ocean-frame value, and a
+        // user who set this explicitly deserves to be told it was discarded.
+        // Querying after the scrub would never see it.
+        amrex::Real user_remora_stop_time = 0.0;
+        const bool user_set_remora_stop_time =
+            amrex::ParmParse().query("remora.stop_time", user_remora_stop_time);
         amrex::ParmParse().remove("remora.max_step");
         amrex::ParmParse().remove("remora.stop_time");
 
@@ -253,6 +260,23 @@ main (int argc, char* argv[])
             NearlyEqual(static_cast<amrex::Real>(stop_time_ratio_rounded) * ocean_macro_dt, stop_time)
                 ? static_cast<int>(stop_time_ratio_rounded)
                 : static_cast<int>(stop_time_ratio);
+        // REMORA advances on the absolute ocean clock once driver.ocean_time_offset
+        // is applied, but it reads the unprefixed stop_time, which the deck and the
+        // macro-step plan above express as elapsed-from-zero. Compute the ocean-frame
+        // value here, where the macro-step plan lives, and hand it to the container:
+        // the re-key must happen between the ERF and REMORA constructions so ERF
+        // still reads the elapsed value and keeps its own dt clamp.
+        amrex::Real ocean_frame_stop_time = -1.0;
+        if (has_stop_time && ocean_time_offset != amrex::Real(0.0)) {
+            ocean_frame_stop_time =
+                ocean_time_offset + ocean_macro_dt * static_cast<amrex::Real>(stop_time_macro_steps);
+            if (user_set_remora_stop_time) {
+                amrex::Print() << "WARNING: remora.stop_time=" << user_remora_stop_time
+                               << " is discarded; the driver derives REMORA's ocean-frame stop time "
+                               << ocean_frame_stop_time
+                               << " from stop_time and driver.ocean_time_offset.\n";
+            }
+        }
         int top_level_max_step = -1;
         const bool has_top_level_max_step = amrex::ParmParse().query("max_step", top_level_max_step);
 
@@ -489,6 +513,7 @@ main (int argc, char* argv[])
             max_level, coord, ref_ratio, is_periodic,
             driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
             atm2ocn_contract, use_two_way_coupling);
+        container.SetOceanFrameStopTime(ocean_frame_stop_time);
         container.InitializeSolvers();
         container.InitializeBlocks();
         if (restart_state.active) {

@@ -4,14 +4,6 @@
 
 namespace erf_remora
 {
-void
-RunREMORAStandalone()
-{
-    REMORA remora;
-    remora.InitData();
-    remora.Evolve();
-}
-
 void*
 CreateREMORASolver(const ERFRemoraMultiBlockContainer& container)
 {

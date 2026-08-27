@@ -79,7 +79,6 @@ public:
     void PrefillAtmosToOceanFallbacks();
     void SetAtmosphereTick(long long atm_tick);
     void AdvanceBlocks(int ocean_steps);
-    void AdvanceBlocksSynthetic(int ocean_steps);
     amrex::Vector<amrex::MultiFab*>& AtmosToOceanActiveCache();
     const amrex::Vector<std::string>& AtmosToOceanActiveNames() const;
 
@@ -119,8 +118,6 @@ private:
 
     void AllocateCaches();
     void AllocateCachesFromSolverLayouts();
-    void AllocateSyntheticCaches();
-    void FillSyntheticData();
     void FillOceanToAtmosGhosts();
     void FillAtmosToOceanGhosts();
     void PrintDiagnostics(const char* label,

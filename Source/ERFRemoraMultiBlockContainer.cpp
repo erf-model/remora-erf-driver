@@ -586,25 +586,27 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
         m_driver_verbose,
         "Initialize Coupling Caches",
         "Phase 4: query finalized post-InitData solver layouts. Phase 5: allocate driver-owned caches from solver layouts. Phase 6: seed bootstrap state and build remap weights and select active atm2ocn view.");
+    // Enforce the lifecycle invariant rather than assuming it. Every path below
+    // dereferences both solver handles, and the synthetic fallback that used to
+    // cover the null case has been removed as unreachable. Assert so a caller who
+    // skips InitializeSolvers() gets a clear abort instead of silent bad state.
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_erf != nullptr && m_remora != nullptr,
+        "InitializeBlocks requires InitializeSolvers to have constructed both solvers");
     m_atm_tick = 0;
     DriverPrintLine(m_driver_verbose, "resetting driver atmosphere tick to 0");
     AllocateCaches();
     BuildRemapWeights();
     DriverPrintLine(m_driver_verbose, "selecting bootstrap active atm2ocn cache view for ocean_step=0");
     SelectAtmosToOceanActiveView(/*ocean_step=*/0);
-    if (m_erf != nullptr && m_remora != nullptr) {
-        if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
-            DriverPrintLine(m_driver_verbose, "packing REMORA surface state into ocean->atmos bootstrap cache");
-            const amrex::iMultiFab* erf_is_land_bootstrap = nullptr;
-            ERFGetLandMask(m_erf, &erf_is_land_bootstrap);
-            REMORAPackSurfaceState(m_remora, m_ocean_to_atmos, amrex::Real(0.0),
-                                  m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE,
-                                  erf_is_land_bootstrap);
-            FillOceanToAtmosGhosts();
-        }
-    } else {
-        DriverPrintLine(m_driver_verbose, "synthetic-only path: filling synthetic coupling cache values");
-        FillSyntheticData();
+    if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
+        DriverPrintLine(m_driver_verbose, "packing REMORA surface state into ocean->atmos bootstrap cache");
+        const amrex::iMultiFab* erf_is_land_bootstrap = nullptr;
+        ERFGetLandMask(m_erf, &erf_is_land_bootstrap);
+        REMORAPackSurfaceState(m_remora, m_ocean_to_atmos, amrex::Real(0.0),
+                               m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE,
+                               erf_is_land_bootstrap);
+        FillOceanToAtmosGhosts();
     }
 
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
@@ -635,56 +637,12 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
 void
 ERFRemoraMultiBlockContainer::AllocateCaches ()
 {
-    if (m_erf != nullptr && m_remora != nullptr) {
-        DriverPrintLine(m_driver_verbose, "allocating caches from solver-reported post-InitData layouts");
-        AllocateCachesFromSolverLayouts();
-    } else {
-        DriverPrintLine(m_driver_verbose, "allocating synthetic fallback caches from driver-derived layouts");
-        AllocateSyntheticCaches();
-    }
-}
-
-void
-ERFRemoraMultiBlockContainer::AllocateSyntheticCaches ()
-{
-    // Allocate a superset layer vector once (legacy state + optional flux layers).
-    // Runtime coupling modes can then swap active layer views by index without
-    // changing memory ownership or reallocating cache slabs.
-    m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
-    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean_storage.size()); ++idx) {
-        auto& mf_ptr = m_atmos_to_ocean_storage[idx];
-        mf_ptr = std::make_unique<amrex::MultiFab>(
-            AtmosToOceanBoxArray(m_ba_ocn, idx), m_dm_ocn, 1, AtmosToOceanNGrow(idx));
-        mf_ptr->setVal(0.0);
-        const std::string label = "Driver AllocateCaches atmos->ocean[" + std::to_string(idx) + "]";
-        PrintMultiFabLayout(label.c_str(), *mf_ptr);
-    }
-    m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
-    m_atmos_to_ocean_state_active.resize(m_atmos_to_ocean_state_active_indices.size());
-    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_state_active_indices.size()); ++local_idx) {
-        const int global_idx = m_atmos_to_ocean_state_active_indices[local_idx];
-        m_atmos_to_ocean_state_active[local_idx] = m_atmos_to_ocean[global_idx];
-    }
-    m_atmos_to_ocean_flux_active.resize(m_atmos_to_ocean_flux_active_indices.size());
-    for (int local_idx = 0; local_idx < static_cast<int>(m_atmos_to_ocean_flux_active_indices.size()); ++local_idx) {
-        const int global_idx = m_atmos_to_ocean_flux_active_indices[local_idx];
-        m_atmos_to_ocean_flux_active[local_idx] = m_atmos_to_ocean[global_idx];
-    }
-
-    if (m_use_two_way_coupling) {
-        m_ocean_to_atmos_storage.resize(coupling::NumOceanToAtmosStates);
-        const amrex::IntVect ocean_to_atmos_ng(1, 1, 0);
-        for (int idx = 0; idx < static_cast<int>(m_ocean_to_atmos_storage.size()); ++idx) {
-            auto& mf_ptr = m_ocean_to_atmos_storage[idx];
-            mf_ptr = std::make_unique<amrex::MultiFab>(m_ba, m_dm, 1, ocean_to_atmos_ng);
-            mf_ptr->setVal(0.0);
-            const std::string label = "Driver AllocateCaches ocean->atmos[" + std::to_string(idx) + "]";
-            PrintMultiFabLayout(label.c_str(), *mf_ptr);
-        }
-    } else {
-        m_ocean_to_atmos_storage.clear();
-    }
-    m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
+    // Only reachable from InitializeBlocks(), which asserts both solvers exist.
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_erf != nullptr && m_remora != nullptr,
+        "AllocateCaches requires InitializeSolvers to have constructed both solvers");
+    DriverPrintLine(m_driver_verbose, "allocating caches from solver-reported post-InitData layouts");
+    AllocateCachesFromSolverLayouts();
 }
 
 void
@@ -2554,19 +2512,6 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
 }
 
 void
-ERFRemoraMultiBlockContainer::FillSyntheticData ()
-{
-    for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean.size()); ++idx) {
-        m_atmos_to_ocean[idx]->setVal(10.0 + static_cast<amrex::Real>(idx));
-    }
-
-    if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
-        m_ocean_to_atmos[coupling::SST]->setVal(300.0);
-        FillOceanToAtmosGhosts();
-    }
-}
-
-void
 ERFRemoraMultiBlockContainer::FillOceanToAtmosGhosts ()
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
@@ -2840,35 +2785,6 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
             }
             ValidateFields("Post-apply atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
-        },
-        ocean_steps);
-}
-
-void
-ERFRemoraMultiBlockContainer::AdvanceBlocksSynthetic (int ocean_steps)
-{
-    AdvanceBlocksWithCallbacks(
-        [] (amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
-            if (!state.empty() && state[0] != nullptr) {
-                state[0]->setVal(amrex::Real(290.0) + amrex::Real(0.01) * time);
-            }
-        },
-        [] (const amrex::Vector<amrex::MultiFab*>&, amrex::Real) {},
-        [] (amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
-            for (int idx = 0; idx < static_cast<int>(states.size()); ++idx) {
-                if (states[idx] != nullptr) {
-                    states[idx]->setVal(amrex::Real(10.0) + static_cast<amrex::Real>(idx + 1) + time);
-                }
-            }
-        },
-        [] (const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
-            if (!states.empty() && states[0] != nullptr) {
-                const amrex::Real sample = states[0]->min(0);
-                if (amrex::ParallelDescriptor::IOProcessor()) {
-                    amrex::Print() << "Synthetic ApplyAtmosphericStates time=" << time
-                                   << " sample_atmos_field0=" << sample << "\n";
-                }
-            }
         },
         ocean_steps);
 }

@@ -287,6 +287,10 @@ main (int argc, char* argv[])
             amrex::Print() << "WARNING: driver.coupled_one_step is deprecated and ignored; "
                            << "use deck naming plus driver.coupling_direction instead.\n";
         }
+        if (pp_driver.contains("synthetic_only")) {
+            amrex::Print() << "WARNING: driver.synthetic_only is retired and ignored; "
+                           << "synthetic-only mode has been removed.\n";
+        }
 
         auto lowercase = [](std::string value) {
             std::transform(value.begin(), value.end(), value.begin(),

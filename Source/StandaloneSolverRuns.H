@@ -12,8 +12,6 @@ namespace erf_remora
 {
 // Keep solver includes in separate translation units so ERF.H and REMORA.H
 // never appear together in one TU.
-void RunERFStandalone();
-void RunREMORAStandalone();
 
 const amrex::BoxArray&
 ERF_Grids(void* erf_handle) noexcept;

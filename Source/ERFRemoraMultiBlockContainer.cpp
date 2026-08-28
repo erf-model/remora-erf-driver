@@ -856,6 +856,7 @@ ERFRemoraMultiBlockContainer::InterpOceanToAtmos (
 
     amrex::DistributionMapping dm_atm_temp(ba_atm_temp);
     amrex::MultiFab atm_temp(ba_atm_temp, dm_atm_temp, 1, 0);
+    atm_temp.setVal(fallback_sst);  // Initialize to avoid uninitialized memory
 
     // 4. Interpolate ocean SST to atmosphere resolution using piecewise constant
     //    Use InterpFromCoarseLevel with cell-centered interpolation
@@ -924,6 +925,7 @@ ERFRemoraMultiBlockContainer::RemapAtmosToOceanStates(
 
         // Stack-allocated temp MultiFab - automatically cleaned up at end of iteration
         amrex::MultiFab atm_temp(ba_temp, dm_atm_on_ocn, 1, 0);
+        atm_temp.setVal(0.0);  // Initialize to avoid uninitialized memory
 
         // Extract atmosphere data over ocean extent via ParallelCopy
         atm_temp.ParallelCopy(*atm_states[idx], 0, 0, 1, 0, 0);

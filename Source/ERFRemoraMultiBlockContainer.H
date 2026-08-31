@@ -146,6 +146,11 @@ private:
 
     void AllocateCaches();
     void AllocateCachesFromSolverLayouts();
+    bool AtmosToOceanAveragingActive() const;
+    bool TimeAverageAtmosToOceanLane(int global_idx) const;
+    void ResetAtmosToOceanAccumulators();
+    void AccumulateAtmosToOcean(amrex::Real weight);
+    void DrainAtmosToOceanAccumulators();
     void FillOceanToAtmosGhosts();
     void FillAtmosToOceanGhosts();
     void PrintDiagnostics(const char* label,
@@ -248,6 +253,9 @@ private:
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
     int m_driver_verbose = 0;
+    bool m_time_average_atm2ocn_state = false;
+    bool m_time_average_atm2ocn_flux = false;
+    bool m_reported_atm2ocn_time_averaging = false;
 
     // Remap configuration and resolved state.
     //
@@ -310,6 +318,10 @@ private:
     // during fast ERF subcycles
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
+    // Valid-region-only trapezoidal sums. They are reset, filled, and drained
+    // within one ocean macro-step and are never checkpoint state.
+    amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_accumulator_storage;
+    amrex::Real m_a2o_accum_weight = 0.0;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_state_active;
     amrex::Vector<int> m_atmos_to_ocean_state_active_indices;

@@ -469,6 +469,8 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     // contains() rather than the query() return, so "set explicitly to the
     // default" is distinguishable from "not set" when reporting it as inert.
     m_remap_donor_max_diagonals_set = pp_driver.contains("remap_donor_max_diagonals");
+    pp_driver.query("time_average_atm2ocn_state", m_time_average_atm2ocn_state);
+    pp_driver.query("time_average_atm2ocn_flux", m_time_average_atm2ocn_flux);
 
     DriverPrintHeader(
         m_driver_verbose,
@@ -677,6 +679,24 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
                        << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
     }
 
+    if (!m_reported_atm2ocn_time_averaging) {
+        m_reported_atm2ocn_time_averaging = true;
+        amrex::Print() << "[driver] Atmos->ocean time averaging for state-character lanes is "
+                       << (m_time_average_atm2ocn_state ? "ENABLED" : "disabled")
+                       << " (driver.time_average_atm2ocn_state).\n"
+                       << "[driver] Atmos->ocean time averaging for flux-character lanes is "
+                       << (m_time_average_atm2ocn_flux ? "ENABLED" : "disabled")
+                       << " (driver.time_average_atm2ocn_flux).\n";
+        if (m_atm_substeps_per_ocean_step > 1 &&
+            !m_time_average_atm2ocn_state && !m_time_average_atm2ocn_flux) {
+            amrex::Print()
+                << "[driver] WARNING: atmosphere->ocean forcing uses the instantaneous "
+                   "interval-end sample. Enable driver.time_average_atm2ocn_state=1 and/or "
+                   "driver.time_average_atm2ocn_flux=1 to force REMORA with the atmosphere "
+                   "mean over each ocean interval.\n";
+        }
+    }
+
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
     // atmosphere/ocean timescales are strongly separated. We should gradually ramp
@@ -749,6 +769,18 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
 
+    if (m_time_average_atm2ocn_state || m_time_average_atm2ocn_flux) {
+        m_atmos_to_ocean_accumulator_storage.resize(coupling::NumAtmosToOceanLayers);
+        for (int idx = 0;
+             idx < static_cast<int>(m_atmos_to_ocean_accumulator_storage.size()); ++idx) {
+            const amrex::MultiFab& lane = *m_atmos_to_ocean[idx];
+            auto& accumulator = m_atmos_to_ocean_accumulator_storage[idx];
+            accumulator = std::make_unique<amrex::MultiFab>(
+                lane.boxArray(), lane.DistributionMap(), 1, 0);
+            accumulator->setVal(0.0);
+        }
+    }
+
     // Atmosphere -> Ocean (A2O) stencils, one per WeightFamily slot, each built
     // against its own destination stagger (rho for scalars, u-face for TauX,
     // v-face for TauY, rho for WIND_FACE_TO_CENTER since the face->center
@@ -806,6 +838,78 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         m_ocean_to_atmos_storage.clear();
     }
     m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
+}
+
+bool
+ERFRemoraMultiBlockContainer::TimeAverageAtmosToOceanLane (int global_idx) const
+{
+    const bool flux_character =
+        global_idx == coupling::Rain || global_idx == coupling::SWrad ||
+        global_idx == coupling::LWrad || global_idx == coupling::TauX ||
+        global_idx == coupling::TauY || global_idx == coupling::SHflux ||
+        global_idx == coupling::LHflux || global_idx == coupling::Evap;
+    return flux_character ? m_time_average_atm2ocn_flux : m_time_average_atm2ocn_state;
+}
+
+bool
+ERFRemoraMultiBlockContainer::AtmosToOceanAveragingActive () const
+{
+    for (int global_idx : m_atmos_to_ocean_active_indices) {
+        if (TimeAverageAtmosToOceanLane(global_idx)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void
+ERFRemoraMultiBlockContainer::ResetAtmosToOceanAccumulators ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        !m_atmos_to_ocean_accumulator_storage.empty(),
+        "Atmos->ocean averaging requested without allocated accumulators");
+    for (auto& accumulator : m_atmos_to_ocean_accumulator_storage) {
+        accumulator->setVal(0.0);
+    }
+    m_a2o_accum_weight = amrex::Real(0.0);
+}
+
+void
+ERFRemoraMultiBlockContainer::AccumulateAtmosToOcean (amrex::Real weight)
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        weight > amrex::Real(0.0),
+        "Atmos->ocean averaging sample weight must be positive");
+    for (int local_idx = 0;
+         local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+        if (TimeAverageAtmosToOceanLane(global_idx)) {
+            amrex::MultiFab::Saxpy(*m_atmos_to_ocean_accumulator_storage[global_idx],
+                                   weight, *m_atmos_to_ocean_active[local_idx],
+                                   0, 0, 1, 0);
+        }
+    }
+    m_a2o_accum_weight += weight;
+}
+
+void
+ERFRemoraMultiBlockContainer::DrainAtmosToOceanAccumulators ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_a2o_accum_weight > amrex::Real(0.0),
+        "Atmos->ocean averaging drained an empty accumulator");
+    const amrex::Real inverse_weight = amrex::Real(1.0) / m_a2o_accum_weight;
+    for (int local_idx = 0;
+         local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+        if (TimeAverageAtmosToOceanLane(global_idx)) {
+            amrex::MultiFab::Copy(*m_atmos_to_ocean_active[local_idx],
+                                  *m_atmos_to_ocean_accumulator_storage[global_idx],
+                                  0, 0, 1, 0);
+            m_atmos_to_ocean_active[local_idx]->mult(inverse_weight, 0);
+        }
+    }
+    m_a2o_accum_weight = amrex::Real(0.0);
 }
 
 void
@@ -3378,6 +3482,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
         SelectAtmosToOceanActiveView(global_ocean_step);
+        const bool averaging_active = AtmosToOceanAveragingActive();
         const bool use_state_contract =
             (ActiveAtmosToOceanContract(global_ocean_step) == coupling::AtmosToOceanContract::StatePassing);
         if (global_ocean_step == 0 && amrex::ParallelDescriptor::IOProcessor()) {
@@ -3407,6 +3512,10 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             FillOceanToAtmosGhosts();
         }
 
+        if (averaging_active) {
+            ResetAtmosToOceanAccumulators();
+        }
+
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
                 amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="
@@ -3415,6 +3524,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                                     << std::endl;
                 stop_coupling = true;
                 break;
+            }
+
+            if (averaging_active && substep == 0) {
+                pack_atmos_states(m_atmos_to_ocean_active, ocean_time, global_ocean_step);
+                AccumulateAtmosToOcean(amrex::Real(0.5));
             }
             const amrex::Real atm_time = m_atm_tick * m_erf_dt;
 
@@ -3441,23 +3555,43 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             enforce_dt("ERF", m_erf_dt, dt_used, ocean_step, substep);
 
             ++m_atm_tick;
+
+            if (averaging_active) {
+                const amrex::Real substep_end_time =
+                    ocean_time + static_cast<amrex::Real>(substep + 1) * m_erf_dt;
+                pack_atmos_states(m_atmos_to_ocean_active,
+                                  substep_end_time, global_ocean_step);
+                const amrex::Real sample_weight =
+                    (substep == m_atm_substeps_per_ocean_step - 1)
+                        ? amrex::Real(0.5) : amrex::Real(1.0);
+                AccumulateAtmosToOcean(sample_weight);
+            }
         }
 
         if (stop_coupling) {
             break;
         }
 
-        // The packed lanes now describe the atmosphere at the end of the interval the
-        // ocean is about to integrate, not the beginning. Label them accordingly; this
-        // value is diagnostic only (ERF::PackAtmosphericStates and
-        // REMORA::ApplyAtmospheric{States,Fluxes} both ignore their time argument).
-        const amrex::Real a2o_sample_time = ocean_time + dt_ocn_request;
-        DriverPrintLine(
-            m_driver_verbose,
-            std::string("ocean_step=") + std::to_string(global_ocean_step) +
-                " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
-                " from ERF at time=" + std::to_string(a2o_sample_time));
-        pack_atmos_states(m_atmos_to_ocean_active, a2o_sample_time, global_ocean_step);
+        // An interval mean is stamped at its midpoint. With averaging disabled,
+        // preserve commit 1's interval-end sample and label exactly.
+        const amrex::Real a2o_sample_time =
+            averaging_active ? ocean_time + amrex::Real(0.5) * dt_ocn_request
+                             : ocean_time + dt_ocn_request;
+        if (averaging_active) {
+            DriverPrintLine(
+                m_driver_verbose,
+                std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                    " drain atmos->ocean time average at time=" +
+                    std::to_string(a2o_sample_time));
+            DrainAtmosToOceanAccumulators();
+        } else {
+            DriverPrintLine(
+                m_driver_verbose,
+                std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                    " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                    " from ERF at time=" + std::to_string(a2o_sample_time));
+            pack_atmos_states(m_atmos_to_ocean_active, a2o_sample_time, global_ocean_step);
+        }
         if (m_plot_int_exchange > 0 &&
             (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
             // O2A was packed at ocean_time, A2O at a2o_sample_time; stamp each

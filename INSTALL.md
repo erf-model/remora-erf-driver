@@ -284,8 +284,8 @@ ctest --test-dir build_ci \
 ctest --test-dir build_ci -L restart --output-on-failure --no-tests=error
 ```
 
-8 tests across direction, contract, and cadence. Each runs a cold start and a
-restart and compares the two.
+12 tests across direction, contract, cadence, and time-averaging selection.
+Each runs a cold start and a restart and compares the two.
 
 ### 3. Coverage contract — automated
 
@@ -378,6 +378,8 @@ driver.plot_int_exchange = -1       # exchange-field plotfiles
 # Spherical frame only; inert in the cartesian frame.
 driver.remap_donor_fill  = withhold # withhold | coawst
 driver.remap_donor_max_diagonals = 3.0   # coawst acceptance radius, coawst only
+driver.time_average_atm2ocn_state = 0 # mean state-character lanes over each ocean step
+driver.time_average_atm2ocn_flux  = 0 # mean flux-character lanes over each ocean step
 ```
 
 `driver.remap_donor_fill` decides what happens to a wet REMORA cell that no ERF
@@ -402,6 +404,16 @@ of the donor cell's own control-volume diagonals. It is inert under `withhold`,
 and the driver prints a note rather than letting a set value look effective. The
 bound has no precedent in any production coupler; `Exec/README.md` explains why it
 exists anyway and what the value does and does not control.
+
+
+Both time-averaging controls default to `0`, which preserves the instantaneous
+interval-end forcing. The state control covers `Uwind`, `Vwind`, `Patm`,
+`Qair`, `Tair`, and `cloud`; the flux control covers `rain`, `SWrad`, `LWrad`,
+`tau_x`, `tau_y`, `SHflux`, `LHflux`, and `evap`. This classification is
+independent of `driver.atm2ocn_mode`, so the shared `rain` and radiation lanes
+always follow the flux control. When enabled, the driver uses a trapezoidal
+mean, labels it at the interval midpoint, and resets and drains its accumulator
+inside the macro-step rather than checkpointing it.
 
 Retired keys, for anyone reading an old deck: `driver.synthetic_only`,
 `driver.dt_atm`, `driver.atm_substeps_per_ocean_step`, `driver.ocean_steps`,

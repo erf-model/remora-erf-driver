@@ -212,6 +212,24 @@ its own configuration provides. The two common cases announce themselves:
 Both are correct behaviour when ERF has no radiation or moisture model. They
 matter because the alternative — passing zeros — would look like real forcing.
 
+### Atmosphere-to-ocean time averaging
+
+The driver uses the atmosphere state at the end of each ocean interval by
+default. Two independent, default-off controls replace selected lanes with the
+trapezoidal mean over that same interval:
+
+- `driver.time_average_atm2ocn_state = 1` averages `Uwind`, `Vwind`, `Patm`,
+  `Qair`, `Tair`, and `cloud`.
+- `driver.time_average_atm2ocn_flux = 1` averages `rain`, `SWrad`, `LWrad`,
+  `tau_x`, `tau_y`, `SHflux`, `LHflux`, and `evap`.
+
+Lane character, not `driver.atm2ocn_mode`, selects the control. In particular,
+`rain`, `SWrad`, and `LWrad` follow the flux-lane control even though they also
+appear in the state contract. The controls can be enabled separately or
+together. Non-averaged lanes retain the interval-end sample, and averaged
+exchange plotfiles are stamped at the interval midpoint. The accumulator is
+reset and consumed within one ocean macro-step; it is not checkpoint state.
+
 ### Which geometry the remap chose
 
 ```

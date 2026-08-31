@@ -541,18 +541,17 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
     m_remora = CreateREMORASolver(*this);
     DriverPrintLine(m_driver_verbose, "REMORA constructor complete");
 
-    const bool bootstrap_uses_state_contract =
-        (ActiveAtmosToOceanContract(/*ocean_step=*/0) == coupling::AtmosToOceanContract::StatePassing);
+    const bool use_state_contract =
+        (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::StatePassing);
     DriverPrintLine(
         m_driver_verbose,
-        std::string("injecting pre-InitData atm2ocn metadata: bootstrap_contract=") +
-            (bootstrap_uses_state_contract ? "state" : "flux") +
-            " configured_mode=" + coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) +
+        std::string("injecting pre-InitData atm2ocn metadata: configured_contract=") +
+            (use_state_contract ? "state" : "flux") +
             " two_way=" + (m_use_two_way_coupling ? "1" : "0"));
     ConfigureERFDriverAtmosToOceanCoupling(
-        m_erf, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+        m_erf, true, m_use_two_way_coupling, use_state_contract);
     ConfigureREMORADriverAtmosToOceanCoupling(
-        m_remora, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+        m_remora, true, m_use_two_way_coupling, use_state_contract);
     SetREMORAStartTime(m_remora, m_ocean_time_offset);
 
     DriverPrintLine(m_driver_verbose, "calling ERF InitData (enters ERF InitData_pre -> ERF InitData_post)");
@@ -648,8 +647,8 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     DriverPrintLine(m_driver_verbose, "resetting driver atmosphere tick to 0");
     AllocateCaches();
     BuildRemapWeights();
-    DriverPrintLine(m_driver_verbose, "selecting bootstrap active atm2ocn cache view for ocean_step=0");
-    SelectAtmosToOceanActiveView(/*ocean_step=*/0);
+    DriverPrintLine(m_driver_verbose, "selecting configured active atm2ocn cache view");
+    SelectAtmosToOceanActiveView();
     if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
         DriverPrintLine(m_driver_verbose, "packing REMORA surface state into ocean->atmos bootstrap cache");
         const amrex::iMultiFab* erf_is_land_bootstrap = nullptr;
@@ -661,7 +660,7 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     }
 
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        DriverPrintLine(m_driver_verbose, "validating steady-state flux active view shape and centering");
+        DriverPrintLine(m_driver_verbose, "validating flux active view shape and centering");
         ValidateFluxActiveViewOrAbort(m_atmos_to_ocean_flux_active, m_atmos_to_ocean_flux_active_names);
     }
 
@@ -669,15 +668,8 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
                        << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
                        << " (" << coupling::NumAtmosToOceanActiveLayers(m_atmos_to_ocean_contract)
                        << " active layers)\n";
-    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        amrex::Print() << "Atmos->ocean bootstrap lanes (ocean_step=0): "
-                       << JoinLaneNames(m_atmos_to_ocean_state_active_names) << "\n"
-                       << "Atmos->ocean steady-state lanes (ocean_step>=1): "
-                       << JoinLaneNames(m_atmos_to_ocean_flux_active_names) << "\n";
-    } else {
-        amrex::Print() << "Atmos->ocean active lanes: "
-                       << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
-    }
+    amrex::Print() << "Atmos->ocean active lanes: "
+                   << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
 
     if (!m_reported_atm2ocn_time_averaging) {
         m_reported_atm2ocn_time_averaging = true;
@@ -3308,7 +3300,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
             BL_PROFILE("Driver::Apply_Atmos");
             ValidateFields("Pre-apply atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
-            if (ActiveAtmosToOceanContract(ocean_step) == coupling::AtmosToOceanContract::FluxPassing) {
+            if (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::FluxPassing) {
                 REMORAApplyAtmosphericFluxes(m_remora, states, time);
             } else {
                 REMORAApplyAtmosphericStates(m_remora, states, time);
@@ -3332,19 +3324,15 @@ ERFRemoraMultiBlockContainer::AtmosToOceanActiveNames () const
 }
 
 coupling::AtmosToOceanContract
-ERFRemoraMultiBlockContainer::ActiveAtmosToOceanContract (long long ocean_step) const
+ERFRemoraMultiBlockContainer::ActiveAtmosToOceanContract () const
 {
-    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing &&
-        ocean_step == 0) {
-        return coupling::AtmosToOceanContract::StatePassing;
-    }
     return m_atmos_to_ocean_contract;
 }
 
 void
-ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView (long long ocean_step)
+ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView ()
 {
-    const auto active_contract = ActiveAtmosToOceanContract(ocean_step);
+    const auto active_contract = ActiveAtmosToOceanContract();
     if (active_contract == coupling::AtmosToOceanContract::FluxPassing) {
         m_atmos_to_ocean_active = m_atmos_to_ocean_flux_active;
         m_atmos_to_ocean_active_indices = m_atmos_to_ocean_flux_active_indices;
@@ -3481,17 +3469,10 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const amrex::Real ocean_time = m_ocean_time_offset + m_atm_tick * m_erf_dt;
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
-        SelectAtmosToOceanActiveView(global_ocean_step);
+        SelectAtmosToOceanActiveView();
         const bool averaging_active = AtmosToOceanAveragingActive();
         const bool use_state_contract =
-            (ActiveAtmosToOceanContract(global_ocean_step) == coupling::AtmosToOceanContract::StatePassing);
-        if (global_ocean_step == 0 && amrex::ParallelDescriptor::IOProcessor()) {
-            amrex::Print() << "Bootstrap atm2ocn contract at ocean_step=0: "
-                           << (use_state_contract ? "state" : "flux")
-                           << " (configured mode="
-                           << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
-                           << ")\n";
-        }
+            (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::StatePassing);
         DriverPrintLine(
             m_driver_verbose,
             std::string("ocean_step=") + std::to_string(global_ocean_step) +

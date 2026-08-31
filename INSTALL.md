@@ -51,8 +51,10 @@ If `FCOMPARE_EXE` is not set for the helper script, it falls back to
 
 ### Known limitations
 
-- `driver.atm2ocn_mode = flux` now has a validated startup bootstrap:
-  `ocean_step = 0` uses state lanes and later steps use imported flux lanes.
+- `driver.atm2ocn_mode = flux` uses the flux lanes from the first ocean step.
+  It previously substituted the state contract at `ocean_step = 0`, because the
+  atmos->ocean pack ran before ERF advanced and the stress tensor was still zero;
+  the pack now follows the atmosphere substeps, so that substitution is gone.
   For the Upwelling debug deck, use nonzero `erf.most.Cd`, `erf.most.Ch`,
   and `erf.most.Cq` so ERF produces live surface stress and heat/moisture
   fluxes.
@@ -306,9 +308,9 @@ mpirun -n 1 ./build/erf-remora-driver Exec/Upwelling/inputs_twoway \
 
 Expected behavior:
 
-- step 0 bootstraps REMORA from ERF state lanes,
-- step 1 exports live flux lanes including stress, sensible heat, latent heat,
-  longwave radiation, and evaporation,
+- every ocean step exports live flux lanes including stress, sensible heat,
+  latent heat, longwave radiation, and evaporation — step 0 included, since the
+  atmos->ocean pack now follows the atmosphere substeps,
 - the driver writes exchange diagnostics when `driver.plot_int_exchange=1`.
 
 `Exec/Upwelling/inputs_ERF` already sets `erf.most.Cd = 0.0014`,

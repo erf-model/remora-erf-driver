@@ -173,8 +173,8 @@ private:
                                amrex::Real time,
                                long long ocean_step) const;
     void ValidateCouplingLayoutsFromSolvers() const;
-    coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
-    void SelectAtmosToOceanActiveView(long long ocean_step);
+    coupling::AtmosToOceanContract ActiveAtmosToOceanContract() const;
+    void SelectAtmosToOceanActiveView();
 
     // Weight calculation and stencil safety helpers
     void BuildRemapWeights();

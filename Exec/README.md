@@ -191,13 +191,16 @@ Atmos->ocean contract mode: <name> (<N> active layers)
 Atmos->ocean active lanes: <names>
 ```
 
-Under the flux-passing contract the lane set changes after the first ocean step,
-which is reported separately:
+The lane set is fixed for the whole run. Flux decks used to substitute the
+state contract at `ocean_step = 0`, because the atmos->ocean pack happened before
+ERF advanced and the stress tensor was still zero at that point. The pack now
+follows the atmosphere substeps, so real stress exists at the first ocean step and
+the substitution has been removed.
 
-```
-Atmos->ocean bootstrap lanes (ocean_step=0): <names>
-Atmos->ocean steady-state lanes (ocean_step>=1): <names>
-```
+One consequence for a deck with no ERF radiation model: the old step-0 state pass
+withheld SWrad/LWrad, so REMORA used its own `remora.swrad_type`/`lwrad_type`
+forcing for that one step. Flux mode passes zeros deliberately, so those lanes are
+now zero from the start rather than for every step but the first.
 
 A lane can also be deliberately withheld, reported per lane as
 `<lane>: withheld (not supplied by ERF)`. Withheld is not a failure: it means

@@ -3030,28 +3030,36 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
 }
 
 void
-ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real time, long long ocean_step) const
+ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real o2a_time,
+                                                      amrex::Real a2o_time,
+                                                      long long ocean_step) const
 {
+    // The two directions are sampled at different instants once the atmosphere
+    // substeps run before the A2O pack: ocean->atmos is packed from REMORA at the
+    // start of the ocean interval, atmos->ocean after ERF has advanced across it.
+    // Stamping both with one time silently mislabels the O2A output by a full ocean
+    // step -- invisible to every test here, because each fcompare is a self-comparison
+    // in which both sides move together.
     if (m_use_two_way_coupling) {
         ValidateFields("Exchange validation ocean->atmos",
-                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), time, ocean_step);
+                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), o2a_time, ocean_step);
     }
     ValidateFields("Exchange validation atmos->ocean",
-                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, time, ocean_step);
+                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, a2o_time, ocean_step);
 
     if (m_use_two_way_coupling) {
         WriteExchangePlotfile(m_plot_file_exchange_o2a,
                               m_ocean_to_atmos,
                               coupling::OceanToAtmosNames(),
                               m_geom,
-                              time,
+                              o2a_time,
                               ocean_step);
     }
     WriteExchangePlotfile(m_plot_file_exchange_a2o,
                           m_atmos_to_ocean_active,
                           m_atmos_to_ocean_active_names,
                           m_geom_ocn,
-                          time,
+                          a2o_time,
                           ocean_step);
 }
 
@@ -3103,7 +3111,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
     }
 
     AdvanceBlocksWithCallbacks(
-        [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
+        [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time,
+               long long /*ocean_step*/) {
             BL_PROFILE("Driver::Pack_Surface");
             // ERF land mask on the destination (ERF) layout: zeroes out
             // land cells in the remapped ocean->atmos SST. Wet/dry masking
@@ -3127,7 +3136,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 }
             }
         },
-        [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
+        [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time,
+               long long /*ocean_step*/) {
             BL_PROFILE("Driver::Apply_Surface");
             // Hand the coverage flag over with the SST. Without it ERF cannot
             // tell an uncovered cell's zero fill from a genuine ocean value,
@@ -3135,7 +3145,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
             // ocean grid does not reach the atmosphere footprint.
             ERFApplyOceanSurfaceState(m_erf, state, time, m_valid_o2a_mf.get());
         },
-        [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
+        [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time,
+               long long ocean_step) {
             BL_PROFILE("Driver::Pack_Atmos");
             amrex::Vector<const amrex::MultiFab*> weight_mf_by_family(kNumWeightFamilies);
             amrex::Vector<const amrex::iMultiFab*> index_mf_by_family(kNumWeightFamilies);
@@ -3185,15 +3196,12 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                     }
                 }
             }
-            const long long ocean_step =
-                m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
             ValidateFields("Post-pack atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
         },
-        [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
+        [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time,
+               long long ocean_step) {
             BL_PROFILE("Driver::Apply_Atmos");
-            const long long ocean_step =
-                m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
             ValidateFields("Pre-apply atmos->ocean validation",
                            states, m_atmos_to_ocean_active_names, time, ocean_step);
             if (ActiveAtmosToOceanContract(ocean_step) == coupling::AtmosToOceanContract::FluxPassing) {
@@ -3395,29 +3403,9 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 std::string("ocean_step=") + std::to_string(global_ocean_step) +
                     " pack ocean->atmos surface state from REMORA at time=" +
                     std::to_string(ocean_time));
-            pack_surface_state(m_ocean_to_atmos, ocean_time);
+            pack_surface_state(m_ocean_to_atmos, ocean_time, global_ocean_step);
             FillOceanToAtmosGhosts();
         }
-        DriverPrintLine(
-            m_driver_verbose,
-            std::string("ocean_step=") + std::to_string(global_ocean_step) +
-                " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
-                " from ERF at time=" + std::to_string(ocean_time));
-        pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
-        if (m_plot_int_exchange > 0 &&
-            (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
-            WriteExchangePlotfiles(ocean_time, global_ocean_step);
-        }
-        FillAtmosToOceanGhosts();
-        DriverPrintLine(
-            m_driver_verbose,
-            std::string("ocean_step=") + std::to_string(global_ocean_step) +
-                " apply atmos->ocean " + (use_state_contract ? "state" : "flux") +
-                " to REMORA at time=" + std::to_string(ocean_time));
-        // Masked view: lanes ERF cannot fill are nulled so REMORA keeps its own
-        // forcing for them (see SelectAtmosToOceanActiveView).
-        apply_atmos_states(m_atmos_to_ocean_apply_view, ocean_time);
-
 
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
@@ -3437,7 +3425,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                     std::string("atm_tick=") + std::to_string(m_atm_tick) +
                         " apply ocean->atmos surface state to ERF at time=" +
                         std::to_string(atm_time));
-                apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
+                apply_ocean_surface_state(m_ocean_to_atmos, atm_time, global_ocean_step);
             }
             const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_erf_dt);
             if (dt_used == amrex::Real(0.0)) {
@@ -3458,6 +3446,33 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         if (stop_coupling) {
             break;
         }
+
+        // The packed lanes now describe the atmosphere at the end of the interval the
+        // ocean is about to integrate, not the beginning. Label them accordingly; this
+        // value is diagnostic only (ERF::PackAtmosphericStates and
+        // REMORA::ApplyAtmospheric{States,Fluxes} both ignore their time argument).
+        const amrex::Real a2o_sample_time = ocean_time + dt_ocn_request;
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                " from ERF at time=" + std::to_string(a2o_sample_time));
+        pack_atmos_states(m_atmos_to_ocean_active, a2o_sample_time, global_ocean_step);
+        if (m_plot_int_exchange > 0 &&
+            (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
+            // O2A was packed at ocean_time, A2O at a2o_sample_time; stamp each
+            // with the instant it actually represents.
+            WriteExchangePlotfiles(ocean_time, a2o_sample_time, global_ocean_step);
+        }
+        FillAtmosToOceanGhosts();
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " apply atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                " to REMORA at time=" + std::to_string(a2o_sample_time));
+        // Masked view: lanes ERF cannot fill are nulled so REMORA keeps its own
+        // forcing for them (see SelectAtmosToOceanActiveView).
+        apply_atmos_states(m_atmos_to_ocean_apply_view, a2o_sample_time, global_ocean_step);
 
         const amrex::Real ocn_dt_used = REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request);
         if (ocn_dt_used == amrex::Real(0.0)) {

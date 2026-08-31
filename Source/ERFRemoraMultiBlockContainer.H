@@ -133,8 +133,10 @@ public:
     const amrex::iMultiFab* GetO2AIndexMultiFab() const { return m_index_o2a_mf.get(); }
 
 private:
-    using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&, amrex::Real)>;
-    using ConstStateFn = std::function<void(const amrex::Vector<amrex::MultiFab*>&, amrex::Real)>;
+    using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&,
+                                              amrex::Real, long long)>;
+    using ConstStateFn = std::function<void(const amrex::Vector<amrex::MultiFab*>&,
+                                            amrex::Real, long long)>;
 
     void AdvanceBlocksWithCallbacks(const MutableStateFn& pack_surface_state,
                                     const ConstStateFn& apply_ocean_surface_state,
@@ -154,7 +156,11 @@ private:
                         const amrex::Vector<std::string>& names,
                         amrex::Real time,
                         long long ocean_step) const;
-    void WriteExchangePlotfiles(amrex::Real time, long long ocean_step) const;
+    // The two exchange directions are sampled at different instants; each is
+    // stamped with the time it actually represents.
+    void WriteExchangePlotfiles(amrex::Real o2a_time,
+                                amrex::Real a2o_time,
+                                long long ocean_step) const;
     void WriteExchangePlotfile(const std::string& prefix,
                                const amrex::Vector<amrex::MultiFab*>& fields,
                                const amrex::Vector<std::string>& names,

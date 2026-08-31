@@ -915,6 +915,17 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     ParallelDescriptor::ReduceLongSum(n_wet);
     ParallelDescriptor::ReduceLongSum(n_wet_uncovered);
 
+    // The fallback in ERF_to_REMORA.cpp:174 branches on the index sentinel;
+    // n_wet_uncovered above is a weight test. They agree today only because the
+    // weight builder never stores an index with zero weight. Assert it, so a
+    // future change that breaks the equivalence surfaces here instead of as
+    // 0 Pa / 0 K arriving in REMORA's bulk-flux chain.
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        n_uncovered == n_no_stencil,
+        "NormalizeWeightsAndCheckConservation: a destination cell has a stored "
+        "source index but zero total weight. The ERF-side fallback keys on the "
+        "index sentinel, so that cell will receive 0 rather than its lane fallback.");
+
     const amrex::Long n_covered = n_cells - n_uncovered;
     if (n_covered == 0) {
         amrex::Print() << "[driver] WARNING remap (" << label << "): no destination cell overlaps any "
@@ -944,10 +955,16 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
         if (n_wet_uncovered > 0) {
             amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_wet_uncovered
                            << " of " << n_wet << " REMORA wet cells have no ERF source overlap. "
-                           << "They fall back to the standard-atmosphere placeholders in "
-                           << "ERF_Coupling.cpp rather than coupled values, so they are forced but "
-                           << "not coupled. Expect these along coastlines where the two land masks "
-                           << "disagree, or where the ocean grid reaches past the atmosphere.\n";
+                           << "ApplyConservativeRemap in Submodules/ERF/Source/Coupling/"
+                           << "ERF_to_REMORA.cpp branches on the -1 index sentinel and assigns a "
+                           << "per-lane fallback: Patm=101325 Pa and Tair=288.15 K are the "
+                           << "standard-atmosphere values; Uwind/Vwind=0 m/s; Cloud, SWrad, LWrad, "
+                           << "and all eight flux lanes=0.0. Qair and Rain are not remapped and "
+                           << "retain the PrefillAtmosToOceanFallbacks values from "
+                           << "remora.air_humidity and remora.rain. Thus uncovered Patm/Tair cells "
+                           << "are forced but not coupled; for wind and flux lanes they are neither "
+                           << "forced nor coupled. Expect these along coastlines where the two land "
+                           << "masks disagree, or where the ocean grid reaches past the atmosphere.\n";
         } else if (ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
             amrex::Print() << "[driver] remap coverage (" << label << "): all " << n_wet
                            << " wet cells covered, min wet frac=" << wet_frac_min << "\n";

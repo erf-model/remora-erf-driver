@@ -331,6 +331,15 @@ struct RemapStagingPlan
     amrex::BoxArray node_ba;   // nodal: corner coordinates
     amrex::BoxArray cell_ba;   // cell-centered: land mask and remapped fields
 
+    // Per REMORA box d, in the active remap frame:
+    //   box_bbox_lo/hi[2*d], [2*d+1]  the grown lon/lat bounding box used to
+    //                                 select staged ERF boxes.
+    //   box_has_erf_overlap[d]        0 when cell_ba[d] is the one-cell corner
+    //                                 placeholder rather than a real region.
+    amrex::Vector<amrex::Real> box_bbox_lo;
+    amrex::Vector<amrex::Real> box_bbox_hi;
+    amrex::Vector<char>        box_has_erf_overlap;
+
     // Staged copies, living on the REMORA DistributionMapping.
     std::unique_ptr<amrex::MultiFab> node_mf;
     std::unique_ptr<amrex::MultiFab> land_mf;
@@ -1625,10 +1634,17 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
 
     // Every rank now derives the same staging BoxArray.
     BoxList cell_bl, node_bl;
+    plan.box_bbox_lo.resize(2 * n_remora_boxes);
+    plan.box_bbox_hi.resize(2 * n_remora_boxes);
+    plan.box_has_erf_overlap.resize(n_remora_boxes);
     for (int d = 0; d < n_remora_boxes; ++d) {
         PlanarBBox remora_bb;
         remora_bb.xlo = remora_lo[2*d  ]; remora_bb.xhi = remora_hi[2*d  ];
         remora_bb.ylo = remora_lo[2*d+1]; remora_bb.yhi = remora_hi[2*d+1];
+        plan.box_bbox_lo[2*d  ] = remora_bb.xlo;
+        plan.box_bbox_hi[2*d  ] = remora_bb.xhi;
+        plan.box_bbox_lo[2*d+1] = remora_bb.ylo;
+        plan.box_bbox_hi[2*d+1] = remora_bb.yhi;
 
         Box need;
         for (int s = 0; s < n_erf_boxes; ++s) {
@@ -1639,6 +1655,7 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
             need = need.ok() ? minBox(need, erf_cell_ba[s]) : erf_cell_ba[s];
         }
 
+        plan.box_has_erf_overlap[d] = static_cast<char>(need.ok());
         if (!need.ok()) {
             // No geographic overlap for this REMORA box. A BoxArray cannot hold
             // an empty box, so park a 1-cell placeholder inside the ERF domain;
@@ -1692,6 +1709,15 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
                        << " (erf domain " << plan.erf_domain_cells << ")"
                        << " max_box_cells=" << plan.max_box_cells
                        << " remora_boxes_without_overlap=" << plan.empty_boxes << "\n";
+    }
+    if (m_remap_verbose >= 2) {
+        for (int d = 0; d < n_remora_boxes; ++d) {
+            amrex::Print() << "[driver] remap staging box " << d
+                           << " bbox=[(" << remora_lo[2*d] << ", "
+                           << remora_lo[2*d+1] << "), ("
+                           << remora_hi[2*d] << ", "
+                           << remora_hi[2*d+1] << ")]\n";
+        }
     }
 }
 

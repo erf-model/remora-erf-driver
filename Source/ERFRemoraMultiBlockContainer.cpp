@@ -464,6 +464,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_extend_corner_ring", m_remap_extend_corner_ring);
     pp_driver.query("remap_bin_cells", m_remap_bin_cells);
     pp_driver.query("remap_min_coverage_frac", m_remap_min_coverage_frac);
+    pp_driver.query("remap_donor_fill", m_remap_donor_fill_request);
 
     DriverPrintHeader(
         m_driver_verbose,
@@ -1319,6 +1320,7 @@ void
 ERFRemoraMultiBlockContainer::BuildRemapWeights()
 {
     ResolveRemapFrame();
+    ResolveDonorFillMode();
 
     if (m_remap_spherical) {
         BuildERFCornerMesh();
@@ -1409,6 +1411,67 @@ ERFRemoraMultiBlockContainer::ResolveRemapFrame()
                            << m_atm_rb.lo(0) << "," << m_atm_rb.hi(0) << "]x["
                            << m_atm_rb.lo(1) << "," << m_atm_rb.hi(1) << "]\n";
         }
+    }
+}
+
+// Decide what an uncovered wet destination cell receives, and refuse to guess:
+// like driver.remap_frame, an unrecognized request aborts with the valid values
+// rather than silently selecting one of them.
+//
+// The default is withhold, not COAWST fidelity. A source-level survey of
+// production couplers found none that donor-fills an unmapped destination cell:
+// ESMF's unmappedaction defaults to ERROR, CMEPS pre-fills the destination and
+// then maps with zeroregion=REGION_SELECT so unmapped cells keep the pre-fill,
+// YAC does not interpolate unmapped points, and CDO writes a missing value.
+// SCRIP and OASIS are the two that fill, and both fill with zero -- OASIS
+// documents that as a deficiency, not a feature. ESMF goes further and refuses
+// to combine extrapolation with conservative regridding at all, because "doing
+// so would result in non-conservative weights". That objection applies exactly
+// here: the donor fill grafts a full-weight nearest-neighbour row into a
+// fracarea-normalized conservative matrix. So COAWST's check_weights behaviour
+// is opt-in and says so loudly, and the shipped default is the one the
+// literature supports.
+void
+ERFRemoraMultiBlockContainer::ResolveDonorFillMode()
+{
+    if (m_remap_donor_fill_request == "withhold") {
+        m_remap_donor_fill_mode = DonorFillMode::Withhold;
+    } else if (m_remap_donor_fill_request == "coawst") {
+        m_remap_donor_fill_mode = DonorFillMode::Coawst;
+    } else {
+        amrex::Abort("driver.remap_donor_fill must be withhold or coawst; got '" +
+                     m_remap_donor_fill_request + "'");
+    }
+
+    if (m_remap_verbose >= 1) {
+        amrex::Print() << "[driver] BuildRemapWeights: donor fill = "
+                       << m_remap_donor_fill_request
+                       << (m_remap_spherical ? "" : " (inert in the cartesian frame)") << "\n";
+    }
+
+    if (m_remap_donor_fill_mode != DonorFillMode::Coawst) { return; }
+
+    // Not verbosity-gated. Opting out of the literature-supported default must
+    // never be silent, and the operator needs the word "coawst" in the log to
+    // connect a non-conservative A2O operator back to the flag that caused it.
+    amrex::Print()
+        << "[driver] WARNING remap: driver.remap_donor_fill=coawst grafts a full-weight "
+        << "nearest-neighbour stencil into the fracarea-normalized conservative matrix for "
+        << "every wet destination cell with no source overlap. This reproduces COAWST's "
+        << "check_weights (Lib/SCRIP_COAWST/scrip.f:343), but no production coupler does it: "
+        << "ESMF defaults unmappedaction=ERROR and refuses to combine extrapolation with "
+        << "conservative regridding because \"doing so would result in non-conservative "
+        << "weights\"; CMEPS pre-fills and maps with zeroregion=REGION_SELECT; YAC does not "
+        << "interpolate unmapped points; CDO writes a missing value. The resulting "
+        << "atmosphere->ocean operator is NOT conservative, and the donor is chosen from the "
+        << "rank-dependent staged source region, so results can change with rank count. The "
+        << "default, driver.remap_donor_fill=withhold, instead leaves these cells to the "
+        << "per-lane fallbacks in ApplyConservativeRemap and reports them uncovered.\n";
+
+    if (!m_remap_spherical) {
+        amrex::Print() << "[driver] remap: driver.remap_donor_fill=coawst has no effect in the "
+                       << "cartesian frame; the donor search only runs when the frame is "
+                       << "spherical.\n";
     }
 }
 
@@ -2159,7 +2222,20 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                     // Only wet holes are searched. Dry holes are both uninteresting
                     // and numerous (they are the land-shadowed majority), and
                     // scanning for them would cost orders of magnitude more.
-                    if (overlaps.empty() && m_remap_spherical && wet_arr &&
+                    //
+                    // Off by default (driver.remap_donor_fill=withhold), because no
+                    // production coupler donor-fills an unmapped cell and because the
+                    // graft below is not conservative -- ESMF refuses to combine
+                    // extrapolation with conservative regridding for exactly this
+                    // reason. See ResolveDonorFillMode() for the full argument and
+                    // for the warning the coawst mode prints. Under withhold this
+                    // block is simply not entered: `overlaps` stays empty, the
+                    // `continue` below leaves the -1 index sentinel and zero weights
+                    // in place, NormalizeWeightsAndCheckConservation counts the cell
+                    // uncovered, and ApplyConservativeRemap assigns that lane's
+                    // fallback. Nothing else is bypassed.
+                    if (m_remap_donor_fill_mode == DonorFillMode::Coawst &&
+                        overlaps.empty() && m_remap_spherical && wet_arr &&
                         wet_arr(i,j,0) > Real(0.5)) {
                         Real dst_cx = 0.0, dst_cy = 0.0;
                         for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }

@@ -40,6 +40,29 @@ enum class WeightFamily {
 
 WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
 
+// What happens to a wet destination cell that no source cell overlaps.
+//
+// Withhold: leave the cell without a stencil. Its index keeps the -1 sentinel,
+//   its weights stay zero, it is reported uncovered, and ApplyConservativeRemap
+//   assigns that lane's fallback value. This is what production couplers do:
+//   ESMF's unmappedaction defaults to ERROR, CMEPS pre-fills and then maps with
+//   zeroregion=REGION_SELECT, YAC does not interpolate unmapped points, and CDO
+//   pre-fills with a missing value. It is the default here for that reason.
+// Coawst: graft a full-weight stencil pointing at the nearest non-land source
+//   cell, reproducing COAWST's check_weights (Lib/SCRIP_COAWST/scrip.f:343).
+//   SCRIP and OASIS are the only comparable codes that fill at all, and both
+//   fill with zero -- OASIS documents that as a deficiency. ESMF refuses to
+//   combine extrapolation with conservative regridding outright, because
+//   "doing so would result in non-conservative weights", which is exactly the
+//   objection to this mode: a full-weight nearest-neighbour row spliced into a
+//   fracarea-normalized conservative matrix is not conservative. Opt-in only.
+//
+// Both modes are inert in the cartesian frame, where the donor search never runs.
+enum class DonorFillMode {
+    Withhold,
+    Coawst
+};
+
 // Cached plan for moving ERF-layout (source) surface geometry onto the REMORA
 // (destination) layout. Defined in the implementation file so this header stays
 // free of AMReX_NonLocalBC.H.
@@ -158,6 +181,12 @@ private:
     // for every cell and therefore an all-zero, silently unforced coupling.
     void ResolveRemapFrame();
 
+    // Decide (and report) what an uncovered wet destination cell receives.
+    // Called after ResolveRemapFrame() because the mode is inert in the
+    // cartesian frame and the report says so. Aborts on an unrecognized
+    // request, the same way ResolveRemapFrame() does.
+    void ResolveDonorFillMode();
+
     // Spherical-frame ERF geometry, built on the ERF layout: a nodal lon/lat
     // corner mesh that tiles without gaps, plus the cell-centered land mask.
     // Split from the REMORA-side loop so no MFIter touches two
@@ -230,6 +259,11 @@ private:
     // a sliver of one ocean cell. Matches CESM's 0.001 destination-fraction cut
     // (OASIS/CERFACS use 1/1000).
     amrex::Real m_remap_min_coverage_frac = amrex::Real(0.001);
+    // What a wet destination cell with no source overlap receives. "withhold" |
+    // "coawst" is only ever a request, interpreted once in
+    // ResolveDonorFillMode(); see DonorFillMode for why withhold is the default.
+    std::string m_remap_donor_fill_request = "withhold";
+    DonorFillMode m_remap_donor_fill_mode = DonorFillMode::Withhold;
 
     // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
     // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.

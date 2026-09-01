@@ -765,6 +765,11 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
                 *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0);
             m_index_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
                 *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0);
+            // Same BoxArray, DistributionMapping and stagger as this family's
+            // weights, so the coverage loop can read all three off one MFIter.
+            m_donor_fill_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
+                *family_ba[f], *family_dm[f], 1, 0);
+            m_donor_fill_mf_by_family[f]->setVal(0);
         }
     }
 
@@ -845,6 +850,7 @@ void
 ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                                                    const amrex::iMultiFab& index_mf,
                                                                    const amrex::MultiFab* wet_mask,
+                                                                   const amrex::iMultiFab* donor_fill,
                                                                    const char* label)
 {
     using namespace amrex;
@@ -861,6 +867,13 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     amrex::Long n_wet = 0;
     amrex::Long n_wet_uncovered = 0;
     amrex::Real wet_frac_min = std::numeric_limits<amrex::Real>::max();
+    // Cells whose stencil is a donor graft rather than a real overlap. These have
+    // sum_w > 0, so every count above already treats them as covered; without a
+    // separate tally the verdict below would report a clean sheet for a run in
+    // which some cells took a neighbour's atmospheric state instead of their own.
+    // The donor search only fires for cells that are wet under this same mask, so
+    // this is a wet-cell count whenever it is nonzero.
+    amrex::Long n_donor_filled = 0;
 
     // Faces on a box seam belong to both adjacent boxes, so summing validbox over
     // boxes would count them twice. Give each face to the lower box and let the
@@ -876,6 +889,9 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
         auto const& idx_arr = index_mf.const_array(mfi);
         const bool has_mask = (wet_mask != nullptr);
         auto const& wet_arr = has_mask ? wet_mask->const_array(mfi) : Array4<const Real>{};
+        const bool has_donor_flag = (donor_fill != nullptr);
+        auto const& donor_arr = has_donor_flag ? donor_fill->const_array(mfi)
+                                               : Array4<const int>{};
 
         Box count_bx = bx;
         for (int dir = 0; dir < 2; ++dir) {
@@ -893,10 +909,12 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
 
                 const bool counted = count_bx.contains(IntVect(i,j,0));
                 const bool is_wet = has_mask ? (wet_arr(i,j,0) > Real(0.5)) : false;
+                const bool is_donor_filled = has_donor_flag && (donor_arr(i,j,0) != 0);
                 if (counted) {
                     ++n_cells;
                     if (idx_arr(i, j, 0, 0) < 0) { ++n_no_stencil; }
                     if (has_mask && is_wet) { ++n_wet; }
+                    if (is_donor_filled) { ++n_donor_filled; }
                 }
 
                 if (sum_w > 0.0) {
@@ -905,7 +923,14 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                         frac_max = std::max(frac_max, sum_w);
                         frac_sum += sum_w;
                         max_cover_err = std::max(max_cover_err, std::abs(sum_w - 1.0));
-                        if (has_mask && is_wet) { wet_frac_min = std::min(wet_frac_min, sum_w); }
+                        // A donor graft is a single full-area overlap, so its
+                        // sum_w is exactly the destination area and normalizes to
+                        // a flawless 1.0. Letting that into wet_frac_min would
+                        // report the worst real coverage as better than it is, so
+                        // the statistic is taken over genuinely covered wet cells.
+                        if (has_mask && is_wet && !is_donor_filled) {
+                            wet_frac_min = std::min(wet_frac_min, sum_w);
+                        }
                     }
                     for (int m = 0; m < MAX_STENCIL_SIZE; ++m) {
                         w_arr(i, j, 0, m) /= sum_w;
@@ -928,6 +953,7 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     ParallelDescriptor::ReduceLongSum(n_no_stencil);
     ParallelDescriptor::ReduceLongSum(n_wet);
     ParallelDescriptor::ReduceLongSum(n_wet_uncovered);
+    ParallelDescriptor::ReduceLongSum(n_donor_filled);
 
     // The fallback in ERF_to_REMORA.cpp:174 branches on the index sentinel;
     // n_wet_uncovered above is a weight test. They agree today only because the
@@ -957,8 +983,14 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
         // hiding in it.
         amrex::Print() << "[driver] remap coverage (" << label << "): cells=" << n_cells
                        << " uncovered=" << n_uncovered
-                       << " no_stencil=" << n_no_stencil
-                       << " frac min/mean/max=" << frac_min << "/"
+                       << " no_stencil=" << n_no_stencil;
+        // Only for directions that can donor-fill at all, so the O2A line keeps
+        // its existing shape rather than carrying a field that is structurally
+        // zero there.
+        if (donor_fill != nullptr) {
+            amrex::Print() << " donor_filled=" << n_donor_filled;
+        }
+        amrex::Print() << " frac min/mean/max=" << frac_min << "/"
                        << (frac_sum / static_cast<amrex::Real>(n_covered)) << "/" << frac_max
                        << " max|frac-1|=" << max_cover_err << "\n";
     }
@@ -966,6 +998,28 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     // The verdict: an uncovered wet cell is a real hole in the forcing, whereas an
     // uncovered dry cell is expected wherever the atmosphere grid is land.
     if (wet_mask != nullptr) {
+        // Reported before, and independently of, the uncovered warning. A
+        // donor-filled cell is not uncovered -- it has a stencil and sum_w > 0, so
+        // n_uncovered and n_wet_uncovered deliberately exclude it, and those two
+        // counters keep exactly the meaning they had before this category existed.
+        // But it is not covered either, in the sense the coverage numbers are read
+        // for: no source cell of its own overlaps it. Without this line a run in
+        // which every uncovered cell was donor-filled prints the clean-sheet
+        // verdict below, and a reader cannot tell a genuinely covered cell from
+        // one holding a neighbour's value.
+        if (n_donor_filled > 0) {
+            amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_donor_filled
+                           << " of " << n_wet << " REMORA wet cells have no ERF source cell of "
+                           << "their own and were donor-filled from the nearest non-land ERF "
+                           << "cell (driver.remap_donor_fill=coawst). Each carries a "
+                           << "neighbour's atmospheric state, not its own, and the full-weight "
+                           << "graft makes this atmosphere->ocean operator non-conservative. "
+                           << "They are excluded from the min wet frac below and are NOT part "
+                           << "of the uncovered counts. Under the default "
+                           << "driver.remap_donor_fill=withhold these cells would instead be "
+                           << "reported uncovered and take the per-lane ApplyConservativeRemap "
+                           << "fallbacks.\n";
+        }
         if (n_wet_uncovered > 0) {
             amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_wet_uncovered
                            << " of " << n_wet << " REMORA wet cells have no ERF source overlap. "
@@ -979,9 +1033,15 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                            << "are forced but not coupled; for wind and flux lanes they are neither "
                            << "forced nor coupled. Expect these along coastlines where the two land "
                            << "masks disagree, or where the ocean grid reaches past the atmosphere.\n";
-        } else if (ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
+        } else if (n_donor_filled == 0 &&
+                   ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
+            // The clean sheet, and it says donor_filled=0 out loud so the reader
+            // does not have to infer it from the line's absence. When any cell was
+            // donor-filled this message is suppressed and the warning above stands
+            // as the verdict instead.
             amrex::Print() << "[driver] remap coverage (" << label << "): all " << n_wet
-                           << " wet cells covered, min wet frac=" << wet_frac_min << "\n";
+                           << " wet cells covered by real source overlap (donor_filled=0)"
+                           << ", min wet frac=" << wet_frac_min << "\n";
         }
     }
 }
@@ -2028,7 +2088,8 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     for (int f = 0; f < kNumWeightFamilies; ++f) {
         MultiFab* weight_mf = m_weight_mf_by_family[f].get();
         iMultiFab* index_mf = m_index_mf_by_family[f].get();
-        if (!weight_mf || !index_mf) { continue; }
+        iMultiFab* donor_fill_mf = m_donor_fill_mf_by_family[f].get();
+        if (!weight_mf || !index_mf || !donor_fill_mf) { continue; }
 
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             weight_mf->boxArray().ixType().toIntVect() == kExpectedFamilyStagger[f],
@@ -2036,6 +2097,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
 
         weight_mf->setVal(0.0);
         index_mf->setVal(-1);
+        donor_fill_mf->setVal(0);
 
         const IntVect stagger = kExpectedFamilyStagger[f];
         // TauX/TauY carry a face-staggered ERF source as well (tau13/tau23 on
@@ -2082,6 +2144,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             Box bx = mfi.validbox();
             auto weight_arr = weight_mf->array(mfi);
             auto index_arr = index_mf->array(mfi);
+            auto donor_fill_arr = donor_fill_mf->array(mfi);
 
             // Spherical frame: REMORA corners from its psi lon/lat, and ERF
             // corners from the staged mesh. All of these arrays are on the REMORA
@@ -2463,6 +2526,13 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                             // this cell takes the donor's value exactly.
                             overlaps.emplace_back(remora_area, best_ij);
                             ++donor_filled;
+                            // Mark the cell so the coverage report can separate it
+                            // from a genuinely covered one. Both this flag and
+                            // donor_filled count the same event; they differ in
+                            // that donor_filled is a raw per-box tally used only
+                            // for the one-line summary, whereas this flag is
+                            // de-duplicated across box seams downstream.
+                            donor_fill_arr(i, j, 0) = 1;
                         }
                     }
 
@@ -2492,17 +2562,27 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
             "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
         };
-        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask, kFamilyLabel[f]);
+        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask,
+                                             donor_fill_mf, kFamilyLabel[f]);
     }
 
     ParallelDescriptor::ReduceIntMax(max_stencil_used);
     ParallelDescriptor::ReduceLongSum(dropped_overlaps);
     ParallelDescriptor::ReduceLongSum(donor_filled);
     if (donor_filled > 0) {
+        // Summed over all four families and incremented once per box visit, so for
+        // TAUX_FACE/TAUY_FACE a donor-filled face on a box seam is counted once
+        // per adjacent box that fills it and this total moves with the
+        // decomposition. The per-family donor_filled= field on the coverage lines
+        // above applies the same seam-ownership rule as every other coverage
+        // count, so that is the number to compare between runs.
         amrex::Print() << "[driver] remap: " << donor_filled
                        << " wet destination cells had no valid source overlap and were filled from "
                        << "their nearest non-land source cell (COAWST check_weights behaviour). "
-                       << "These carry a neighbour's atmospheric state rather than their own.\n";
+                       << "These carry a neighbour's atmospheric state rather than their own. "
+                       << "Counted per box visit, so a donor-filled face on a box seam can be "
+                       << "counted once per adjacent box; the per-family donor_filled= counts "
+                       << "above are seam-de-duplicated.\n";
     }
     if (dropped_overlaps > 0) {
         amrex::Print() << "[driver] WARNING BuildRemapWeights: " << dropped_overlaps
@@ -2813,7 +2893,11 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
             }
         }
 
-        NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf, nullptr, "O2A SST");
+        // No wet mask and no donor flag: O2A reports coverage over all ERF cells,
+        // and the donor search is an atmosphere->ocean-only mechanism, so there is
+        // no donor category to separate out here.
+        NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf,
+                                             nullptr, nullptr, "O2A SST");
 
         ParallelDescriptor::ReduceLongSum(uncovered_outside);
         ParallelDescriptor::ReduceLongSum(uncovered_masked);

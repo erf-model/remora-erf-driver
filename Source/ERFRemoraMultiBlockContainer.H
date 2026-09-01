@@ -170,9 +170,16 @@ private:
     // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
     // to report coverage over the cells that actually carry ocean. Pass nullptr
     // when unavailable; coverage is then reported over all cells only.
+    //
+    // donor_fill is that family's per-cell donor flag (1 = this cell's stencil was
+    // grafted by the coawst donor search rather than clipped from a real overlap).
+    // A donor-filled cell has sum_w > 0 and would otherwise be indistinguishable
+    // from a genuinely covered one, so it is reported as its own category. Pass
+    // nullptr for a direction that has no donor search (O2A).
     void NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                               const amrex::iMultiFab& index_mf,
                                               const amrex::MultiFab* wet_mask,
+                                              const amrex::iMultiFab* donor_fill,
                                               const char* label);
 
     // Decide (and report) which coordinate frame the weights are built in.
@@ -326,6 +333,29 @@ private:
     // REMORA layout, on that family's destination stagger).
     std::array<std::unique_ptr<amrex::MultiFab>, kNumWeightFamilies> m_weight_mf_by_family;
     std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_index_mf_by_family;
+    // Per-cell donor flag for each A2O family: 1 where the coawst donor search
+    // grafted a full-weight stencil pointing at the nearest non-land source cell,
+    // 0 everywhere else. Always 0 under driver.remap_donor_fill=withhold and in
+    // the cartesian frame.
+    //
+    // This is a flag array rather than a counter accumulated in the weight-build
+    // loop because faces on a box seam belong to two boxes, so a build-loop
+    // counter would double-count seam faces for TAUX_FACE/TAUY_FACE -- and would
+    // double-count them a different number of times under a different
+    // decomposition, which is a rank-dependent diagnostic inside a change whose
+    // whole subject is rank dependence. Carrying the flag on the destination
+    // layout lets NormalizeWeightsAndCheckConservation reuse the seam-ownership
+    // rule it already applies to every other coverage count.
+    //
+    // It cannot be folded into m_index_mf_by_family: every component there is a
+    // stencil coordinate that ApplyConservativeRemap dereferences.
+    //
+    // This is also the A2O counterpart of m_valid_o2a_mf, which is the array the
+    // O2A direction hands ERF so ERF can tell an uncovered zero from a real ocean
+    // value. Nothing yet hands this one to REMORA, so REMORA still cannot tell a
+    // coupled 101325 Pa from a placeholder 101325 Pa; closing that asymmetry is a
+    // separate change.
+    std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_donor_fill_mf_by_family;
 
     // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout). O2A is
     // SST-only/scalar today; kept as a single pair (SCALAR_CENTERED-equivalent)

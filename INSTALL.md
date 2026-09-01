@@ -373,7 +373,35 @@ driver.remap_frame       = auto     # auto | spherical | cartesian
 driver.remap_v           = 1        # remap geometry and coverage detail
 driver.v                 = 0        # driver lifecycle detail
 driver.plot_int_exchange = -1       # exchange-field plotfiles
+
+# What a wet ocean cell with no atmosphere source cell receives.
+# Spherical frame only; inert in the cartesian frame.
+driver.remap_donor_fill  = withhold # withhold | coawst
+driver.remap_donor_max_diagonals = 3.0   # coawst acceptance radius, coawst only
 ```
+
+`driver.remap_donor_fill` decides what happens to a wet REMORA cell that no ERF
+cell overlaps — because the two land masks disagree along the coast, or because
+the ocean grid reaches past the atmosphere.
+
+- `withhold` (the default) writes no stencil. The cell is reported uncovered and
+  `ApplyConservativeRemap` assigns that lane's fallback. Read the lane list before
+  assuming this is harmless: **only Patm (101325 Pa) and Tair (288.15 K) get
+  standard-atmosphere values.** Uwind/Vwind get 0 m/s; Cloud, SWrad, LWrad and all
+  eight flux lanes get a literal 0.0; Qair and Rain are not remapped at all and
+  keep whatever `PrefillAtmosToOceanFallbacks` wrote. Withholding is what CMEPS,
+  YAC, CDO and CESM do with an unmapped point, and it is the shipped default for
+  that reason.
+- `coawst` instead grafts a full-weight stencil pointing at the nearest non-land
+  ERF cell, reproducing COAWST's `check_weights`. The resulting
+  atmosphere-to-ocean operator is **not conservative**, and selecting the mode
+  prints an unconditional warning saying so.
+
+`driver.remap_donor_max_diagonals` bounds the `coawst` donor search to that many
+of the donor cell's own control-volume diagonals. It is inert under `withhold`,
+and the driver prints a note rather than letting a set value look effective. The
+bound has no precedent in any production coupler; `Exec/README.md` explains why it
+exists anyway and what the value does and does not control.
 
 Retired keys, for anyone reading an old deck: `driver.synthetic_only`,
 `driver.dt_atm`, `driver.atm_substeps_per_ocean_step`, `driver.ocean_steps`,

@@ -264,6 +264,22 @@ private:
     // ResolveDonorFillMode(); see DonorFillMode for why withhold is the default.
     std::string m_remap_donor_fill_request = "withhold";
     DonorFillMode m_remap_donor_fill_mode = DonorFillMode::Withhold;
+    // Farthest a coawst-mode donor may sit from the destination cell it fills,
+    // as a multiple of that donor's own control-volume diagonal, in the same
+    // cos(latitude)-corrected metric the search uses. Dimensionless so it
+    // survives a change of grid resolution; the search metric is corrected
+    // degrees, which no user can pick a threshold in.
+    //
+    // This bound has NO precedent in any production coupler and is a deliberate
+    // departure, not borrowed practice: ESMF's NEAREST_STOD is not
+    // distance-bounded at all (when no local candidate exists it queries its
+    // process directory with an infinite box, so it always finds the globally
+    // nearest source however far away), and creep fill bounds by iteration
+    // count rather than by distance. 3.0 is a judgement call carried over from
+    // issue #6 and has not been calibrated against a production grid pair.
+    // Inert unless the mode is coawst and the frame is spherical.
+    amrex::Real m_remap_donor_max_diagonals = amrex::Real(3.0);
+    bool m_remap_donor_max_diagonals_set = false;
 
     // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
     // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.

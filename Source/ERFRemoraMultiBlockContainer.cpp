@@ -465,6 +465,10 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_bin_cells", m_remap_bin_cells);
     pp_driver.query("remap_min_coverage_frac", m_remap_min_coverage_frac);
     pp_driver.query("remap_donor_fill", m_remap_donor_fill_request);
+    pp_driver.query("remap_donor_max_diagonals", m_remap_donor_max_diagonals);
+    // contains() rather than the query() return, so "set explicitly to the
+    // default" is distinguishable from "not set" when reporting it as inert.
+    m_remap_donor_max_diagonals_set = pp_driver.contains("remap_donor_max_diagonals");
 
     DriverPrintHeader(
         m_driver_verbose,
@@ -1443,13 +1447,25 @@ ERFRemoraMultiBlockContainer::ResolveDonorFillMode()
                      m_remap_donor_fill_request + "'");
     }
 
+    if (m_remap_donor_max_diagonals < amrex::Real(0.0)) {
+        amrex::Abort("driver.remap_donor_max_diagonals must be >= 0; got " +
+                     std::to_string(m_remap_donor_max_diagonals));
+    }
+
     if (m_remap_verbose >= 1) {
         amrex::Print() << "[driver] BuildRemapWeights: donor fill = "
                        << m_remap_donor_fill_request
                        << (m_remap_spherical ? "" : " (inert in the cartesian frame)") << "\n";
     }
 
-    if (m_remap_donor_fill_mode != DonorFillMode::Coawst) { return; }
+    if (m_remap_donor_fill_mode != DonorFillMode::Coawst) {
+        if (m_remap_donor_max_diagonals_set) {
+            amrex::Print() << "[driver] remap: driver.remap_donor_max_diagonals is inert under "
+                           << "driver.remap_donor_fill=withhold; it bounds the coawst donor "
+                           << "search, and no donor search runs in withhold mode.\n";
+        }
+        return;
+    }
 
     // Not verbosity-gated. Opting out of the literature-supported default must
     // never be silent, and the operator needs the word "coawst" in the log to
@@ -1463,10 +1479,25 @@ ERFRemoraMultiBlockContainer::ResolveDonorFillMode()
         << "conservative regridding because \"doing so would result in non-conservative "
         << "weights\"; CMEPS pre-fills and maps with zeroregion=REGION_SELECT; YAC does not "
         << "interpolate unmapped points; CDO writes a missing value. The resulting "
-        << "atmosphere->ocean operator is NOT conservative, and the donor is chosen from the "
-        << "rank-dependent staged source region, so results can change with rank count. The "
-        << "default, driver.remap_donor_fill=withhold, instead leaves these cells to the "
-        << "per-lane fallbacks in ApplyConservativeRemap and reports them uncovered.\n";
+        << "atmosphere->ocean operator is NOT conservative. The default, "
+        << "driver.remap_donor_fill=withhold, instead leaves these cells to the per-lane "
+        << "fallbacks in ApplyConservativeRemap and reports them uncovered.\n";
+
+    // Say plainly what the bounds do and do not buy, so nobody reads the clip as
+    // a rank-invariance guarantee it does not deliver.
+    amrex::Print()
+        << "[driver] remap: coawst donors are restricted to source cells whose centroid lies "
+        << "inside the destination box's own grown lon/lat bounding box, and to within "
+        << "driver.remap_donor_max_diagonals=" << m_remap_donor_max_diagonals
+        << " donor diagonals of the destination centroid; destination boxes with no "
+        << "geographic source overlap are not donor-filled at all. The geographic clip "
+        << "removes the ERF decomposition from the donor choice, because every source cell "
+        << "inside that bounding box is staged under every ERF decomposition. It does NOT "
+        << "remove the REMORA decomposition: the bounding box is itself per-REMORA-box, so a "
+        << "destination cell near its edge can have the same donor accepted under one REMORA "
+        << "box layout and rejected under another. The acceptance radius has no precedent in "
+        << "any production coupler -- ESMF's nearest-source search is explicitly unbounded -- "
+        << "and is a deliberate departure.\n";
 
     if (!m_remap_spherical) {
         amrex::Print() << "[driver] remap: driver.remap_donor_fill=coawst has no effect in the "
@@ -2013,6 +2044,30 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         const int src_face_dir =
             (stagger == IntVect(1,0,0)) ? 0 : ((stagger == IntVect(0,1,0)) ? 1 : -1);
 
+        // Index space this family's source cells live in, on the ERF level-0
+        // domain rather than on any one rank's staged region. Used only to key
+        // the donor-search tie-break below. Empty in the cartesian frame, where
+        // there is no staging plan and no donor search.
+        const Box donor_src_domain =
+            (!m_remap_spherical)
+                ? Box()
+                : ((src_face_dir < 0)
+                       ? m_staging_plan->erf_cell_domain
+                       : amrex::convert(m_staging_plan->erf_cell_domain,
+                                        amrex::IntVect::TheDimensionVector(src_face_dir)));
+        // Global source ID: row-major linear index over donor_src_domain. This
+        // is deliberately a *domain* quantity. It contains no rank, no box
+        // index and no reference to erf_staged_box, so two ranks that both hold
+        // source cell (si,sj) agree on its ID under any decomposition. That is
+        // the whole point: an MPI_MINLOC-style tie-break is only reproducible
+        // when the key it minimizes over is a global cell ID -- feed it a rank
+        // or a local index and the answer becomes rank-count dependent.
+        auto donor_global_id = [&] (int si, int sj) -> long long {
+            return static_cast<long long>(sj - donor_src_domain.smallEnd(1))
+                     * static_cast<long long>(donor_src_domain.length(0))
+                 + static_cast<long long>(si - donor_src_domain.smallEnd(0));
+        };
+
         // Each family's mask must sit on that family's stagger, or const_array()
         // would be reading a differently shaped array.
         const MultiFab* family_mask = remora_mskr;
@@ -2036,6 +2091,12 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             Array4<const Real> erf_land{};
             Box erf_staged_box;
             Box erf_staged_node_box;
+            // Geographic bound on this destination box's donor search. G(B) is
+            // the grown lon/lat bounding box BuildERFStagingPlan used to pick
+            // the ERF boxes to stage, and donor_box_has_erf_overlap is 0 when it
+            // intersected none of them.
+            bool donor_box_has_erf_overlap = false;
+            PlanarBBox donor_box_bbox;
             if (m_remap_spherical) {
                 erf_node = m_staging_plan->node_mf->const_array(mfi);
                 erf_land = m_staging_plan->land_mf->const_array(mfi);
@@ -2043,6 +2104,18 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                 erf_staged_node_box = m_staging_plan->node_mf->boxArray()[mfi.index()];
                 search.define(erf_staged_box, Array4<const Real>(erf_node, 0),
                               Array4<const Real>(erf_node, 1), m_remap_bin_cells);
+                // Same index space the erf_staged_box lookup just above uses:
+                // the staging plan's per-box vectors are indexed by REMORA box,
+                // and this family's BoxArray is m_ba_ocn on that family's
+                // stagger, so mfi.index() is that box index.
+                const int d = mfi.index();
+                AMREX_ASSERT(d < static_cast<int>(m_staging_plan->box_has_erf_overlap.size()));
+                donor_box_has_erf_overlap =
+                    (m_staging_plan->box_has_erf_overlap[d] != 0);
+                donor_box_bbox.xlo = m_staging_plan->box_bbox_lo[2*d  ];
+                donor_box_bbox.xhi = m_staging_plan->box_bbox_hi[2*d  ];
+                donor_box_bbox.ylo = m_staging_plan->box_bbox_lo[2*d+1];
+                donor_box_bbox.yhi = m_staging_plan->box_bbox_hi[2*d+1];
             }
             // Spherical ERF source geometry on the active source stagger. A
             // face is treated as land when either bracketing ERF cell is land,
@@ -2234,9 +2307,23 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                     // in place, NormalizeWeightsAndCheckConservation counts the cell
                     // uncovered, and ApplyConservativeRemap assigns that lane's
                     // fallback. Nothing else is bypassed.
+                    //
+                    // donor_box_has_erf_overlap excludes destination boxes whose
+                    // grown geographic footprint intersected no ERF box at all.
+                    // For those, erf_staged_box is not a real region: it is the
+                    // one-cell placeholder BuildERFStagingPlan parks at
+                    // erf_cell_domain.smallEnd(), because a BoxArray cannot hold
+                    // an empty box. Without this test the search happily selects
+                    // that corner and grafts a full-weight stencil, so every wet
+                    // cell in such a box takes the ERF domain corner's
+                    // atmospheric state -- and is then counted as covered rather
+                    // than reported uncovered. A distance threshold cannot
+                    // reliably reject it: two nearly-touching grids could place
+                    // the corner within any radius. The recorded flag rejects it
+                    // by construction instead.
                     if (m_remap_donor_fill_mode == DonorFillMode::Coawst &&
                         overlaps.empty() && m_remap_spherical && wet_arr &&
-                        wet_arr(i,j,0) > Real(0.5)) {
+                        wet_arr(i,j,0) > Real(0.5) && donor_box_has_erf_overlap) {
                         Real dst_cx = 0.0, dst_cy = 0.0;
                         for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }
                         dst_cx /= static_cast<Real>(remora_poly.size());
@@ -2247,8 +2334,34 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                         const Real cos_lat = std::max(std::cos(dst_cy * Real(M_PI) / Real(180.0)),
                                                       Real(1.0e-6));
 
+                        // Ordering is lexicographic on (distance^2, global source
+                        // ID), not on distance alone. Exact ties are common rather
+                        // than exotic on a structured grid -- a destination cell
+                        // centered between two source cells produces bitwise-equal
+                        // d2 -- and a bare `d2 < best_d2` resolves them by scan
+                        // order, which starts at erf_staged_box.smallEnd() and so
+                        // moves with the decomposition. ESMF and YAC both break
+                        // nearest-neighbour ties by smallest global ID for exactly
+                        // this reason; ESMF documents it as "if two points are
+                        // equally close, then the point with the smallest sequence
+                        // index is arbitrarily used".
+                        //
+                        // The `d2 == best_d2` test is exact on purpose. The staged
+                        // node coordinates are exact NonLocalBC::ParallelCopy copies
+                        // of ERF's node values, so d2 for a given (si,sj) is
+                        // bitwise identical under any decomposition; ties here are
+                        // genuine ties, and a tolerance would introduce a new
+                        // ordering ambiguity rather than remove one.
                         Real best_d2 = std::numeric_limits<Real>::max();
+                        long long best_gid = std::numeric_limits<long long>::max();
                         IntVect best_ij(-1,-1,0);
+                        // The winning donor's own control volume. Kept from the
+                        // loop rather than re-derived from the node array
+                        // afterwards, because the search runs one index past
+                        // erf_staged_box in the staggered direction for the face
+                        // families: a raw erf_node(bi+1,bj+1) read at the winning
+                        // index would step one node past erf_staged_node_box.
+                        Vector<Point2D> best_poly;
                         // The donor index is stored in index_arr and dereferenced by
                         // ApplyConservativeRemap against this family's source layout,
                         // so it has to be selected in the same index space the main
@@ -2271,10 +2384,77 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                                 for (const auto& p : src_poly) { sx += p.x; sy += p.y; }
                                 sx /= static_cast<Real>(src_poly.size());
                                 sy /= static_cast<Real>(src_poly.size());
+                                // Clip the candidate set to G(B). This is what
+                                // takes ERF's decomposition out of the answer,
+                                // and it is a proof rather than a heuristic: any
+                                // ERF cell whose lon/lat lies inside G(B) belongs
+                                // to some ERF box whose own geographic bounding
+                                // box intersects G(B), and BuildERFStagingPlan
+                                // minBox-unions every such ERF box into
+                                // erf_staged_box. So the surviving candidates are
+                                // exactly the in-G(B) source cells under every ERF
+                                // box layout, whatever NProcs() and
+                                // amr.max_grid_size* do to ERF. What it does not
+                                // remove is dependence on REMORA's decomposition:
+                                // G(B) is itself a per-REMORA-box quantity, so a
+                                // destination cell near the edge of G(B) can see a
+                                // donor accepted under one REMORA box layout and
+                                // rejected under another. This mode is bounded,
+                                // not proven rank-invariant.
+                                if (sx < donor_box_bbox.xlo || sx > donor_box_bbox.xhi ||
+                                    sy < donor_box_bbox.ylo || sy > donor_box_bbox.yhi) {
+                                    continue;
+                                }
                                 const Real dx = (sx - dst_cx) * cos_lat;
                                 const Real dy = (sy - dst_cy);
                                 const Real d2 = dx*dx + dy*dy;
-                                if (d2 < best_d2) { best_d2 = d2; best_ij = IntVect(si,sj,0); }
+                                const long long gid = donor_global_id(si, sj);
+                                if (d2 < best_d2 || (d2 == best_d2 && gid < best_gid)) {
+                                    best_d2 = d2;
+                                    best_gid = gid;
+                                    best_ij = IntVect(si,sj,0);
+                                    best_poly = src_poly;
+                                }
+                            }
+                        }
+
+                        if (best_ij[0] >= 0) {
+                            // Acceptance radius, measured against the diagonal of
+                            // the donor's own control volume in the same
+                            // cos(latitude)-corrected metric the search used.
+                            // Taken from the polygon the loop already built, not
+                            // from a raw erf_node(bi+1,bj+1) read, which would
+                            // step one node past erf_staged_node_box for the face
+                            // families.
+                            //
+                            // Unlike the geographic clip above this is a
+                            // heuristic, and it is a deliberate departure from
+                            // precedent rather than borrowed practice: no
+                            // production coupler bounds a nearest-source fill by
+                            // distance. ESMF's NEAREST_STOD is explicitly
+                            // unbounded -- it queries its process directory with
+                            // an infinite box when no local candidate exists, so
+                            // it always finds the globally nearest source -- and
+                            // creep fill bounds by iteration count instead. The
+                            // default of 3 diagonals is uncalibrated.
+                            //
+                            // Applied uniformly, not conditioned on whether this
+                            // destination box was partially or fully uncovered,
+                            // because the rank dependence exists in both cases.
+                            // (Zero-overlap boxes are already excluded above, so
+                            // in practice this governs the partially covered
+                            // case.)
+                            const PlanarBBox donor_bb = BBoxOfPolygon(best_poly);
+                            const Real ddx = (donor_bb.xhi - donor_bb.xlo) * cos_lat;
+                            const Real ddy = (donor_bb.yhi - donor_bb.ylo);
+                            const Real donor_diag2 = ddx*ddx + ddy*ddy;
+                            const Real r = m_remap_donor_max_diagonals;
+                            if (best_d2 > r * r * donor_diag2) {
+                                // Rejected. `overlaps` stays empty, the continue
+                                // below leaves the -1 index sentinel, and the cell
+                                // takes the same per-lane ERF-side fallback it
+                                // would under withhold. There is no third outcome.
+                                best_ij = IntVect(-1,-1,0);
                             }
                         }
 

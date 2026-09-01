@@ -194,18 +194,38 @@ Atmos->ocean bootstrap lanes (ocean_step=0): <names>
 Atmos->ocean steady-state lanes (ocean_step>=1): <names>
 ```
 
-A lane can also be deliberately withheld, reported per lane as
-`<lane>: withheld (not supplied by ERF)`. Withheld is not a failure: it means
-the driver declined to pass a value it does not have, so REMORA keeps whatever
-its own configuration provides. The two common cases announce themselves:
+### Where each forcing lane's data comes from
 
-- `[driver] ERF reports no active radiation model, so the SWrad/LWrad
-  atmos->ocean lanes are withheld rather than passed as zeros.`
-- `[driver] ERF has no cloud condensate ... so the Cloud atmos->ocean lane is
-  withheld ...`
+Startup prints one row per atmosphere-to-ocean lane:
 
-Both are correct behaviour when ERF has no radiation or moisture model. They
-matter because the alternative — passing zeros — would look like real forcing.
+```
+Atmos->ocean lane provenance (configured mode=state)
+  lane    source  reason
+  Uwind   ERF     packed by ERF
+  Qair    REMORA  ERF does not fill it; REMORA default stands
+  rain    REMORA  remora.rain_type or its value set in deck
+  LWrad   ERF     packed by ERF; REMORA longwave set to external downward
+```
+
+Each lane resolves in order: one the deck configured explicitly stays with
+REMORA; otherwise ERF supplies it if ERF's pack fills it; otherwise it is
+withheld and REMORA's own default stands. Today ERF never fills `Qair` or
+`rain`, fills `SWrad`/`LWrad` only with a radiation model, and `cloud` only with
+cloud liquid or ice.
+
+Withholding is how the driver declines a lane, not a failure: REMORA treats any
+non-null lane as authoritative, so a lane of zeros would read as real forcing and
+displace REMORA's own. Withheld lanes also appear during validation as
+`<lane>: withheld (not supplied by ERF)`. The flux contract is exempt — REMORA
+drops the whole apply if any flux lane is null.
+
+`LWrad` gets one extra step: `remora.lwrad_type` defaults to `computed`, under
+which REMORA's bulk fluxes ignore the field entirely, so when that lane resolves
+to ERF the driver points REMORA at it. A deck setting `lwrad_type` owns the lane.
+
+Override with `driver.atm2ocn_lane_source.<lane> = erf | remora | auto`, using
+the printed lane name. Asking for `erf` on a lane ERF cannot fill aborts rather
+than passing an unwritten lane.
 
 ### Which geometry the remap chose
 

@@ -142,6 +142,14 @@ private:
     coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
     void SelectAtmosToOceanActiveView(long long ocean_step);
 
+    // Decide once who owns each atmos->ocean lane (see LaneSource in
+    // ERFRemoraCouplingContract.H) and reconfigure REMORA for the lanes ERF
+    // takes over. Must run between ERF InitData, which allocates the radiation
+    // fields the capability query reads, and REMORA InitData, which opens
+    // NetCDF handles off the selectors this may change.
+    void ResolveAtmosToOceanLaneSources();
+    void PrintAtmosToOceanLaneProvenance() const;
+
     // Weight calculation and stencil safety helpers
     void BuildRemapWeights();
     // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
@@ -257,12 +265,17 @@ private:
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_active;
     amrex::Vector<int> m_atmos_to_ocean_active_indices;
     amrex::Vector<std::string> m_atmos_to_ocean_active_names;
-    // Same lanes as m_atmos_to_ocean_active, but with any lane ERF cannot fill set
-    // to nullptr so REMORA falls back to its own forcing for it. Only this view is
-    // handed to REMORA; diagnostics keep using the unmasked one.
+    // m_atmos_to_ocean_active with every lane the driver does not own nulled, so
+    // REMORA keeps its own forcing there. Only this view reaches REMORA;
+    // diagnostics use the unmasked one.
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_apply_view;
-    bool m_warned_no_erf_radiation = false;
-    bool m_warned_no_erf_cloud_water = false;
+
+    // Per-lane source and its reported reason, indexed by AtmosToOceanIndex.
+    // Written once by ResolveAtmosToOceanLaneSources(); the per-step view
+    // selection only reads them.
+    amrex::Vector<coupling::LaneSource> m_atmos_to_ocean_lane_source;
+    amrex::Vector<std::string> m_atmos_to_ocean_lane_reason;
+    bool m_atmos_to_ocean_lane_sources_resolved = false;
 
     // Ocean -> atmosphere state cache (currently SST only).
     // TODO(initial-temporal-interpolation): same old/new cache split as m_atmos_to_ocean.

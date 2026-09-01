@@ -288,6 +288,8 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_mpi_upwelling_compare.cmake")
   set(ERF_REMORA_SST_COVERAGE_TEST_SCRIPT
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_coupled_sst_coverage.cmake")
+  set(ERF_REMORA_LANE_PROVENANCE_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_lane_provenance.cmake")
 
   add_test(
     NAME compile_erf_remora_driver
@@ -316,6 +318,25 @@ if(ERF_REMORA_ENABLE_TESTS)
       -P "${ERF_REMORA_SST_COVERAGE_TEST_SCRIPT}"
   )
   set_tests_properties(reproducer_coupled_sst_coverage
+    PROPERTIES
+      LABELS "reproducer;coupling"
+      PROCESSORS 1
+  )
+
+  # Every atmos->ocean forcing lane must have exactly one source, and the driver
+  # must not hand REMORA a lane ERF never wrote. See issue #4.
+  add_test(
+    NAME reproducer_lane_provenance
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/Upwelling/inputs_oneway
+      -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+      -DERF_REMORA_MAX_STEP=1
+      -P "${ERF_REMORA_LANE_PROVENANCE_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_lane_provenance
     PROPERTIES
       LABELS "reproducer;coupling"
       PROCESSORS 1

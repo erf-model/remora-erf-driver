@@ -429,8 +429,7 @@ if(ERF_REMORA_ENABLE_TESTS)
             "${_a2o_average_arg}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=10"
-            "remora.fixed_fast_dt=10"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
             "max_step=2"
             ${_erf_remora_nopbl_args}
         )
@@ -521,8 +520,7 @@ if(ERF_REMORA_ENABLE_TESTS)
               "${_a2o_average_arg}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=10"
-              "remora.fixed_fast_dt=10"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
               "max_step=2"
               ${_erf_remora_nopbl_args}
           )

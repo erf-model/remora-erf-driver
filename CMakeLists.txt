@@ -375,8 +375,7 @@ if(ERF_REMORA_ENABLE_TESTS)
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=1"
-            "remora.fixed_fast_dt=1"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
             "max_step=2"
             ${_erf_remora_nopbl_args}
         )
@@ -399,8 +398,7 @@ if(ERF_REMORA_ENABLE_TESTS)
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=10"
-            "remora.fixed_fast_dt=10"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
             "max_step=2"
             ${_erf_remora_nopbl_args}
         )
@@ -443,8 +441,7 @@ if(ERF_REMORA_ENABLE_TESTS)
               "driver.atm2ocn_mode=${_atm2ocn_mode}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=1"
-              "remora.fixed_fast_dt=1"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
               "max_step=2"
               ${_erf_remora_nopbl_args}
           )
@@ -464,8 +461,7 @@ if(ERF_REMORA_ENABLE_TESTS)
               "driver.atm2ocn_mode=${_atm2ocn_mode}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=10"
-              "remora.fixed_fast_dt=10"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
               "max_step=2"
               ${_erf_remora_nopbl_args}
           )

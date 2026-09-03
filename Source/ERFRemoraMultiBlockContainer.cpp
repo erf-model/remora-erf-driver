@@ -3496,6 +3496,17 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             ResetAtmosToOceanAccumulators();
         }
 
+        // At global_ocean_step 0 on a cold start the atmosphere has not advanced
+        // yet, so ERF's diagnostic flux arrays (Tau, SFS_*) still hold the
+        // setVal(zero) from allocation in ERF_MakeNewArrays.cpp rather than a
+        // physical state at t. Sampling them as the trapezoid's left endpoint
+        // would fold an exact zero into the interval mean at weight 0.5/n. So
+        // skip that sample and reconstruct f(t) from the first two post-advance
+        // samples instead -- see the weight correction below. On a restart Tau is
+        // checkpointed and m_atm_tick is restored, so global_ocean_step > 0 and
+        // the ordinary trapezoid runs untouched.
+        const bool cold_start_extrapolate = (global_ocean_step == 0);
+
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
                 amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="
@@ -3506,7 +3517,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 break;
             }
 
-            if (averaging_active && substep == 0) {
+            if (averaging_active && substep == 0 && !cold_start_extrapolate) {
                 pack_atmos_states(m_atmos_to_ocean_active, ocean_time, global_ocean_step);
                 AccumulateAtmosToOcean(amrex::Real(0.5));
             }
@@ -3541,9 +3552,29 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                     ocean_time + static_cast<amrex::Real>(substep + 1) * m_erf_dt;
                 pack_atmos_states(m_atmos_to_ocean_active,
                                   substep_end_time, global_ocean_step);
-                const amrex::Real sample_weight =
+                amrex::Real sample_weight =
                     (substep == m_atm_substeps_per_ocean_step - 1)
                         ? amrex::Real(0.5) : amrex::Real(1.0);
+                // Cold-start reconstruction of the left endpoint skipped above.
+                // Linear extrapolation f(t) ~= 2*f1 - f2 is exact for linear
+                // forcing, which is the property the trapezoid was chosen for, so
+                // folding 0.5*f(t) into the sum adds +1.0 to f1's weight and
+                // -0.5 to f2's and leaves the total at n:
+                //   n=10 -> 2.0 + 0.5 + 7*1.0 + 0.5 = 10.
+                // At n=2 the last-substep 0.5 and this -0.5 cancel, so f2 drops
+                // out and the mean collapses to f1 -- the interval midpoint,
+                // which is the exact linear answer over [t, t+2*dt]. At n=1 there
+                // is no f2 to extrapolate from, so the correction is skipped
+                // entirely; DrainAtmosToOceanAccumulators divides by the total
+                // accumulated weight, so that interval degrades cleanly to the
+                // single sample f1 rather than being mis-normalized.
+                if (cold_start_extrapolate && m_atm_substeps_per_ocean_step >= 2) {
+                    if (substep == 0) {
+                        sample_weight += amrex::Real(1.0);
+                    } else if (substep == 1) {
+                        sample_weight -= amrex::Real(0.5);
+                    }
+                }
                 AccumulateAtmosToOcean(sample_weight);
             }
         }

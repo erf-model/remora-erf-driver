@@ -155,12 +155,14 @@ private:
     void FillAtmosToOceanGhosts();
     void PrintDiagnostics(const char* label,
                           const amrex::Vector<amrex::MultiFab*>& fields,
-                          const amrex::Vector<std::string>& names) const;
+                          const amrex::Vector<std::string>& names,
+                          bool ocean_to_atmos) const;
     void ValidateFields(const char* label,
                         const amrex::Vector<amrex::MultiFab*>& fields,
                         const amrex::Vector<std::string>& names,
                         amrex::Real time,
-                        long long ocean_step) const;
+                        long long ocean_step,
+                        bool ocean_to_atmos) const;
     // The two exchange directions are sampled at different instants; each is
     // stamped with the time it actually represents.
     void WriteExchangePlotfiles(amrex::Real o2a_time,

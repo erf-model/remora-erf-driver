@@ -7,6 +7,7 @@
 #include <AMReX_NonLocalBC.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_PlotFileUtil.H>
+#include <AMReX_Reduce.H>
 #include <AMReX_String.H>
 
 #include <algorithm>
@@ -17,6 +18,62 @@
 namespace erf_remora
 {
 namespace {
+
+struct MaskedMinMaxResult
+{
+    amrex::Real min_value = 0.0;
+    amrex::Real max_value = 0.0;
+    amrex::Long included_cells = 0;
+};
+
+// Returns extrema over water cells when a mask is supplied, or over every cell
+// when it is not. The included-cell count makes an all-masked result explicit,
+// so the reduction sentinels are never reported as physical values.
+// Collective; every caller must invoke this on every rank.
+MaskedMinMaxResult
+MaskedMinMax (const amrex::MultiFab& mf,
+              const amrex::MultiFab* mask,
+              bool mask_is_land)
+{
+    using namespace amrex;
+
+    constexpr Real min_sentinel = std::numeric_limits<Real>::max();
+    constexpr Real max_sentinel = -std::numeric_limits<Real>::max();
+
+    ReduceOps<ReduceOpMin, ReduceOpMax, ReduceOpSum> reduce_ops;
+    ReduceData<Real, Real, Long> reduce_data(reduce_ops);
+    using ReduceTuple = typename decltype(reduce_data)::Type;
+
+    const bool use_mask = (mask != nullptr);
+    for (MFIter mfi(mf); mfi.isValid(); ++mfi) {
+        const Box& bx = mfi.validbox();
+        const auto field_arr = mf.const_array(mfi);
+        const auto mask_arr = use_mask ? mask->const_array(mfi) : Array4<const Real>{};
+
+        reduce_ops.eval(bx, reduce_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) -> ReduceTuple
+            {
+                const bool is_water = !use_mask ||
+                    (mask_is_land ? mask_arr(i,j,k) == Real(0.0)
+                                  : mask_arr(i,j,k) > Real(0.5));
+                const Real value = field_arr(i,j,k);
+                return {is_water ? value : min_sentinel,
+                        is_water ? value : max_sentinel,
+                        is_water ? Long(1) : Long(0)};
+            });
+    }
+
+    const auto reduced = reduce_data.value(reduce_ops);
+    MaskedMinMaxResult result;
+    result.min_value = amrex::get<0>(reduced);
+    result.max_value = amrex::get<1>(reduced);
+    result.included_cells = amrex::get<2>(reduced);
+
+    ParallelDescriptor::ReduceRealMin(result.min_value);
+    ParallelDescriptor::ReduceRealMax(result.max_value);
+    ParallelDescriptor::ReduceLongSum(result.included_cells);
+    return result;
+}
 
 // Compute 2D polygon area using Shoelace formula
 amrex::Real PolygonArea (const amrex::Vector<Point2D>& poly) {
@@ -3059,18 +3116,66 @@ ERFRemoraMultiBlockContainer::FillAtmosToOceanGhosts ()
 void
 ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
                              const amrex::Vector<amrex::MultiFab*>& fields,
-                             const amrex::Vector<std::string>& names) const
+                             const amrex::Vector<std::string>& names,
+                             bool ocean_to_atmos) const
 {
+    // m_driver_verbose comes from ParmParse and is identical on every rank, so
+    // this is a rank-uniform gate around the collective reductions below.
+    if (m_driver_verbose < 1) { return; }
+
+    const amrex::MultiFab* remora_mskr = nullptr;
+    const amrex::MultiFab* remora_msku = nullptr;
+    const amrex::MultiFab* remora_mskv = nullptr;
+    if (!ocean_to_atmos && m_remora != nullptr) {
+        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+    }
+
+    auto mask_for = [&] (const amrex::MultiFab& field) -> const amrex::MultiFab* {
+        const amrex::MultiFab* candidate = nullptr;
+        if (ocean_to_atmos) {
+            candidate = m_erf_land_mask.get();
+        } else {
+            const amrex::IntVect stagger = field.boxArray().ixType().toIntVect();
+            if (stagger == amrex::IntVect(1,0,0)) {
+                candidate = remora_msku;
+            } else if (stagger == amrex::IntVect(0,1,0)) {
+                candidate = remora_mskv;
+            } else if (stagger == amrex::IntVect::TheCellVector()) {
+                candidate = remora_mskr;
+            }
+        }
+        // MaskedMinMax indexes the mask with an MFIter built on the field, which is
+        // only defined when the two share a BoxArray *and* a DistributionMapping --
+        // matching ixType alone is not enough. The A2O masks come off the same
+        // REMORA layout as their fields, but m_erf_land_mask is built on the ERF
+        // solver's cell layout while the O2A cache lives on the driver's, so the
+        // O2A pairing is the one that can differ. Fall back to an unmasked
+        // reduction (reported as such) rather than reading across layouts.
+        if (candidate != nullptr &&
+            (candidate->boxArray() != field.boxArray() ||
+             candidate->DistributionMap() != field.DistributionMap())) {
+            candidate = nullptr;
+        }
+        return candidate;
+    };
+
     amrex::Print() << label << "\n";
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
         if (fields[idx] == nullptr) {
             amrex::Print() << "  " << names[idx] << ": withheld (not supplied by ERF)\n";
             continue;
         }
-        const auto min_val = fields[idx]->min(0);
-        const auto max_val = fields[idx]->max(0);
-        amrex::Print() << "  " << names[idx] << ": min=" << min_val << " max=" << max_val << "\n";
-        if (names[idx] == "rain" && (min_val > 100.0 || max_val > 100.0)) {
+        const amrex::MultiFab* mask = mask_for(*fields[idx]);
+        const auto extrema = MaskedMinMax(*fields[idx], mask, ocean_to_atmos);
+        const char* marker = (mask != nullptr) ? " (wet only)" : " (unmasked)";
+        if (extrema.included_cells == 0) {
+            amrex::Print() << "  " << names[idx] << ": no wet cells" << marker << "\n";
+            continue;
+        }
+        amrex::Print() << "  " << names[idx] << ": min=" << extrema.min_value
+                       << " max=" << extrema.max_value << marker << "\n";
+        if (names[idx] == "rain" &&
+            (extrema.min_value > 100.0 || extrema.max_value > 100.0)) {
             amrex::Print() << "  *** WARNING: implausibly large rain values detected! ***\n";
         }
     }
@@ -3081,11 +3186,50 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
                                               const amrex::Vector<amrex::MultiFab*>& fields,
                                               const amrex::Vector<std::string>& names,
                                               amrex::Real time,
-                                              long long ocean_step) const
+                                              long long ocean_step,
+                                              bool ocean_to_atmos) const
 {
     if (fields.size() != names.size()) {
         amrex::Abort("ValidateFields field/name count mismatch.");
     }
+    // Rank-uniform: m_driver_verbose is a ParmParse value shared by all ranks.
+    if (m_driver_verbose < 1) { return; }
+
+    const amrex::MultiFab* remora_mskr = nullptr;
+    const amrex::MultiFab* remora_msku = nullptr;
+    const amrex::MultiFab* remora_mskv = nullptr;
+    if (!ocean_to_atmos && m_remora != nullptr) {
+        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+    }
+
+    auto mask_for = [&] (const amrex::MultiFab& field) -> const amrex::MultiFab* {
+        const amrex::MultiFab* candidate = nullptr;
+        if (ocean_to_atmos) {
+            candidate = m_erf_land_mask.get();
+        } else {
+            const amrex::IntVect stagger = field.boxArray().ixType().toIntVect();
+            if (stagger == amrex::IntVect(1,0,0)) {
+                candidate = remora_msku;
+            } else if (stagger == amrex::IntVect(0,1,0)) {
+                candidate = remora_mskv;
+            } else if (stagger == amrex::IntVect::TheCellVector()) {
+                candidate = remora_mskr;
+            }
+        }
+        // MaskedMinMax indexes the mask with an MFIter built on the field, which is
+        // only defined when the two share a BoxArray *and* a DistributionMapping --
+        // matching ixType alone is not enough. The A2O masks come off the same
+        // REMORA layout as their fields, but m_erf_land_mask is built on the ERF
+        // solver's cell layout while the O2A cache lives on the driver's, so the
+        // O2A pairing is the one that can differ. Fall back to an unmasked
+        // reduction (reported as such) rather than reading across layouts.
+        if (candidate != nullptr &&
+            (candidate->boxArray() != field.boxArray() ||
+             candidate->DistributionMap() != field.DistributionMap())) {
+            candidate = nullptr;
+        }
+        return candidate;
+    };
 
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
         const auto* mf = fields[idx];
@@ -3103,21 +3247,27 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
             continue;
         }
 
-        const amrex::Real min_val = mf->min(0);
-        const amrex::Real max_val = mf->max(0);
+        const amrex::MultiFab* mask = mask_for(*mf);
+        const auto extrema = MaskedMinMax(*mf, mask, ocean_to_atmos);
+        const char* marker = (mask != nullptr) ? " (wet only)" : " (unmasked)";
 
         if (amrex::ParallelDescriptor::IOProcessor()) {
             amrex::Print() << label
                            << " ocean_step=" << ocean_step
                            << " time=" << time
                            << " field=" << names[idx]
-                           << " nboxes=" << mf->boxArray().size()
-                           << " min=" << min_val
-                           << " max=" << max_val
-                           << "\n";
+                           << " nboxes=" << mf->boxArray().size();
+            if (extrema.included_cells == 0) {
+                amrex::Print() << " no wet cells" << marker << "\n";
+            } else {
+                amrex::Print() << " min=" << extrema.min_value
+                               << " max=" << extrema.max_value
+                               << marker << "\n";
+            }
         }
 
-        if (!std::isfinite(min_val) || !std::isfinite(max_val)) {
+        if (extrema.included_cells != 0 &&
+            (!std::isfinite(extrema.min_value) || !std::isfinite(extrema.max_value))) {
             amrex::Abort(std::string(label) + ": non-finite extrema in field '" +
                          names[idx] + "' at ocean_step=" + std::to_string(ocean_step));
         }
@@ -3137,10 +3287,12 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real o2a_time,
     // in which both sides move together.
     if (m_use_two_way_coupling) {
         ValidateFields("Exchange validation ocean->atmos",
-                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), o2a_time, ocean_step);
+                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), o2a_time, ocean_step,
+                       true);
     }
     ValidateFields("Exchange validation atmos->ocean",
-                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, a2o_time, ocean_step);
+                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, a2o_time, ocean_step,
+                   false);
 
     if (m_use_two_way_coupling) {
         WriteExchangePlotfile(m_plot_file_exchange_o2a,
@@ -3278,34 +3430,53 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                         // reductions on it is what let the IO rank stop entering
                         // collectives that every other rank still executed. The counter
                         // now limits printing only.
-                        const amrex::Real cmin = mf->min(0);
-                        const amrex::Real cmax = mf->max(0);
-                        if ((cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) &&
+                        const amrex::MultiFab* cloud_mask = mskr;
+                        if (cloud_mask != nullptr &&
+                            cloud_mask->boxArray().ixType() != mf->boxArray().ixType()) {
+                            cloud_mask = nullptr;
+                        }
+                        const auto cloud_extrema = MaskedMinMax(*mf, cloud_mask, false);
+                        const char* marker =
+                            (cloud_mask != nullptr) ? " (wet only)" : " (unmasked)";
+                        const bool no_wet_cells = (cloud_extrema.included_cells == 0);
+                        const bool outside_tolerance =
+                            !no_wet_cells &&
+                            (cloud_extrema.min_value < -cloud_tol ||
+                             cloud_extrema.max_value > amrex::Real(1.0) + cloud_tol);
+                        if ((no_wet_cells || outside_tolerance) &&
                             cloud_warn_count < cloud_warn_limit) {
                             ++cloud_warn_count;
                             if (amrex::ParallelDescriptor::IOProcessor()) {
-                                amrex::Print() << "WARNING: packed cloud lane outside tolerance [-1e-6,1+1e-6]: min="
-                                                << cmin << " max=" << cmax << "\n";
+                                if (no_wet_cells) {
+                                    amrex::Print() << "WARNING: packed cloud lane has no wet cells; "
+                                                     "range check skipped" << marker << "\n";
+                                } else {
+                                    amrex::Print() << "WARNING: packed cloud lane outside tolerance "
+                                                     "[-1e-6,1+1e-6]: min="
+                                                   << cloud_extrema.min_value
+                                                   << " max=" << cloud_extrema.max_value
+                                                   << marker << "\n";
+                                }
                             }
                         }
                     }
                 }
             }
             ValidateFields("Post-pack atmos->ocean validation",
-                           states, m_atmos_to_ocean_active_names, time, ocean_step);
+                           states, m_atmos_to_ocean_active_names, time, ocean_step, false);
         },
         [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time,
                long long ocean_step) {
             BL_PROFILE("Driver::Apply_Atmos");
             ValidateFields("Pre-apply atmos->ocean validation",
-                           states, m_atmos_to_ocean_active_names, time, ocean_step);
+                           states, m_atmos_to_ocean_active_names, time, ocean_step, false);
             if (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::FluxPassing) {
                 REMORAApplyAtmosphericFluxes(m_remora, states, time);
             } else {
                 REMORAApplyAtmosphericStates(m_remora, states, time);
             }
             ValidateFields("Post-apply atmos->ocean validation",
-                           states, m_atmos_to_ocean_active_names, time, ocean_step);
+                           states, m_atmos_to_ocean_active_names, time, ocean_step, false);
         },
         ocean_steps);
 }
@@ -3403,9 +3574,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 {
     BL_PROFILE("Driver::Build_Comm_Metadata");
     if (m_use_two_way_coupling) {
-        PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+        PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos,
+                         coupling::OceanToAtmosNames(), true);
     }
-    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active,
+                     m_atmos_to_ocean_active_names, false);
 
 
     // Multi-rate clock rationale:
@@ -3635,9 +3808,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                            << " at atmosphere tick " << m_atm_tick << "\n";
 
         if (m_use_two_way_coupling) {
-            PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+            PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos,
+                             coupling::OceanToAtmosNames(), true);
         }
-        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active,
+                         m_atmos_to_ocean_active_names, false);
     }
     REMORAWriteAtFinalTime(m_remora);
     ERFWriteAtFinalTime(m_erf);

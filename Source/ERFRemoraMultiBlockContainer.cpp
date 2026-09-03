@@ -728,14 +728,30 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     amrex::Print() << "Atmos->ocean active lanes: "
                    << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
 
+    // Every active lane in the flux contract is flux-character (tau_x, tau_y, SHflux,
+    // LHflux, SWrad, LWrad, rain, evap), so driver.time_average_atm2ocn_state selects
+    // no lane at all there. It cannot average anything, yet it is enough to make the
+    // report below say ENABLED and to suppress the instantaneous-forcing warning.
+    // Reject the combination rather than announce averaging that does not happen.
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing &&
+        m_time_average_atm2ocn_state) {
+        amrex::Abort("driver.time_average_atm2ocn_state=1 has no effect when "
+                     "driver.atm2ocn_mode=flux: every lane in the flux contract is "
+                     "flux-character. Set driver.time_average_atm2ocn_flux=1 to average "
+                     "the flux lanes, or drop the state flag.");
+    }
+
     amrex::Print() << "[driver] Atmos->ocean time averaging for state-character lanes is "
                    << (m_time_average_atm2ocn_state ? "ENABLED" : "disabled")
                    << " (driver.time_average_atm2ocn_state).\n"
                    << "[driver] Atmos->ocean time averaging for flux-character lanes is "
                    << (m_time_average_atm2ocn_flux ? "ENABLED" : "disabled")
                    << " (driver.time_average_atm2ocn_flux).\n";
-    if (m_atm_substeps_per_ocean_step > 1 &&
-        !m_time_average_atm2ocn_state && !m_time_average_atm2ocn_flux) {
+    // Key the warning on whether any lane in the ACTIVE VIEW is actually averaged, not
+    // on the flags. A flag set for a lane character absent from the view averages
+    // nothing, and inspecting the flags alone let exactly that case suppress this
+    // warning while reporting ENABLED.
+    if (m_atm_substeps_per_ocean_step > 1 && !AtmosToOceanAveragingActive()) {
         amrex::Print()
             << "[driver] WARNING: atmosphere->ocean forcing uses the instantaneous "
                "interval-end sample. Enable driver.time_average_atm2ocn_state=1 and/or "

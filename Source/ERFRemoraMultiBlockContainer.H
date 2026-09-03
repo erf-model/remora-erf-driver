@@ -167,13 +167,29 @@ private:
     // stamped with the time it actually represents.
     void WriteExchangePlotfiles(amrex::Real o2a_time,
                                 amrex::Real a2o_time,
+                                amrex::Real dt_ocn,
                                 long long ocean_step) const;
     void WriteExchangePlotfile(const std::string& prefix,
                                const amrex::Vector<amrex::MultiFab*>& fields,
                                const amrex::Vector<std::string>& names,
                                const amrex::Geometry& geom,
                                amrex::Real time,
-                               long long ocean_step) const;
+                               amrex::Real ocean_time,
+                               amrex::Real dt_ocn,
+                               long long ocean_step,
+                               bool ocean_to_atmos) const;
+    // A plotfile carries one scalar time, but under partial averaging its lanes do
+    // not all represent the same instant. Rather than force one number to mean two
+    // things, write the per-lane provenance beside the data, the way job_info carries
+    // run provenance. Debug metadata only; nothing downstream parses it.
+    void WriteExchangeInfo(const std::string& plotfilename,
+                           const amrex::Vector<amrex::MultiFab*>& fields,
+                           const amrex::Vector<std::string>& names,
+                           amrex::Real time,
+                           amrex::Real ocean_time,
+                           amrex::Real dt_ocn,
+                           long long ocean_step,
+                           bool ocean_to_atmos) const;
     void ValidateCouplingLayoutsFromSolvers() const;
     coupling::AtmosToOceanContract ActiveAtmosToOceanContract() const;
     void SelectAtmosToOceanActiveView();

@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <string>
 
@@ -3323,6 +3325,7 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
 void
 ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real o2a_time,
                                                       amrex::Real a2o_time,
+                                                      amrex::Real dt_ocn,
                                                       long long ocean_step) const
 {
     // The two directions are sampled at different instants once the atmosphere
@@ -3346,14 +3349,20 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real o2a_time,
                               coupling::OceanToAtmosNames(),
                               m_geom,
                               o2a_time,
-                              ocean_step);
+                              o2a_time,
+                              dt_ocn,
+                              ocean_step,
+                              true);
     }
     WriteExchangePlotfile(m_plot_file_exchange_a2o,
                           m_atmos_to_ocean_active,
                           m_atmos_to_ocean_active_names,
                           m_geom_ocn,
                           a2o_time,
-                          ocean_step);
+                          o2a_time,
+                          dt_ocn,
+                          ocean_step,
+                          false);
 }
 
 void
@@ -3363,7 +3372,10 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
     const amrex::Vector<std::string>& names,
     const amrex::Geometry& geom,
     amrex::Real time,
-    long long ocean_step) const
+    amrex::Real ocean_time,
+    amrex::Real dt_ocn,
+    long long ocean_step,
+    bool ocean_to_atmos) const
 {
     if (fields.empty()) {
         return;
@@ -3388,6 +3400,96 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
     const std::string plotfilename = amrex::Concatenate(prefix, static_cast<int>(ocean_step), 5);
     amrex::WriteSingleLevelPlotfile(plotfilename, plot_mf, names, geom, time,
                                     static_cast<int>(ocean_step));
+    // Written after the plotfile so the directory exists.
+    WriteExchangeInfo(plotfilename, fields, names, time, ocean_time, dt_ocn, ocean_step,
+                      ocean_to_atmos);
+}
+
+void
+ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename,
+                                                 const amrex::Vector<amrex::MultiFab*>& fields,
+                                                 const amrex::Vector<std::string>& names,
+                                                 amrex::Real time,
+                                                 amrex::Real ocean_time,
+                                                 amrex::Real dt_ocn,
+                                                 long long ocean_step,
+                                                 bool ocean_to_atmos) const
+{
+    if (!amrex::ParallelDescriptor::IOProcessor()) { return; }
+
+    std::ofstream os(plotfilename + "/exchange_info", std::ios::trunc);
+    if (!os.good()) { return; }
+
+    const amrex::Real t_end = ocean_time + dt_ocn;
+    os << "=== ERF/REMORA driver exchange ===\n"
+       << "direction          : " << (ocean_to_atmos ? "ocean->atmos" : "atmos->ocean") << "\n"
+       << "ocean_step         : " << ocean_step << "\n"
+       << "plotfile time      : " << time << "\n"
+       << "ocean interval     : [" << ocean_time << ", " << t_end << "]\n\n";
+
+    os << "--- coupling ---\n"
+       << "atm2ocn contract   : "
+       << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) << "\n"
+       << "two-way coupling   : " << (m_use_two_way_coupling ? "yes" : "no") << "\n"
+       << "remap frame        : " << (m_remap_spherical ? "spherical" : "cartesian") << "\n"
+       << "donor fill mode    : "
+       << (m_remap_donor_fill_mode == DonorFillMode::Coawst ? "coawst" : "withhold") << "\n"
+       << "atm substeps/ocean : " << m_atm_substeps_per_ocean_step
+       << "  (erf dt=" << m_erf_dt << ")\n\n";
+
+    if (ocean_to_atmos) {
+        os << "--- lanes ---\n"
+           << "The ocean->atmos direction is packed from REMORA at the start of the ocean\n"
+           << "interval and is never time-averaged, so every lane below represents t="
+           << ocean_time << ".\n\n";
+        for (int i = 0; i < static_cast<int>(names.size()); ++i) {
+            const bool present = (i < static_cast<int>(fields.size()) && fields[i] != nullptr);
+            os << "  " << names[i] << (present ? "" : "   [withheld]") << "\n";
+        }
+        return;
+    }
+
+    os << "--- time averaging ---\n"
+       << "driver.time_average_atm2ocn_state : " << (m_time_average_atm2ocn_state ? 1 : 0) << "\n"
+       << "driver.time_average_atm2ocn_flux  : " << (m_time_average_atm2ocn_flux ? 1 : 0) << "\n"
+       << "any lane averaged                 : "
+       << (AtmosToOceanAveragingActive() ? "yes" : "no") << "\n\n";
+
+    os << "--- lanes ---\n"
+       << "A lane is averaged according to its CHARACTER, so a view holding both\n"
+       << "characters can carry lanes representing different instants under a single\n"
+       << "plotfile time. 'represents' below is authoritative; 'plotfile time' is not.\n\n"
+       << "  " << std::left << std::setw(10) << "name"
+       << std::setw(12) << "character"
+       << std::setw(11) << "averaged" << "represents\n";
+
+    for (int local = 0; local < static_cast<int>(names.size()); ++local) {
+        const bool present = (local < static_cast<int>(fields.size()) && fields[local] != nullptr);
+        const int global_idx =
+            (local < static_cast<int>(m_atmos_to_ocean_active_indices.size()))
+                ? m_atmos_to_ocean_active_indices[local] : -1;
+        const bool averaged = (global_idx >= 0) && TimeAverageAtmosToOceanLane(global_idx);
+        const bool flux_character = (global_idx >= 0) &&
+            (global_idx == coupling::Rain   || global_idx == coupling::SWrad  ||
+             global_idx == coupling::LWrad  || global_idx == coupling::TauX   ||
+             global_idx == coupling::TauY   || global_idx == coupling::SHflux ||
+             global_idx == coupling::LHflux || global_idx == coupling::Evap);
+
+        std::string represents;
+        if (!present) {
+            represents = "withheld -- not supplied by ERF";
+        } else if (averaged) {
+            represents = "interval mean over [" + std::to_string(ocean_time) + ", " +
+                         std::to_string(t_end) + "]";
+        } else {
+            represents = "instantaneous at t=" + std::to_string(t_end);
+        }
+
+        os << "  " << std::left << std::setw(10) << names[local]
+           << std::setw(12) << (flux_character ? "flux" : "state")
+           << std::setw(11) << (present ? (averaged ? "yes" : "no") : "n/a")
+           << represents << "\n";
+    }
 }
 
 void
@@ -3826,7 +3928,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
             // O2A was packed at ocean_time, A2O at a2o_sample_time; stamp each
             // with the instant it actually represents.
-            WriteExchangePlotfiles(ocean_time, a2o_sample_time, global_ocean_step);
+            WriteExchangePlotfiles(ocean_time, a2o_sample_time, dt_ocn_request, global_ocean_step);
         }
         FillAtmosToOceanGhosts();
         DriverPrintLine(

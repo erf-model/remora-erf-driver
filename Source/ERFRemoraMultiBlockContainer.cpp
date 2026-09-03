@@ -862,11 +862,16 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
                 *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0);
             m_index_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
                 *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0);
-            // Same BoxArray, DistributionMapping and stagger as this family's
-            // weights, so the coverage loop can read all three off one MFIter.
-            m_donor_fill_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
-                *family_ba[f], *family_dm[f], 1, 0);
-            m_donor_fill_mf_by_family[f]->setVal(0);
+            // The donor-fill flag array is NOT allocated here. It is only ever
+            // written by the coawst donor search, which runs solely in the
+            // spherical frame, and neither the mode nor the frame is resolved
+            // yet: this function is reached from AllocateCaches() one line before
+            // BuildRemapWeights(), which is what calls ResolveRemapFrame() and
+            // ResolveDonorFillMode(). Allocating it unconditionally here gave four
+            // full-layout iMultiFabs that are structurally all-zero under the
+            // shipped default, read back per cell only to add zero. It is
+            // allocated lazily in BuildAtmosToOceanWeights instead, where both are
+            // known.
         }
     }
 
@@ -2273,8 +2278,24 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     for (int f = 0; f < kNumWeightFamilies; ++f) {
         MultiFab* weight_mf = m_weight_mf_by_family[f].get();
         iMultiFab* index_mf = m_index_mf_by_family[f].get();
+        if (!weight_mf || !index_mf) { continue; }
+
+        // Allocate the donor-fill flag array only when the donor search can
+        // actually run. Under the default driver.remap_donor_fill=withhold, or in
+        // the cartesian frame, nothing ever writes it. A null array here is
+        // therefore normal, not a failure, and must NOT skip the family the way
+        // a missing weight or index array would -- the remap itself is unaffected.
+        // NormalizeWeightsAndCheckConservation already treats a null donor_fill as
+        // "this direction cannot donor-fill" and omits the donor_filled= field,
+        // which is exactly right here; ResolveDonorFillMode has already reported
+        // the mode, so the reader is not left guessing why it is absent.
+        const bool donor_fill_can_run =
+            (m_remap_donor_fill_mode == DonorFillMode::Coawst) && m_remap_spherical;
+        if (donor_fill_can_run && !m_donor_fill_mf_by_family[f]) {
+            m_donor_fill_mf_by_family[f] = std::make_unique<iMultiFab>(
+                weight_mf->boxArray(), weight_mf->DistributionMap(), 1, 0);
+        }
         iMultiFab* donor_fill_mf = m_donor_fill_mf_by_family[f].get();
-        if (!weight_mf || !index_mf || !donor_fill_mf) { continue; }
 
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             weight_mf->boxArray().ixType().toIntVect() == kExpectedFamilyStagger[f],
@@ -2282,7 +2303,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
 
         weight_mf->setVal(0.0);
         index_mf->setVal(-1);
-        donor_fill_mf->setVal(0);
+        if (donor_fill_mf) { donor_fill_mf->setVal(0); }
 
         const IntVect stagger = kExpectedFamilyStagger[f];
         // TauX/TauY carry a face-staggered ERF source as well (tau13/tau23 on
@@ -2335,7 +2356,11 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             Box bx = mfi.validbox();
             auto weight_arr = weight_mf->array(mfi);
             auto index_arr = index_mf->array(mfi);
-            auto donor_fill_arr = donor_fill_mf->array(mfi);
+            // Null under withhold / cartesian; the donor search that writes it is
+            // gated on exactly the condition that allocated it, so an empty Array4
+            // here is never dereferenced.
+            auto donor_fill_arr = donor_fill_mf ? donor_fill_mf->array(mfi)
+                                                : amrex::Array4<int>{};
 
             // Spherical frame: REMORA corners from its psi lon/lat, and ERF
             // corners from the staged mesh. All of these arrays are on the REMORA

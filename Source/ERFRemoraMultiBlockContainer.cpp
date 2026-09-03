@@ -1141,7 +1141,11 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
         // its existing shape rather than carrying a field that is structurally
         // zero there.
         if (donor_fill != nullptr) {
-            amrex::Print() << " donor_filled=" << n_donor_filled;
+            if (wet_mask != nullptr) {
+                amrex::Print() << " donor_filled=" << n_donor_filled;
+            } else {
+                amrex::Print() << " donor_filled=n/a (no wet mask)";
+            }
         }
         amrex::Print() << " frac min/mean/max=" << frac_min << "/"
                        << (frac_sum / static_cast<amrex::Real>(n_covered)) << "/" << frac_max
@@ -1196,6 +1200,10 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                            << " wet cells covered by real source overlap (donor_filled=0)"
                            << ", min wet frac=" << wet_frac_min << "\n";
         }
+    } else if (donor_fill != nullptr && ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "[driver] WARNING remap (" << label
+                       << "): wet-cell verdict skipped because no wet mask was available; "
+                       << "uncovered= counts all cells rather than wet cells.\n";
     }
 }
 
@@ -2226,6 +2234,12 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     static const std::array<amrex::IntVect, kNumWeightFamilies> kExpectedFamilyStagger = {
         amrex::IntVect(0,0,0), amrex::IntVect(1,0,0), amrex::IntVect(0,1,0), amrex::IntVect(0,0,0)
     };
+    static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
+        "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
+    };
+    static const std::array<const char*, kNumWeightFamilies> kExpectedRemoraMask = {
+        "mskr", "msku", "mskv", "mskr"
+    };
     // Stencil-capacity accounting: a destination cell that overlaps more than
     // MAX_STENCIL_SIZE source cells keeps the largest-area overlaps and reports
     // the shortfall. Aborting here would kill a run mid-init over a geometry
@@ -2275,8 +2289,27 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         const MultiFab* family_mask = remora_mskr;
         if (f == static_cast<int>(WeightFamily::TAUX_FACE))      { family_mask = remora_msku; }
         else if (f == static_cast<int>(WeightFamily::TAUY_FACE)) { family_mask = remora_mskv; }
-        if (family_mask != nullptr &&
-            family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+        const bool donor_fill_needs_mask =
+            m_remap_donor_fill_mode == DonorFillMode::Coawst && m_remap_spherical;
+        if (family_mask == nullptr) {
+            if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "[driver] WARNING remap (" << kFamilyLabel[f]
+                               << "): REMORA supplied no " << kExpectedRemoraMask[f]
+                               << " wet mask. Donor fill is inactive for this family; wet cells "
+                               << "without usable source overlap will take the same per-lane "
+                               << "fallback they would under driver.remap_donor_fill=withhold.\n";
+            }
+        } else if (family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+            if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "[driver] WARNING remap (" << kFamilyLabel[f] << "): REMORA "
+                               << kExpectedRemoraMask[f] << " wet mask ixType="
+                               << family_mask->boxArray().ixType().toIntVect()
+                               << " does not match expected ixType="
+                               << weight_mf->boxArray().ixType().toIntVect()
+                               << ". Donor fill is inactive for this family; wet cells without "
+                               << "usable source overlap will take the same per-lane fallback "
+                               << "they would under driver.remap_donor_fill=withhold.\n";
+            }
             family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
         }
 
@@ -2711,9 +2744,6 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                 }
             }
         }
-        static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
-            "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
-        };
         NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask,
                                              donor_fill_mf, kFamilyLabel[f]);
     }

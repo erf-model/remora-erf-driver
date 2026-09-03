@@ -671,22 +671,19 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     amrex::Print() << "Atmos->ocean active lanes: "
                    << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
 
-    if (!m_reported_atm2ocn_time_averaging) {
-        m_reported_atm2ocn_time_averaging = true;
-        amrex::Print() << "[driver] Atmos->ocean time averaging for state-character lanes is "
-                       << (m_time_average_atm2ocn_state ? "ENABLED" : "disabled")
-                       << " (driver.time_average_atm2ocn_state).\n"
-                       << "[driver] Atmos->ocean time averaging for flux-character lanes is "
-                       << (m_time_average_atm2ocn_flux ? "ENABLED" : "disabled")
-                       << " (driver.time_average_atm2ocn_flux).\n";
-        if (m_atm_substeps_per_ocean_step > 1 &&
-            !m_time_average_atm2ocn_state && !m_time_average_atm2ocn_flux) {
-            amrex::Print()
-                << "[driver] WARNING: atmosphere->ocean forcing uses the instantaneous "
-                   "interval-end sample. Enable driver.time_average_atm2ocn_state=1 and/or "
-                   "driver.time_average_atm2ocn_flux=1 to force REMORA with the atmosphere "
-                   "mean over each ocean interval.\n";
-        }
+    amrex::Print() << "[driver] Atmos->ocean time averaging for state-character lanes is "
+                   << (m_time_average_atm2ocn_state ? "ENABLED" : "disabled")
+                   << " (driver.time_average_atm2ocn_state).\n"
+                   << "[driver] Atmos->ocean time averaging for flux-character lanes is "
+                   << (m_time_average_atm2ocn_flux ? "ENABLED" : "disabled")
+                   << " (driver.time_average_atm2ocn_flux).\n";
+    if (m_atm_substeps_per_ocean_step > 1 &&
+        !m_time_average_atm2ocn_state && !m_time_average_atm2ocn_flux) {
+        amrex::Print()
+            << "[driver] WARNING: atmosphere->ocean forcing uses the instantaneous "
+               "interval-end sample. Enable driver.time_average_atm2ocn_state=1 and/or "
+               "driver.time_average_atm2ocn_flux=1 to force REMORA with the atmosphere "
+               "mean over each ocean interval.\n";
     }
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
@@ -765,6 +762,7 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         m_atmos_to_ocean_accumulator_storage.resize(coupling::NumAtmosToOceanLayers);
         for (int idx = 0;
              idx < static_cast<int>(m_atmos_to_ocean_accumulator_storage.size()); ++idx) {
+            if (!TimeAverageAtmosToOceanLane(idx)) { continue; }
             const amrex::MultiFab& lane = *m_atmos_to_ocean[idx];
             auto& accumulator = m_atmos_to_ocean_accumulator_storage[idx];
             accumulator = std::make_unique<amrex::MultiFab>(
@@ -861,7 +859,7 @@ ERFRemoraMultiBlockContainer::ResetAtmosToOceanAccumulators ()
         !m_atmos_to_ocean_accumulator_storage.empty(),
         "Atmos->ocean averaging requested without allocated accumulators");
     for (auto& accumulator : m_atmos_to_ocean_accumulator_storage) {
-        accumulator->setVal(0.0);
+        if (accumulator) { accumulator->setVal(0.0); }
     }
     m_a2o_accum_weight = amrex::Real(0.0);
 }
@@ -875,8 +873,9 @@ ERFRemoraMultiBlockContainer::AccumulateAtmosToOcean (amrex::Real weight)
     for (int local_idx = 0;
          local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
         const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
-        if (TimeAverageAtmosToOceanLane(global_idx)) {
-            amrex::MultiFab::Saxpy(*m_atmos_to_ocean_accumulator_storage[global_idx],
+        auto* accumulator = m_atmos_to_ocean_accumulator_storage[global_idx].get();
+        if (accumulator != nullptr) {
+            amrex::MultiFab::Saxpy(*accumulator,
                                    weight, *m_atmos_to_ocean_active[local_idx],
                                    0, 0, 1, 0);
         }
@@ -894,9 +893,10 @@ ERFRemoraMultiBlockContainer::DrainAtmosToOceanAccumulators ()
     for (int local_idx = 0;
          local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
         const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
-        if (TimeAverageAtmosToOceanLane(global_idx)) {
+        const auto* accumulator = m_atmos_to_ocean_accumulator_storage[global_idx].get();
+        if (accumulator != nullptr) {
             amrex::MultiFab::Copy(*m_atmos_to_ocean_active[local_idx],
-                                  *m_atmos_to_ocean_accumulator_storage[global_idx],
+                                  *accumulator,
                                   0, 0, 1, 0);
             m_atmos_to_ocean_active[local_idx]->mult(inverse_weight, 0);
         }
@@ -2213,19 +2213,6 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                        ? m_staging_plan->erf_cell_domain
                        : amrex::convert(m_staging_plan->erf_cell_domain,
                                         amrex::IntVect::TheDimensionVector(src_face_dir)));
-        // Global source ID: row-major linear index over donor_src_domain. This
-        // is deliberately a *domain* quantity. It contains no rank, no box
-        // index and no reference to erf_staged_box, so two ranks that both hold
-        // source cell (si,sj) agree on its ID under any decomposition. That is
-        // the whole point: an MPI_MINLOC-style tie-break is only reproducible
-        // when the key it minimizes over is a global cell ID -- feed it a rank
-        // or a local index and the answer becomes rank-count dependent.
-        auto donor_global_id = [&] (int si, int sj) -> long long {
-            return static_cast<long long>(sj - donor_src_domain.smallEnd(1))
-                     * static_cast<long long>(donor_src_domain.length(0))
-                 + static_cast<long long>(si - donor_src_domain.smallEnd(0));
-        };
-
         // Each family's mask must sit on that family's stagger, or const_array()
         // would be reading a differently shaped array.
         const MultiFab* family_mask = remora_mskr;
@@ -2483,6 +2470,18 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                     if (m_remap_donor_fill_mode == DonorFillMode::Coawst &&
                         overlaps.empty() && m_remap_spherical && wet_arr &&
                         wet_arr(i,j,0) > Real(0.5) && donor_box_has_erf_overlap) {
+                        // Global source ID: row-major linear index over donor_src_domain. This
+                        // is deliberately a *domain* quantity. It contains no rank, no box
+                        // index and no reference to erf_staged_box, so two ranks that both hold
+                        // source cell (si,sj) agree on its ID under any decomposition. That is
+                        // the whole point: an MPI_MINLOC-style tie-break is only reproducible
+                        // when the key it minimizes over is a global cell ID -- feed it a rank
+                        // or a local index and the answer becomes rank-count dependent.
+                        auto donor_global_id = [&] (int si, int sj) -> long long {
+                            return static_cast<long long>(sj - donor_src_domain.smallEnd(1))
+                                     * static_cast<long long>(donor_src_domain.length(0))
+                                 + static_cast<long long>(si - donor_src_domain.smallEnd(0));
+                        };
                         Real dst_cx = 0.0, dst_cy = 0.0;
                         for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }
                         dst_cx /= static_cast<Real>(remora_poly.size());
@@ -3458,6 +3457,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
     };
 
+    SelectAtmosToOceanActiveView();
+    const bool averaging_active = AtmosToOceanAveragingActive();
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
         bool stop_coupling = false;
         if (m_atm_tick >= expected_atm_ticks) {
@@ -3469,8 +3470,6 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const amrex::Real ocean_time = m_ocean_time_offset + m_atm_tick * m_erf_dt;
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
-        SelectAtmosToOceanActiveView();
-        const bool averaging_active = AtmosToOceanAveragingActive();
         const bool use_state_contract =
             (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::StatePassing);
         DriverPrintLine(

@@ -255,7 +255,6 @@ private:
     int m_driver_verbose = 0;
     bool m_time_average_atm2ocn_state = false;
     bool m_time_average_atm2ocn_flux = false;
-    bool m_reported_atm2ocn_time_averaging = false;
 
     // Remap configuration and resolved state.
     //

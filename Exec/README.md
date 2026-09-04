@@ -568,7 +568,7 @@ aborts on the assertion rather than mis-mapping quietly.
 
 ## Tests
 
-The CTest suite drives the Upwelling decks with runtime overrides — 74 tests,
+The CTest suite drives the Upwelling decks with runtime overrides — 111 tests,
 all from `Exec/Upwelling`. OCCAMS is not in the suite; its external data is not
 in the repository.
 
@@ -591,8 +591,8 @@ Names are generated from the coupling axes, so you can select any slice with
 `-R`:
 
 ```
-reproducer_restart_<direction>_<contract>_<cadence>_nopbl
-parallel_upwelling_<direction>_<contract>_<cadence>_nopbl_np<N>_<kind>
+reproducer_restart_<direction>_<contract>_<cadence>
+parallel_upwelling_<direction>_<contract>_<cadence>_np<N>_<kind>
 ```
 
 - `<direction>` — `oneway` or `twoway`
@@ -606,7 +606,7 @@ parallel_upwelling_<direction>_<contract>_<cadence>_nopbl_np<N>_<kind>
 A single restart test:
 
 ```bash
-ctest --test-dir build -R '^reproducer_restart_twoway_state_matched_nopbl$' \
+ctest --test-dir build -R '^reproducer_restart_twoway_state_matched$' \
   --output-on-failure
 ```
 
@@ -614,12 +614,12 @@ A single np4-to-np1 comparison:
 
 ```bash
 ctest --test-dir build \
-  -R '^parallel_upwelling_twoway_state_matched_nopbl_np4_compare_to_np1$' \
+  -R '^parallel_upwelling_twoway_state_matched_np4_compare_to_np1$' \
   --output-on-failure
 ```
 
 Anchor the regex with `^...$`. Without it, `-R parallel_upwelling_twoway_state`
-matches all cadences and all four rank counts — 16 tests, not one — and `-R
+matches all cadences and all four rank counts — 24 tests, not one — and `-R
 ..._np4` also matches the paired `_smoke` test.
 
 Use `-N` to see what a selection would run before running it:
@@ -633,8 +633,8 @@ ctest --test-dir build -N -R np4_compare_to_np1
 By label:
 
 ```bash
-ctest --test-dir build -L restart --output-on-failure     # the 8 restart tests
-ctest --test-dir build -L parallel --output-on-failure    # the 64 MPI tests
+ctest --test-dir build -L restart --output-on-failure     # the 12 restart tests
+ctest --test-dir build -L parallel --output-on-failure    # the 96 MPI tests
 ```
 
 Available labels: `compile`, `coupling`, `parallel`, `reproducer`, `restart`.
@@ -646,7 +646,7 @@ ctest --test-dir build -R '_flux_.*_np4_compare_to_np1' --output-on-failure
 ctest --test-dir build -R 'reproducer_restart_twoway' --output-on-failure
 ```
 
-### The two tests that are not Upwelling matrix entries
+### The three tests that are not Upwelling matrix entries
 
 - `compile_erf_remora_driver` — build gate; other tests depend on it.
 - `reproducer_coupled_sst_coverage` — the coverage-contract test. Drives
@@ -658,6 +658,21 @@ ctest --test-dir build -R 'reproducer_restart_twoway' --output-on-failure
 ```bash
 ctest --test-dir build -R reproducer_coupled_sst_coverage --output-on-failure
 ```
+
+- `reproducer_lane_provenance` — the lane-provenance test. Drives
+  `inputs_oneway` three times, once per contract and averaging combination, and
+  asserts on the **exchange_info sidecar** beside each exchange plotfile: that
+  every lane belongs to its contract exactly once in contract order, and that
+  each lane's character and averaged columns follow the contract and the
+  `driver.time_average_atm2ocn_*` flags rather than a default.
+
+```bash
+ctest --test-dir build -R reproducer_lane_provenance --output-on-failure
+```
+
+Neither of these carries the `restart` or `parallel` label, so neither is run by
+`.github/workflows/ci.yml`, which selects only `compile`, `restart` and
+`parallel`. Run them locally or add a `-L coupling` step.
 
 ### What the suite does not cover
 

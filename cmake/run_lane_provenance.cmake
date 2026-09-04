@@ -2,16 +2,25 @@
 #
 # Every lane the driver hands REMORA has to be traceable to exactly one source,
 # and the record of that source has to agree with the data actually written.
-# Three surfaces describe the active view, and they are produced by different
-# code paths:
+# Three surfaces describe the active view:
 #
 #   1. the "Atmos->ocean active lanes:" line InitializeBlocks prints
 #   2. the variable list in the exchange plotfile's Header
 #   3. the lane table in the exchange_info sidecar beside that plotfile
 #
-# If they disagree, one of them is lying about what REMORA received: a lane in
-# the Header with no row in the table is forcing applied with no provenance, and
-# a row with no Header entry is provenance for a lane ERF never wrote.
+# Be honest about what comparing them is worth today: all three are rendered from
+# the same m_atmos_to_ocean_active_names vector, so they cannot currently diverge
+# and that comparison is a guard against a future split, not a live check. It is
+# cheap and it pins the contract, but the assertions with teeth are the ones
+# below it -- the vocabulary, ordering and uniqueness of the view itself, and the
+# character / averaged / represents columns.
+#
+# NOT covered, deliberately: the sidecar describes m_atmos_to_ocean_active, while
+# REMORA is handed m_atmos_to_ocean_apply_view, which SelectAtmosToOceanActiveView
+# nulls per lane when ERF cannot fill it. With no radiation model the SWrad and
+# LWrad lanes are withheld from REMORA yet still recorded here as forcing it
+# received. Asserting that away needs the sidecar to report the apply view; until
+# it does, a green run here does not mean every recorded lane was applied.
 #
 # The table also names each lane's CHARACTER, and character alone decides whether
 # a lane is time-averaged. That matters because a lane whose global index fails to
@@ -173,6 +182,13 @@ function(_check_case _tag _contract _extra_args _flux_averaged _state_averaged)
 
   file(STRINGS "${_plot}/Header" _hdr)
   list(GET _hdr 1 _ncomp)
+  # foreach(RANGE 2 1) is a CMake error rather than an empty loop, so an empty
+  # plotfile has to be reported here rather than crashing the interpreter.
+  if(NOT _ncomp GREATER 0)
+    message(FATAL_ERROR
+      "Run '${_tag}': ${_plot} carries ${_ncomp} variables, so REMORA received "
+      "no forcing from ERF at all.\nHeader: ${_plot}/Header")
+  endif()
   set(_written "")
   math(EXPR _last_var "${_ncomp} + 1")
   foreach(_i RANGE 2 ${_last_var})

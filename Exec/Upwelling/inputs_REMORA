@@ -23,7 +23,7 @@ remora.bc.zeta.type   =  outflow      periodic slipwall  periodic
 remora.bc.tke.type    =  outflow      periodic slipwall  periodic
 remora.boundary_per_variable = true
 
-remora.fixed_ndtfast_ratio  = 30 # Ratio of baroclinic to barotropic time step
+remora.ndtfast  = 30 # Ratio of baroclinic to barotropic time step
 
 # DIAGNOSTICS & VERBOSITY
 remora.sum_interval  = 1       # timesteps between integrated/max quantities, if remora.v > 0

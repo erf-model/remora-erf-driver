@@ -396,7 +396,7 @@ if(ERF_REMORA_ENABLE_TESTS)
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=1"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
             "max_step=2"
             ${_erf_remora_nopbl_args}
         )
@@ -419,7 +419,38 @@ if(ERF_REMORA_ENABLE_TESTS)
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=10"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
+            "max_step=2"
+            ${_erf_remora_nopbl_args}
+        )
+
+        if(_atm2ocn_mode STREQUAL "state")
+          set(_a2o_average_variant average_state_lanes)
+          set(_a2o_average_arg "driver.time_average_atm2ocn_state=1")
+        else()
+          set(_a2o_average_variant average_flux_lanes)
+          set(_a2o_average_arg "driver.time_average_atm2ocn_flux=1")
+        endif()
+        erf_remora_add_restart_test(
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep_nopbl
+          ${_case_input}
+          restart_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep_nopbl
+          ERF_RESTART_SUFFIX 00010
+          REMORA_RESTART_SUFFIX 00001
+          ERF_COMPARE_SUFFIX 00020
+          REMORA_COMPARE_SUFFIX 00002
+          EXCHANGE_COMPARE_SUFFIX 00001
+          ERF_PLOT_INT 10
+          ERF_CHECK_INT 10
+          REMORA_PLOT_INT 1
+          REMORA_CHECK_INT 1
+          EXCHANGE_PLOT_INT 1
+          RUNTIME_ARGS
+            "driver.atm2ocn_mode=${_atm2ocn_mode}"
+            "${_a2o_average_arg}"
+            "erf.fixed_dt=1"
+            "remora.fixed_dt=10"
+            "remora.ndtfast=1"
             "max_step=2"
             ${_erf_remora_nopbl_args}
         )
@@ -462,7 +493,7 @@ if(ERF_REMORA_ENABLE_TESTS)
               "driver.atm2ocn_mode=${_atm2ocn_mode}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=1"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
               "max_step=2"
               ${_erf_remora_nopbl_args}
           )
@@ -482,7 +513,35 @@ if(ERF_REMORA_ENABLE_TESTS)
               "driver.atm2ocn_mode=${_atm2ocn_mode}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=10"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
+              "max_step=2"
+              ${_erf_remora_nopbl_args}
+          )
+
+          if(_atm2ocn_mode STREQUAL "state")
+            set(_a2o_average_variant average_state_lanes)
+            set(_a2o_average_arg "driver.time_average_atm2ocn_state=1")
+          else()
+            set(_a2o_average_variant average_flux_lanes)
+            set(_a2o_average_arg "driver.time_average_atm2ocn_flux=1")
+          endif()
+          erf_remora_add_parallel_tests(
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep_nopbl
+            ${_case_input}
+            mpi_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep_nopbl_np${_mpi_nprocs}
+            MPI_NPROCS ${_mpi_nprocs}
+            ERF_COMPARE_SUFFIX 00020
+            REMORA_COMPARE_SUFFIX 00002
+            EXCHANGE_COMPARE_SUFFIX 00001
+            ERF_PLOT_INT 10
+            REMORA_PLOT_INT 1
+            EXCHANGE_PLOT_INT 1
+            RUNTIME_ARGS
+              "driver.atm2ocn_mode=${_atm2ocn_mode}"
+              "${_a2o_average_arg}"
+              "erf.fixed_dt=1"
+              "remora.fixed_dt=10"
+              "remora.ndtfast=1"
               "max_step=2"
               ${_erf_remora_nopbl_args}
           )

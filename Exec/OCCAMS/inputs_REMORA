@@ -32,7 +32,7 @@ remora.bc.zeta.type   = chapman chapman slipwall chapman
 remora.bc.tke.type    = outflow outflow slipwall outflow
 
 remora.fixed_dt            = 15.0
-remora.fixed_ndtfast_ratio = 15
+remora.ndtfast = 15
 
 remora.sum_interval = 1
 remora.v            = 0

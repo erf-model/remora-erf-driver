@@ -40,6 +40,29 @@ enum class WeightFamily {
 
 WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
 
+// What happens to a wet destination cell that no source cell overlaps.
+//
+// Withhold: leave the cell without a stencil. Its index keeps the -1 sentinel,
+//   its weights stay zero, it is reported uncovered, and ApplyConservativeRemap
+//   assigns that lane's fallback value. This is what production couplers do:
+//   ESMF's unmappedaction defaults to ERROR, CMEPS pre-fills and then maps with
+//   zeroregion=REGION_SELECT, YAC does not interpolate unmapped points, and CDO
+//   pre-fills with a missing value. It is the default here for that reason.
+// Coawst: graft a full-weight stencil pointing at the nearest non-land source
+//   cell, reproducing COAWST's check_weights (Lib/SCRIP_COAWST/scrip.f:343).
+//   SCRIP and OASIS are the only comparable codes that fill at all, and both
+//   fill with zero -- OASIS documents that as a deficiency. ESMF refuses to
+//   combine extrapolation with conservative regridding outright, because
+//   "doing so would result in non-conservative weights", which is exactly the
+//   objection to this mode: a full-weight nearest-neighbour row spliced into a
+//   fracarea-normalized conservative matrix is not conservative. Opt-in only.
+//
+// Both modes are inert in the cartesian frame, where the donor search never runs.
+enum class DonorFillMode {
+    Withhold,
+    Coawst
+};
+
 // Cached plan for moving ERF-layout (source) surface geometry onto the REMORA
 // (destination) layout. Defined in the implementation file so this header stays
 // free of AMReX_NonLocalBC.H.
@@ -110,8 +133,10 @@ public:
     const amrex::iMultiFab* GetO2AIndexMultiFab() const { return m_index_o2a_mf.get(); }
 
 private:
-    using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&, amrex::Real)>;
-    using ConstStateFn = std::function<void(const amrex::Vector<amrex::MultiFab*>&, amrex::Real)>;
+    using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&,
+                                              amrex::Real, long long)>;
+    using ConstStateFn = std::function<void(const amrex::Vector<amrex::MultiFab*>&,
+                                            amrex::Real, long long)>;
 
     void AdvanceBlocksWithCallbacks(const MutableStateFn& pack_surface_state,
                                     const ConstStateFn& apply_ocean_surface_state,
@@ -121,26 +146,53 @@ private:
 
     void AllocateCaches();
     void AllocateCachesFromSolverLayouts();
+    bool AtmosToOceanAveragingActive() const;
+    bool TimeAverageAtmosToOceanLane(int global_idx) const;
+    void ResetAtmosToOceanAccumulators();
+    void AccumulateAtmosToOcean(amrex::Real weight);
+    void DrainAtmosToOceanAccumulators();
     void FillOceanToAtmosGhosts();
     void FillAtmosToOceanGhosts();
     void PrintDiagnostics(const char* label,
                           const amrex::Vector<amrex::MultiFab*>& fields,
-                          const amrex::Vector<std::string>& names) const;
+                          const amrex::Vector<std::string>& names,
+                          bool ocean_to_atmos) const;
     void ValidateFields(const char* label,
                         const amrex::Vector<amrex::MultiFab*>& fields,
                         const amrex::Vector<std::string>& names,
                         amrex::Real time,
-                        long long ocean_step) const;
-    void WriteExchangePlotfiles(amrex::Real time, long long ocean_step) const;
+                        long long ocean_step,
+                        bool ocean_to_atmos) const;
+    // The two exchange directions are sampled at different instants; each is
+    // stamped with the time it actually represents.
+    void WriteExchangePlotfiles(amrex::Real o2a_time,
+                                amrex::Real a2o_time,
+                                amrex::Real dt_ocn,
+                                long long ocean_step) const;
     void WriteExchangePlotfile(const std::string& prefix,
                                const amrex::Vector<amrex::MultiFab*>& fields,
                                const amrex::Vector<std::string>& names,
                                const amrex::Geometry& geom,
                                amrex::Real time,
-                               long long ocean_step) const;
+                               amrex::Real ocean_time,
+                               amrex::Real dt_ocn,
+                               long long ocean_step,
+                               bool ocean_to_atmos) const;
+    // A plotfile carries one scalar time, but under partial averaging its lanes do
+    // not all represent the same instant. Rather than force one number to mean two
+    // things, write the per-lane provenance beside the data, the way job_info carries
+    // run provenance. Debug metadata only; nothing downstream parses it.
+    void WriteExchangeInfo(const std::string& plotfilename,
+                           const amrex::Vector<amrex::MultiFab*>& fields,
+                           const amrex::Vector<std::string>& names,
+                           amrex::Real time,
+                           amrex::Real ocean_time,
+                           amrex::Real dt_ocn,
+                           long long ocean_step,
+                           bool ocean_to_atmos) const;
     void ValidateCouplingLayoutsFromSolvers() const;
-    coupling::AtmosToOceanContract ActiveAtmosToOceanContract(long long ocean_step) const;
-    void SelectAtmosToOceanActiveView(long long ocean_step);
+    coupling::AtmosToOceanContract ActiveAtmosToOceanContract() const;
+    void SelectAtmosToOceanActiveView();
 
     // Decide once who owns each atmos->ocean lane (see LaneSource in
     // ERFRemoraCouplingContract.H) and reconfigure REMORA for the lanes ERF
@@ -155,9 +207,16 @@ private:
     // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
     // to report coverage over the cells that actually carry ocean. Pass nullptr
     // when unavailable; coverage is then reported over all cells only.
+    //
+    // donor_fill is that family's per-cell donor flag (1 = this cell's stencil was
+    // grafted by the coawst donor search rather than clipped from a real overlap).
+    // A donor-filled cell has sum_w > 0 and would otherwise be indistinguishable
+    // from a genuinely covered one, so it is reported as its own category. Pass
+    // nullptr for a direction that has no donor search (O2A).
     void NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                               const amrex::iMultiFab& index_mf,
                                               const amrex::MultiFab* wet_mask,
+                                              const amrex::iMultiFab* donor_fill,
                                               const char* label);
 
     // Decide (and report) which coordinate frame the weights are built in.
@@ -165,6 +224,12 @@ private:
     // lon/lat, because clipping degrees against meters produces zero overlap
     // for every cell and therefore an all-zero, silently unforced coupling.
     void ResolveRemapFrame();
+
+    // Decide (and report) what an uncovered wet destination cell receives.
+    // Called after ResolveRemapFrame() because the mode is inert in the
+    // cartesian frame and the report says so. Aborts on an unrecognized
+    // request, the same way ResolveRemapFrame() does.
+    void ResolveDonorFillMode();
 
     // Spherical-frame ERF geometry, built on the ERF layout: a nodal lon/lat
     // corner mesh that tiles without gaps, plus the cell-centered land mask.
@@ -214,6 +279,8 @@ private:
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
     int m_driver_verbose = 0;
+    bool m_time_average_atm2ocn_state = false;
+    bool m_time_average_atm2ocn_flux = false;
 
     // Remap configuration and resolved state.
     //
@@ -238,6 +305,27 @@ private:
     // a sliver of one ocean cell. Matches CESM's 0.001 destination-fraction cut
     // (OASIS/CERFACS use 1/1000).
     amrex::Real m_remap_min_coverage_frac = amrex::Real(0.001);
+    // What a wet destination cell with no source overlap receives. "withhold" |
+    // "coawst" is only ever a request, interpreted once in
+    // ResolveDonorFillMode(); see DonorFillMode for why withhold is the default.
+    std::string m_remap_donor_fill_request = "withhold";
+    DonorFillMode m_remap_donor_fill_mode = DonorFillMode::Withhold;
+    // Farthest a coawst-mode donor may sit from the destination cell it fills,
+    // as a multiple of that donor's own control-volume diagonal, in the same
+    // cos(latitude)-corrected metric the search uses. Dimensionless so it
+    // survives a change of grid resolution; the search metric is corrected
+    // degrees, which no user can pick a threshold in.
+    //
+    // This bound has NO precedent in any production coupler and is a deliberate
+    // departure, not borrowed practice: ESMF's NEAREST_STOD is not
+    // distance-bounded at all (when no local candidate exists it queries its
+    // process directory with an infinite box, so it always finds the globally
+    // nearest source however far away), and creep fill bounds by iteration
+    // count rather than by distance. 3.0 is a judgement call carried over from
+    // issue #6 and has not been calibrated against a production grid pair.
+    // Inert unless the mode is coawst and the frame is spherical.
+    amrex::Real m_remap_donor_max_diagonals = amrex::Real(3.0);
+    bool m_remap_donor_max_diagonals_set = false;
 
     // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
     // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.
@@ -255,6 +343,10 @@ private:
     // during fast ERF subcycles
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
+    // Valid-region-only trapezoidal sums. They are reset, filled, and drained
+    // within one ocean macro-step and are never checkpoint state.
+    amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_accumulator_storage;
+    amrex::Real m_a2o_accum_weight = 0.0;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_state_active;
     amrex::Vector<int> m_atmos_to_ocean_state_active_indices;
@@ -289,6 +381,29 @@ private:
     // REMORA layout, on that family's destination stagger).
     std::array<std::unique_ptr<amrex::MultiFab>, kNumWeightFamilies> m_weight_mf_by_family;
     std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_index_mf_by_family;
+    // Per-cell donor flag for each A2O family: 1 where the coawst donor search
+    // grafted a full-weight stencil pointing at the nearest non-land source cell,
+    // 0 everywhere else. Always 0 under driver.remap_donor_fill=withhold and in
+    // the cartesian frame.
+    //
+    // This is a flag array rather than a counter accumulated in the weight-build
+    // loop because faces on a box seam belong to two boxes, so a build-loop
+    // counter would double-count seam faces for TAUX_FACE/TAUY_FACE -- and would
+    // double-count them a different number of times under a different
+    // decomposition, which is a rank-dependent diagnostic inside a change whose
+    // whole subject is rank dependence. Carrying the flag on the destination
+    // layout lets NormalizeWeightsAndCheckConservation reuse the seam-ownership
+    // rule it already applies to every other coverage count.
+    //
+    // It cannot be folded into m_index_mf_by_family: every component there is a
+    // stencil coordinate that ApplyConservativeRemap dereferences.
+    //
+    // This is also the A2O counterpart of m_valid_o2a_mf, which is the array the
+    // O2A direction hands ERF so ERF can tell an uncovered zero from a real ocean
+    // value. Nothing yet hands this one to REMORA, so REMORA still cannot tell a
+    // coupled 101325 Pa from a placeholder 101325 Pa; closing that asymmetry is a
+    // separate change.
+    std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_donor_fill_mf_by_family;
 
     // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout). O2A is
     // SST-only/scalar today; kept as a single pair (SCALAR_CENTERED-equivalent)

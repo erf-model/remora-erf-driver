@@ -48,7 +48,11 @@ build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
+# Anchored to the repo root: this exists to catch an in-source CMake build's
+# Makefile. Out-of-source build directories are already ignored wholesale
+# above (build/, Build/, build-*/, build_*/). Left unanchored it also swallowed
+# Docs/sphinx_doc/Makefile, and would silently swallow any future docs tree.
+/Makefile
 install_manifest.txt
 compile_commands.json
 
@@ -149,6 +153,5 @@ tmp_build_dir/
 Backtrace.*
 *.orig
 
-# Sphinx docs: the tree-wide Makefile ignore above would swallow the docs Makefile
-!Docs/sphinx_doc/Makefile
+# Sphinx docs build output
 Docs/sphinx_doc/_build/

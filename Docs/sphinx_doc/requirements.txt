@@ -1,5 +1,25 @@
-# Verified building clean (including under -W) with sphinx 9.1.0 and
-# sphinx_rtd_theme. The floors below are conservative, not tested.
-sphinx>=5.0
-sphinx_rtd_theme>=1.0.0
+# Sphinx dependencies for the ERF-REMORA driver documentation.
+#
+# Bounds carry reasons, following WarpX's practice rather than bare numbers.
+#
+# sphinx_rtd_theme>=3.0
+#   Theme 2.x declares `sphinx<8` and `docutils<0.21` in its metadata, so it
+#   runs outside its supported range against current Sphinx. 3.x supports it.
+#
+# sphinxcontrib-jquery
+#   Sphinx 6 removed bundled jQuery; without this the RTD theme's search box
+#   and nav collapse fail silently, with no build error. ERF guards the same
+#   way by listing it in `extensions`.
+#
+# No docutils pin, deliberately. ERF pins `docutils==0.16` and REMORA
+#   `docutils<=0.16` against a 2021 RTD-theme rendering bug (sphinx#9001) that
+#   current Sphinx does not have; WarpX moved the other way with
+#   `docutils>=0.17.1`. Wide-table rendering is handled by
+#   _static/theme_overrides.css instead of by holding docutils back.
+sphinx>=7.0
+sphinx_rtd_theme>=3.0
+sphinxcontrib-jquery
+myst-parser
+sphinx-design
+sphinx-copybutton
 pygments

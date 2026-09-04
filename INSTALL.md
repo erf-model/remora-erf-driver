@@ -258,9 +258,10 @@ Most of what this section used to describe by hand is now in the CTest suite
 (see "Local CTest workflow" above). Prefer the suite: it covers more cases, and
 the manual procedures it replaced drifted out of date faster than they were run.
 
-**Run the suite at `-j1`.** The harnesses `file(REMOVE_RECURSE)` their working
-directories, so concurrent tests delete each other's output and fail in ways
-that look like solver bugs.
+**Run one label per `ctest` invocation.** `compile_erf_remora_driver` relinks the
+driver, so scheduling it alongside tests that execute the binary kills them with
+`SIGILL`. Within a label, `-j` is fine — every test takes its own working
+directory. See `Exec/README.md` for the measured concurrency.
 
 ### 1. Rank comparison — automated
 

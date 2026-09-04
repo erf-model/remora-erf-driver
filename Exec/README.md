@@ -572,18 +572,33 @@ The CTest suite drives the Upwelling decks with runtime overrides — 111 tests,
 all from `Exec/Upwelling`. OCCAMS is not in the suite; its external data is not
 in the repository.
 
-### Run the suite at `-j1`
+### Run the suite by label, not in one `ctest` call
 
 ```bash
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -L compile  --output-on-failure --no-tests=error
+ctest --test-dir build -L coupling --output-on-failure --no-tests=error
+ctest --test-dir build -L restart  -j4 --output-on-failure --no-tests=error
+ctest --test-dir build -L parallel -j4 --output-on-failure --no-tests=error
 ```
 
-**The suite is only valid at `-j1`.** The harnesses `file(REMOVE_RECURSE)` their
-working directories, so concurrent tests delete each other's output and fail in
-ways that look like solver bugs — a stale plotfile, a missing checkpoint, a
-comparison against a directory that vanished mid-run. Two suites run at once
-produced 49 phantom failures; `-j2` alone produced 5. Do not add `-j` here, and
-do not start a second suite in another worktree while one is running.
+**`compile_erf_remora_driver` must not run alongside anything else.** It invokes
+the build, and the driver relinks on every invocation, so the binary is replaced
+underneath any test currently executing it. Those tests die on `SIGILL` (exit
+132) with an `mpiexec ... could not access or execute` message that points at the
+executable rather than at the race. A plain `ctest -jN` over the whole suite
+schedules the compile test concurrently with the rest and produces a burst of
+exactly these. `.github/workflows/ci.yml` avoids it by invoking `ctest` once per
+label, which is why the commands above are split.
+
+Within a label, concurrency is fine. All 108 matrix tests take a distinct
+`ERF_REMORA_WORK_SUBDIR`, so no two can `file(REMOVE_RECURSE)` each other's
+output. Measured: `-L restart` passes 12/12 at both `-j3` and `-j6` (222 s and
+62 s), `-L parallel` passes 96/96 at `-j3`. `PROCESSORS` is set from the rank
+count, so `ctest` will not oversubscribe the `np8` tests.
+
+Two suites sharing one build directory is a different matter — they do collide,
+because the work subdirs are keyed by test name, not by run. Use separate build
+directories.
 
 ### Test name structure
 

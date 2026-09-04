@@ -268,7 +268,7 @@ that look like solver bugs.
 ctest --test-dir build_ci -L parallel --output-on-failure --no-tests=error
 ```
 
-64 tests: `np2`, `np4`, `np6` and `np8`, each as a smoke run and as an
+96 tests: `np2`, `np4`, `np6` and `np8`, each as a smoke run and as an
 `fcompare` against the serial baseline. This replaces the manual
 `/tmp/upwelling_mpi` procedure that used to live here.
 
@@ -276,7 +276,7 @@ One test at a time:
 
 ```bash
 ctest --test-dir build_ci \
-  -R '^parallel_upwelling_twoway_state_matched_nopbl_np4_compare_to_np1$' \
+  -R '^parallel_upwelling_twoway_state_matched_np4_compare_to_np1$' \
   --output-on-failure
 ```
 

@@ -1,0 +1,5 @@
+# Verified building clean (including under -W) with sphinx 9.1.0 and
+# sphinx_rtd_theme. The floors below are conservative, not tested.
+sphinx>=5.0
+sphinx_rtd_theme>=1.0.0
+pygments

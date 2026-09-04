@@ -148,3 +148,7 @@ t/
 tmp_build_dir/
 Backtrace.*
 *.orig
+
+# Sphinx docs: the tree-wide Makefile ignore above would swallow the docs Makefile
+!Docs/sphinx_doc/Makefile
+Docs/sphinx_doc/_build/

@@ -116,6 +116,30 @@ if(ERF_REMORA_ENABLE_FCOMPARE)
   endif()
 endif()
 
+# Bake the library paths this build linked against into the driver's RPATH.
+#
+# ERF already does this for its own targets — Submodules/ERF/CMake/SetRpath.cmake,
+# included at Submodules/ERF/CMakeLists.txt:688 — but CMAKE_INSTALL_RPATH and
+# add_link_options() are both directory-scoped. ERF's copy runs inside the scope
+# opened by add_subdirectory(Submodules/ERF) above, which closes before
+# erf-remora-driver is defined here, so none of it reaches this executable. It has
+# to be included again in this scope, ahead of add_executable(), because
+# BUILD_WITH_INSTALL_RPATH and INSTALL_RPATH are read when the target is created.
+#
+# Without it the driver carries no RPATH for the Cray PE, and the loader resolves
+# libmpi/libmpi_gtl_cuda through /opt/cray/pe/lib64 — the *default* PE version —
+# regardless of what `module load` selected. On Perlmutter that silently ignores
+# the cray-mpich/9.0.1 and cudatoolkit/12.9 pins in
+# Submodules/ERF/Build/machines/perlmutter_erf.profile: the run picks up the
+# default cray-mpich, whose GTL wants libcudart.so.13, and dies at startup with
+# "libcudart.so.13: cannot open shared object file" against the 12.9 that is
+# actually loaded. The pins bind at compile time; this is what makes them bind at
+# run time too.
+#
+# The file stands down on its own when CRAY_ADD_RPATH=yes, since the Cray wrappers
+# inject RPATH themselves in that case.
+include(${CMAKE_CURRENT_SOURCE_DIR}/Submodules/ERF/CMake/SetRpath.cmake)
+
 add_executable(
   erf-remora-driver
   Source/main.cpp

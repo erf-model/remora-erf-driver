@@ -616,6 +616,14 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
     DriverPrintLine(m_driver_verbose, "calling ERF InitData (enters ERF InitData_pre -> ERF InitData_post)");
     InitERFSolver(m_erf);
     DriverPrintLine(m_driver_verbose, "ERF InitData complete");
+
+    // Between the two InitData calls on purpose, and the only window that works:
+    // the ERF capability query reads fields ERF allocates above, and the REMORA
+    // longwave reconfiguration this may perform has to land before REMORA
+    // InitData opens NetCDF forcing handles off the same selector.
+    DriverPrintLine(m_driver_verbose, "resolving atm2ocn lane ownership from ERF capability and REMORA deck");
+    ResolveAtmosToOceanLaneSources();
+
     DriverPrintLine(m_driver_verbose, "calling REMORA InitData");
     InitREMORASolver(m_remora);
     DriverPrintLine(m_driver_verbose, "REMORA InitData complete");
@@ -624,12 +632,14 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
 void
 ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
 {
-    amrex::ParmParse pp_rem("remora");
-    amrex::Real humidity_val = 0.0, cloud_val = 0.0, rain_val = 0.0;
-    pp_rem.query("air_humidity", humidity_val);
-    pp_rem.query("cloud", cloud_val);
-    pp_rem.query("rain",  rain_val);
-
+    // Only the flux lanes need seeding, and only with zero.
+    //
+    // The state lanes used to be prefilled with REMORA's own constants read back
+    // out of ParmParse. That was redundant - a lane the driver does not own is
+    // withheld and never read, so REMORA keeps its value directly - and fragile,
+    // since it depended on REMORA's queryAdd having already written its defaults
+    // into the table. Resolving lane ownership up front removes the need for the
+    // driver to guess at REMORA's defaults at all.
     for (int global_idx = 0; global_idx < static_cast<int>(m_atmos_to_ocean.size()); ++global_idx) {
         auto* mf = m_atmos_to_ocean[global_idx];
         if (mf == nullptr) {
@@ -637,15 +647,6 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
         }
 
         switch (global_idx) {
-        case coupling::Qair:
-            mf->setVal(humidity_val); // RH fallback [0-1] for REMORA bulk fluxes
-            break;
-        case coupling::Cloud:
-            mf->setVal(cloud_val); // cloud fraction [0-1]
-            break;
-        case coupling::Rain:
-            mf->setVal(rain_val);  // rain rate [kg m-2 s-1]
-            break;
         case coupling::TauX:
             mf->setVal(0.0);       // surface stress [Pa]: reset each macro-step
             break;
@@ -657,12 +658,6 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
             break;
         case coupling::LHflux:
             mf->setVal(0.0);       // latent heat flux [W m-2]
-            break;
-        case coupling::SWrad:
-            mf->setVal(0.0);       // shortwave [W m-2]: no radiation fallback
-            break;
-        case coupling::LWrad:
-            mf->setVal(0.0);       // longwave  [W m-2]: no radiation fallback
             break;
         case coupling::Evap:
             mf->setVal(0.0);       // evaporation rate [kg m-2 s-1]
@@ -760,6 +755,7 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
                "driver.time_average_atm2ocn_flux=1 to force REMORA with the atmosphere "
                "mean over each ocean interval.\n";
     }
+    PrintAtmosToOceanLaneProvenance();
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
@@ -3672,6 +3668,176 @@ ERFRemoraMultiBlockContainer::ActiveAtmosToOceanContract () const
     return m_atmos_to_ocean_contract;
 }
 
+namespace {
+// Fixed-column padding for the provenance table, without pulling in <iomanip>.
+std::string
+PadTo (const std::string& text, std::size_t width)
+{
+    std::string padded = text;
+    if (padded.size() < width) { padded.append(width - padded.size(), ' '); }
+    return padded;
+}
+} // namespace
+
+void
+ERFRemoraMultiBlockContainer::ResolveAtmosToOceanLaneSources ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_erf != nullptr && m_remora != nullptr,
+        "ResolveAtmosToOceanLaneSources requires both solvers to exist");
+
+    const int n_lanes = coupling::NumAtmosToOceanLayers;
+    m_atmos_to_ocean_lane_source.assign(n_lanes, coupling::LaneSource::RemoraDefault);
+    m_atmos_to_ocean_lane_reason.assign(n_lanes, std::string("not in either active view"));
+
+    // Both signals arrive in active-view slot order, the same order the pack and
+    // apply vectors use, so map back to lane identity through *_active_indices.
+    amrex::Vector<int> erf_can_fill_state;
+    amrex::Vector<int> erf_can_fill_flux;
+    ERFGetFillableAtmosToOceanLanes(m_erf, /*state_contract=*/true,  erf_can_fill_state);
+    ERFGetFillableAtmosToOceanLanes(m_erf, /*state_contract=*/false, erf_can_fill_flux);
+
+    amrex::Vector<int> deck_configured;
+    REMORAGetDeckConfiguredAtmosLanes(m_remora, deck_configured);
+
+    // driver.atm2ocn_lane_source.<lane> = erf | remora | auto
+    const std::string lane_source_prefix = "driver.atm2ocn_lane_source";
+    amrex::ParmParse pp_lane(lane_source_prefix);
+
+    // Reject a misspelled lane rather than ignoring it: these are read with
+    // query(), so "...lane_source.Uwnd = erf" would otherwise do nothing and
+    // leave the lane wherever the default rule put it.
+    for (const auto& entry : amrex::ParmParse::getEntries(lane_source_prefix)) {
+        const std::string lane_name = entry.substr(lane_source_prefix.size() + 1);
+        bool known = false;
+        for (const auto& candidate : coupling::AtmosToOceanLaneSpecs()) {
+            if (lane_name == candidate.name) { known = true; break; }
+        }
+        if (!known) {
+            std::string valid;
+            for (const auto& candidate : coupling::AtmosToOceanLaneSpecs()) {
+                if (candidate.index >= coupling::NumAtmosToOceanStateLayers) { break; }
+                if (!valid.empty()) { valid += ", "; }
+                valid += candidate.name;
+            }
+            amrex::Abort(entry + " names no atmos->ocean lane. Valid lanes: " + valid + ".");
+        }
+    }
+
+    const auto& state_indices = m_atmos_to_ocean_state_active_indices;
+    for (int local = 0; local < static_cast<int>(state_indices.size()); ++local) {
+        const int global_idx = state_indices[local];
+        const auto& spec = coupling::AtmosToOceanLane(global_idx);
+
+        const bool erf_can_fill =
+            (local < static_cast<int>(erf_can_fill_state.size())) && erf_can_fill_state[local] != 0;
+        const bool deck_owns =
+            (local < static_cast<int>(deck_configured.size())) && deck_configured[local] != 0;
+
+        std::string requested = "auto";
+        const bool has_override = pp_lane.query(spec.name, requested);
+        requested = amrex::toLower(requested);
+        if (has_override && requested != "erf" && requested != "remora" && requested != "auto") {
+            amrex::Abort("driver.atm2ocn_lane_source." + std::string(spec.name) + " = " + requested +
+                         " is not a source. Valid values: erf, remora, auto.");
+        }
+
+        coupling::LaneSource source = coupling::LaneSource::RemoraDefault;
+        std::string reason;
+
+        if (has_override && requested == "erf") {
+            // Unsatisfiable, not a preference: the lane would reach REMORA
+            // holding the driver's prefill. Say so rather than quietly obeying.
+            if (!erf_can_fill) {
+                amrex::Abort("driver.atm2ocn_lane_source." + std::string(spec.name) +
+                             " = erf, but ERF's pack does not fill the " + spec.name +
+                             " lane in this configuration, so the lane would carry only the "
+                             "driver's prefill. Configure ERF to produce it, or drop the override.");
+            }
+            source = coupling::LaneSource::Erf;
+            reason = "forced by driver.atm2ocn_lane_source." + std::string(spec.name) + "=erf";
+        } else if (has_override && requested == "remora") {
+            source = deck_owns ? coupling::LaneSource::RemoraDeck
+                               : coupling::LaneSource::RemoraDefault;
+            reason = "withheld by driver.atm2ocn_lane_source." + std::string(spec.name) + "=remora";
+        } else if (deck_owns) {
+            // The one case where ERF could supply a lane and deliberately does not.
+            source = coupling::LaneSource::RemoraDeck;
+            reason = spec.remora_type_key != nullptr
+                         ? "remora." + std::string(spec.remora_type_key) + " or its value set in deck"
+                         : std::string("set in deck");
+        } else if (erf_can_fill) {
+            source = coupling::LaneSource::Erf;
+            reason = "packed by ERF";
+        } else {
+            source = coupling::LaneSource::RemoraDefault;
+            reason = "ERF does not fill it; REMORA default stands";
+        }
+
+        m_atmos_to_ocean_lane_source[global_idx] = source;
+        m_atmos_to_ocean_lane_reason[global_idx] = reason;
+    }
+
+    // Flux lanes are reported but never withheld: ApplyAtmosphericFluxes skips
+    // the whole application if any of the eight is null. Recorded so the report
+    // can still say which ones ERF computes.
+    const auto& flux_indices = m_atmos_to_ocean_flux_active_indices;
+    for (int local = 0; local < static_cast<int>(flux_indices.size()); ++local) {
+        const int global_idx = flux_indices[local];
+        if (global_idx < coupling::TauX) {
+            continue; // SWrad/LWrad/Rain sit in both views; the state pass owns them.
+        }
+        const bool erf_can_fill =
+            (local < static_cast<int>(erf_can_fill_flux.size())) && erf_can_fill_flux[local] != 0;
+        m_atmos_to_ocean_lane_source[global_idx] =
+            erf_can_fill ? coupling::LaneSource::Erf : coupling::LaneSource::RemoraDefault;
+        m_atmos_to_ocean_lane_reason[global_idx] =
+            erf_can_fill ? "packed by ERF"
+                         : "ERF does not compute it; passed as zero (flux mode passes every lane)";
+    }
+
+    // The one lane ERF fills that REMORA would otherwise ignore: lwrad_type
+    // defaults to "computed", under which bulk_fluxes gets a null longwave
+    // pointer and uses Berliand, so copying ERF's longwave in accomplishes
+    // nothing. A deck that set lwrad_type resolved to RemoraDeck above and never
+    // reaches here, so this cannot override an explicit choice.
+    if (m_atmos_to_ocean_lane_source[coupling::LWrad] == coupling::LaneSource::Erf) {
+        SetREMORALongwaveFromDriver(m_remora);
+        m_atmos_to_ocean_lane_reason[coupling::LWrad] +=
+            "; REMORA longwave set to external downward";
+    }
+
+    m_atmos_to_ocean_lane_sources_resolved = true;
+}
+
+void
+ERFRemoraMultiBlockContainer::PrintAtmosToOceanLaneProvenance () const
+{
+    amrex::Print() << "Atmos->ocean lane provenance (configured mode="
+                   << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) << ")\n"
+                   << "  " << PadTo("lane", 8) << PadTo("source", 8) << "reason\n";
+
+    auto print_lane = [&](int global_idx) {
+        const auto& spec = coupling::AtmosToOceanLane(global_idx);
+        amrex::Print() << "  " << PadTo(spec.name, 8)
+                       << PadTo(coupling::LaneSourceName(m_atmos_to_ocean_lane_source[global_idx]), 8)
+                       << m_atmos_to_ocean_lane_reason[global_idx] << "\n";
+    };
+
+    for (int global_idx : m_atmos_to_ocean_state_active_indices) {
+        print_lane(global_idx);
+    }
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        amrex::Print() << "  (above is the ocean_step=0 bootstrap; steady-state flux lanes follow)\n";
+        for (int global_idx : m_atmos_to_ocean_flux_active_indices) {
+            if (global_idx >= coupling::TauX) { print_lane(global_idx); }
+        }
+    }
+    amrex::Print() << "  A lane sourced from REMORA is withheld from the apply view, so REMORA's own\n"
+                      "  forcing for it stands. Override per lane with "
+                      "driver.atm2ocn_lane_source.<lane>.\n";
+}
+
 void
 ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView ()
 {
@@ -3686,54 +3852,28 @@ ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView ()
         m_atmos_to_ocean_active_names = m_atmos_to_ocean_state_active_names;
     }
 
-    // The view actually handed to REMORA. It is the active view with any lane
-    // nulled that ERF cannot fill, because REMORA decides per lane whether the
-    // driver is authoritative purely from the pointer being non-null
-    // (REMORA.cpp:1220 reads NetCDF shortwave only when the driver did not supply
-    // it). Handing over a lane of zeros therefore does not mean "no contribution",
-    // it means "the atmosphere says zero" - and silently disables REMORA's own
-    // NetCDF radiation. Nulling the lane instead lets that fallback stand.
+    // The view handed to REMORA: the active view with every lane the driver does
+    // not own nulled. REMORA reads authority purely from the pointer being
+    // non-null, so a lane the atmosphere never wrote would read as "the
+    // atmosphere says this" and displace REMORA's own forcing. Withholding is
+    // how the driver declines a lane.
     //
-    // State contract only. The flux contract has no such fallback: REMORA's
+    // ResolveAtmosToOceanLaneSources() decided which; this only applies it.
+    //
+    // State contract only. The flux contract has no per-lane fallback: REMORA's
     // ApplyAtmosphericFluxes requires all eight lanes non-null and skips the whole
     // application if any is missing, so withholding there would disable every flux
     // rather than one. In flux mode a zero radiative flux is at least a truthful
     // statement that the atmosphere computed none.
     m_atmos_to_ocean_apply_view = m_atmos_to_ocean_active;
     if (active_contract == coupling::AtmosToOceanContract::StatePassing &&
-        m_erf != nullptr) {
-        const bool has_radiation = ERFHasRadiation(m_erf);
-        // ERF fills the Cloud lane only when moisture is active and carries cloud
-        // liquid or ice; otherwise the lane holds just the driver prefill, and
-        // passing it would mark it authoritative in REMORA and suppress REMORA's
-        // own cloud forcing (remora.cloud_type).
-        const bool has_cloud_water = ERFHasCloudWater(m_erf);
+        m_atmos_to_ocean_lane_sources_resolved) {
         for (int local_idx = 0;
              local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
             const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
-            if (!has_radiation &&
-                (global_idx == coupling::SWrad || global_idx == coupling::LWrad)) {
+            if (m_atmos_to_ocean_lane_source[global_idx] != coupling::LaneSource::Erf) {
                 m_atmos_to_ocean_apply_view[local_idx] = nullptr;
             }
-            if (!has_cloud_water && global_idx == coupling::Cloud) {
-                m_atmos_to_ocean_apply_view[local_idx] = nullptr;
-            }
-        }
-        if (!has_cloud_water && !m_warned_no_erf_cloud_water) {
-            m_warned_no_erf_cloud_water = true;
-            amrex::Print() << "[driver] ERF has no cloud condensate (no moisture model, or one "
-                              "without cloud liquid/ice), so the Cloud atmos->ocean lane is "
-                              "withheld rather than passed as the constant driver prefill. REMORA "
-                              "keeps whatever cloud forcing its own configuration provides "
-                              "(remora.cloud_type).\n";
-        }
-        if (!has_radiation && !m_warned_no_erf_radiation) {
-            m_warned_no_erf_radiation = true;
-            amrex::Print() << "[driver] ERF reports no active radiation model, so the SWrad/LWrad "
-                              "atmos->ocean lanes are withheld rather than passed as zeros. REMORA "
-                              "keeps whatever radiative forcing its own configuration provides "
-                              "(remora.swrad_type / remora.lwrad_type). Enable ERF radiation to "
-                              "couple radiation from the atmosphere instead.\n";
         }
     }
 }

@@ -88,18 +88,18 @@ ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land)
     if (is_land) { *is_land = lmask; }
 }
 
-bool
-ERFHasRadiation(void* erf_handle)
+void
+ERFGetFillableAtmosToOceanLanes(void* erf_handle,
+                                bool state_contract,
+                                amrex::Vector<int>& can_fill)
 {
-    if (erf_handle == nullptr) { return false; }
-    return static_cast<ERF*>(erf_handle)->HasRadiation();
-}
-
-bool
-ERFHasCloudWater(void* erf_handle)
-{
-    if (erf_handle == nullptr) { return false; }
-    return static_cast<ERF*>(erf_handle)->HasCloudWater();
+    if (erf_handle == nullptr) {
+        // No atmosphere fills nothing. Claiming otherwise would have the driver
+        // hand REMORA a view of prefill.
+        can_fill.clear();
+        return;
+    }
+    static_cast<ERF*>(erf_handle)->GetFillableAtmosToOceanLanes(state_contract, can_fill);
 }
 
 void

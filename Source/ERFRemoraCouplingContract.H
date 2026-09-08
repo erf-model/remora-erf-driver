@@ -149,15 +149,6 @@ inline const amrex::Vector<std::string>& AtmosToOceanNames ()
     return names;
 }
 
-inline const amrex::Vector<std::string>& AtmosToOceanAllNames ()
-{
-    static const amrex::Vector<std::string> names {
-        "Uwind", "Vwind", "Patm", "Qair", "Tair", "cloud", "rain", "SWrad", "LWrad",
-        "tau_x", "tau_y", "SHflux", "LHflux", "evap"
-    };
-    return names;
-}
-
 inline const amrex::Vector<int>& AtmosToOceanActiveIndices (AtmosToOceanContract contract)
 {
     static const amrex::Vector<int> state_indices {
@@ -188,6 +179,68 @@ inline int NumAtmosToOceanActiveLayers (AtmosToOceanContract contract)
 inline const char* AtmosToOceanContractName (AtmosToOceanContract contract)
 {
     return (contract == AtmosToOceanContract::FluxPassing) ? "flux" : "state";
+}
+
+// Where one atmos->ocean lane's data comes from, resolved once per lane.
+//
+// ERF by default, since coupling it to an ocean is the point. A lane the deck
+// configured explicitly stays with the deck; a lane ERF cannot fill stays with
+// REMORA whether the deck asked or not, because REMORA reads any non-null lane
+// as authoritative, so handing over prefill is worse than handing over nothing.
+enum class LaneSource : int {
+    Erf = 0,        // ERF packs it; handed to REMORA
+    RemoraDeck,     // deck named it; withheld, deck's own forcing stands
+    RemoraDefault   // neither claims it; withheld, REMORA's default stands
+};
+
+inline const char* LaneSourceName (LaneSource source)
+{
+    switch (source) {
+    case LaneSource::Erf:           return "ERF";
+    case LaneSource::RemoraDeck:    return "REMORA";
+    case LaneSource::RemoraDefault: return "REMORA";
+    }
+    return "?";
+}
+
+// One row per lane, replacing the separately-maintained name/index vectors.
+// The provenance report and the driver.atm2ocn_lane_source.<name> override are
+// keyed on it.
+struct AtmosToOceanLaneSpec {
+    int         index;              // AtmosToOceanIndex
+    const char* name;               // as printed, and as spelled in overrides
+    const char* remora_type_key;    // "remora.<key>", or nullptr if REMORA has none
+    const char* units;
+};
+
+inline const amrex::Vector<AtmosToOceanLaneSpec>& AtmosToOceanLaneSpecs ()
+{
+    // Ordered by AtmosToOceanIndex, so specs[i].index == i.
+    static const amrex::Vector<AtmosToOceanLaneSpec> specs {
+        {Uwind,  "Uwind",  "uwind_type", "m s^-1"},
+        {Vwind,  "Vwind",  "vwind_type", "m s^-1"},
+        {Patm,   "Patm",   "pair_type",  "Pa"},
+        // REMORA reads this as specific humidity or an RH fraction depending on
+        // magnitude (REMORA_bulk_flux.cpp). Unresolved; one reason ERF's
+        // humidity pack is off.
+        {Qair,   "Qair",   "qair_type",  "kg kg^-1 or 0-1"},
+        {Tair,   "Tair",   "tair_type",  "K"},
+        {Cloud,  "cloud",  "cloud_type", "0-1"},
+        {Rain,   "rain",   "rain_type",  "kg m^-2 s^-1"},
+        {SWrad,  "SWrad",  "swrad_type", "W m^-2"},
+        {LWrad,  "LWrad",  "lwrad_type", "W m^-2"},
+        {TauX,   "tau_x",  nullptr,      "N m^-2"},
+        {TauY,   "tau_y",  nullptr,      "N m^-2"},
+        {SHflux, "SHflux", nullptr,      "W m^-2"},
+        {LHflux, "LHflux", nullptr,      "W m^-2"},
+        {Evap,   "evap",   nullptr,      "kg m^-2 s^-1"}
+    };
+    return specs;
+}
+
+inline const AtmosToOceanLaneSpec& AtmosToOceanLane (int global_idx)
+{
+    return AtmosToOceanLaneSpecs()[global_idx];
 }
 
 inline const amrex::Vector<std::string>& OceanToAtmosNames ()

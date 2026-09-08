@@ -10,6 +10,22 @@ driver.coupling_direction = two_way
 driver.atm2ocn_mode       = state
 driver.ocean_time_offset  = 49939200.0
 
+# Per-lane atmos->ocean forcing ownership.
+#
+# A lane the REMORA deck configures explicitly stays with the deck, and
+# inputs_REMORA names netcdf sources for winds, Tair and Pair because it is
+# shared with standalone runs. Right there, wrong here: a coupled run wants those
+# from ERF, so name them and keep the coupled intent in this wrapper.
+#
+# Left to inputs_REMORA on purpose: SWrad/LWrad, since this case runs ERF without
+# radiation, and Qair/rain, whose ERF packs are disabled upstream. Naming any of
+# those "erf" aborts rather than passing a lane ERF never wrote.
+driver.atm2ocn_lane_source.Uwind = erf
+driver.atm2ocn_lane_source.Vwind = erf
+driver.atm2ocn_lane_source.Patm  = erf
+driver.atm2ocn_lane_source.Tair  = erf
+driver.atm2ocn_lane_source.cloud = erf
+
 max_step = 1
 start_datetime = "2021-08-01 00:00:00"
 

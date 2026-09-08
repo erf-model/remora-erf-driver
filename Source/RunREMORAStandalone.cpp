@@ -2,6 +2,8 @@
 
 #include <REMORA.H>
 
+#include <array>
+
 namespace erf_remora
 {
 void*
@@ -132,6 +134,27 @@ REMORAPackSurfaceState(void* remora_handle,
 {
     static_cast<REMORA*>(remora_handle)->PackSurfaceState(
         state, time, weight_o2a_mf, index_o2a_mf, max_stencil_size, dst_land_mask);
+}
+
+void
+REMORAGetDeckConfiguredAtmosLanes(void* remora_handle,
+                                  amrex::Vector<int>& deck_configured)
+{
+    deck_configured.clear();
+    if (remora_handle == nullptr) { return; }
+    std::array<bool, AtmosState::NumTypes> configured{};
+    static_cast<REMORA*>(remora_handle)->GetDeckConfiguredAtmosStateLanes(configured);
+    deck_configured.resize(AtmosState::NumTypes, 0);
+    for (int lane = 0; lane < AtmosState::NumTypes; ++lane) {
+        deck_configured[lane] = configured[lane] ? 1 : 0;
+    }
+}
+
+void
+SetREMORALongwaveFromDriver(void* remora_handle)
+{
+    if (remora_handle == nullptr) { return; }
+    static_cast<REMORA*>(remora_handle)->SetLongwaveFromDriver();
 }
 
 void

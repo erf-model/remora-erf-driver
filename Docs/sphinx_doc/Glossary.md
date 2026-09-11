@@ -5,7 +5,9 @@ concepts currently carry more than one name across the repository: `lane`
 appears 75 times in `Source/` but never in `README.md`, while `cache` appears
 39 times in `Source/` and 3 times in `README.md` but nowhere in the newer
 documents, and `slab` appears 27 times in `Source/` and in no document at all.
-See `Docs/heuristic-eval-docs.md` for the full count.
+These are case-insensitive substring counts, reproducible with `grep -roi`;
+matching on word boundaries instead gives 57, 21 and 17, because most uses are
+inside identifiers.
 
 **Preferred term is given first; deprecated synonyms are marked.** New prose
 should use the preferred term.

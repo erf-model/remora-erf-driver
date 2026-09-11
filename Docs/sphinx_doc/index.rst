@@ -20,10 +20,11 @@ there rather than restated here.
 .. note::
 
    Page migration is not complete. ``README.md``, ``INSTALL.md`` and
-   ``Exec/README.md`` are deliberately not yet included: open PR #19
-   rewrites two of them, so converting now would mean re-merging. MyST is
-   configured, so they can be added to the toctree below as-is when #19
-   lands.
+   ``Exec/README.md`` are not in the toctree below because they live at the
+   repository root, outside this source tree, and a toctree entry that
+   points above the source directory is unreadable and fails the ``-W``
+   build. MyST is configured, so they can be added as-is once they are
+   reachable from here.
 
 .. toctree::
    :maxdepth: 2

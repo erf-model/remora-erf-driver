@@ -1,13 +1,14 @@
 # Glossary
 
-The driver's own vocabulary, in one place. This exists because the same
-concepts currently carry more than one name across the repository: `lane`
-appears 75 times in `Source/` but never in `README.md`, while `cache` appears
-39 times in `Source/` and 3 times in `README.md` but nowhere in the newer
-documents, and `slab` appears 27 times in `Source/` and in no document at all.
-These are case-insensitive substring counts, reproducible with `grep -roi`;
-matching on word boundaries instead gives 57, 21 and 17, because most uses are
-inside identifiers.
+The driver's own vocabulary, in one place. This exists because some of these
+terms carry more than one name, and because some of them live almost entirely
+in the source. `lane` is documented: it appears 92 times in `Source/`, and in
+`README.md`, `INSTALL.md` and `Exec/README.md`. `cache` appears 21 times in
+`Source/` and in no document but `README.md`. `slab` appears 17 times in
+`Source/` and in no document at all.
+
+Counts are case-insensitive word-boundary matches over the tracked tree, as in
+`grep -roiE '\bslabs?\b' Source/`.
 
 **Preferred term is given first; deprecated synonyms are marked.** New prose
 should use the preferred term.

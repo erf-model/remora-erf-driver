@@ -1,0 +1,14 @@
+# Two consecutive plain // comment lines.
+#
+# Doxygen carve-out is by prefix: `//[^!/]` excludes `//!` and `///`, so a
+# marked doxygen block never matches. Go's RE2 has no lookahead, so
+# "comment not followed by a declaration" is not expressible here -- prefix
+# exclusion is the tractable approximation, and REMORA marks its doxygen
+# (97 `//!`, 105 `///`, 512 `/**` in headers).
+extends: existence
+message: "Two consecutive prose comment lines -- consider whether this belongs in a docs page."
+level: suggestion
+scope: raw
+nonword: true
+tokens:
+  - '(?m)^[ \t]*//[^!/\n].*\n[ \t]*//[^!/\n]'

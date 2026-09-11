@@ -148,3 +148,9 @@ t/
 tmp_build_dir/
 Backtrace.*
 *.orig
+
+# Vale: `vale sync` downloads style packages into Docs/vale/styles/.
+# Only the custom rules and scripts under it are ours to track.
+Docs/vale/styles/*
+!Docs/vale/styles/Placement/
+!Docs/vale/styles/config/

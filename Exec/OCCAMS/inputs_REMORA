@@ -31,6 +31,8 @@ remora.bc.vbar.type   = flather flather slipwall flather
 remora.bc.zeta.type   = chapman chapman slipwall chapman
 remora.bc.tke.type    = outflow outflow slipwall outflow
 
+# ocean.in DT=15 s, NDTFAST=15: a 1 s barotropic step. The coupled decks override
+# fixed_dt and must scale ndtfast with it. See translation_map.tsv (NDTFAST).
 remora.fixed_dt            = 15.0
 remora.ndtfast = 15
 

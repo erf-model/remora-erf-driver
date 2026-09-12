@@ -15,6 +15,10 @@ start_datetime = "2021-08-01 00:00:00"
 
 erf.fixed_dt    = 10.0
 remora.fixed_dt = 300.0
+# Scale ndtfast with fixed_dt to keep ocean.in's 1 s barotropic step; inheriting the
+# base deck's 15 makes it 20 s and the first ocean step blows up. Rationale in
+# translation_map.tsv (NDTFAST) and Exec/README.md.
+remora.ndtfast  = 300
 
 erf.plot_file_1 = occams_flux_erf_plt
 erf.check_file  = occams_flux_erf_chk

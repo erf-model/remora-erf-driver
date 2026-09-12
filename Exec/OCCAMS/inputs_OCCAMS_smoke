@@ -34,6 +34,8 @@ start_datetime = "2021-08-01 00:00:00"
 
 erf.fixed_dt    = 10.0
 remora.fixed_dt = 20.0
+# Keep the barotropic step at ocean.in's 1 s: see the note in inputs_OCCAMS_flux.
+remora.ndtfast  = 20
 
 # No plotfiles or checkpoints: this test is about reaching the exchange cleanly,
 # and the coverage diagnostics above are the actual pass/fail signal.

@@ -15,6 +15,8 @@ start_datetime = "2021-08-01 00:00:00"
 
 erf.fixed_dt    = 10.0
 remora.fixed_dt = 300.0
+# Keep the barotropic step at ocean.in's 1 s: see the note in inputs_OCCAMS_flux.
+remora.ndtfast  = 300
 
 erf.plot_file_1 = occams_state_erf_plt
 erf.check_file  = occams_state_erf_chk

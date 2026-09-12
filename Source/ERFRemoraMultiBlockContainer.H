@@ -174,6 +174,8 @@ private:
     void BuildAtmosToOceanWeights();
     void BuildOceanToAtmosWeights();
 
+    void SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land);
+
     // Driver-owned topology
     amrex::RealBox m_atm_rb;
     amrex::Vector<int> m_atm_n_cell;
@@ -222,6 +224,9 @@ private:
     // Off while the REMORA interior is the whole exchange region; needed once a
     // smaller ocean grid nested inside the atmosphere exchanges on its outer ring.
     bool m_remap_extend_corner_ring = false;
+    // True if atmosphere domain extends beyond ocean domain in any direction (x/y).
+    // Computed once in AllocateCachesFromSolverLayouts() after geometries are available.
+    bool m_atm_extends_beyond_ocn = false;
     // Target ERF cells per search bin (SCRIP restrict_type=latlon analogue).
     int m_remap_bin_cells = 4;
     // Least ocean area fraction that counts as covering an ERF cell on the

@@ -548,6 +548,60 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
 }
 
 void
+ERFRemoraMultiBlockContainer::SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land)
+{
+    if (erf_is_land == nullptr) {
+        if (m_driver_verbose > 0) {
+            DriverPrintLine(m_driver_verbose,
+                "ERF land mask not available; skipping domain overlap adjustment");
+        }
+        return;
+    }
+
+    DriverPrintLine(m_driver_verbose, "adjusting land mask for atmosphere cells outside ocean domain");
+
+    // Cast away const for modification (same pattern as buildings update in ERF_MakeNewArrays.cpp:882)
+    auto* lmask = const_cast<amrex::iMultiFab*>(erf_is_land);
+
+    // Get ocean domain bounds
+    const amrex::Real ocn_xlo = m_ocn_rb.lo(0);
+    const amrex::Real ocn_xhi = m_ocn_rb.hi(0);
+    const amrex::Real ocn_ylo = m_ocn_rb.lo(1);
+    const amrex::Real ocn_yhi = m_ocn_rb.hi(1);
+
+    // Iterate over land mask and mark cells outside ocean domain as land
+    for (amrex::MFIter mfi(*lmask); mfi.isValid(); ++mfi) {
+        const amrex::Box& bx = mfi.validbox();
+        auto lmask_arr = lmask->array(mfi);
+
+        const amrex::Real* plo = m_geom.ProbLo();
+        const amrex::Real* dx  = m_geom.CellSize();
+
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) {
+            // Only modify cells currently marked as water (lmask = 0)
+            // Preserve land (lmask = 1) and buildings (lmask = 2)
+            if (lmask_arr(i, j, k) != 0) {
+                return;
+            }
+
+            // Compute cell center physical position
+            const amrex::Real x_center = plo[0] + (static_cast<amrex::Real>(i) + 0.5) * dx[0];
+            const amrex::Real y_center = plo[1] + (static_cast<amrex::Real>(j) + 0.5) * dx[1];
+
+            // Check if cell center lies outside REMORA domain
+            const bool outside_ocean = (x_center < ocn_xlo || x_center > ocn_xhi ||
+                                        y_center < ocn_ylo || y_center > ocn_yhi);
+
+            if (outside_ocean) {
+                lmask_arr(i, j, k) = 1;  // Mark as land
+            }
+        });
+    }
+
+    DriverPrintLine(m_driver_verbose, "land mask adjustment complete");
+}
+
+void
 ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
 {
     amrex::ParmParse pp_rem("remora");
@@ -631,6 +685,13 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     m_atm_tick = 0;
     DriverPrintLine(m_driver_verbose, "resetting driver atmosphere tick to 0");
     AllocateCaches();
+
+    if (m_atm_extends_beyond_ocn) {
+        const amrex::iMultiFab* erf_is_land = nullptr;
+        ERFGetLandMask(m_erf, &erf_is_land);
+        SetLandMaskFromDomainOverlap(erf_is_land);
+    }
+
     BuildRemapWeights();
     DriverPrintLine(m_driver_verbose, "selecting bootstrap active atm2ocn cache view for ocean_step=0");
     SelectAtmosToOceanActiveView(/*ocean_step=*/0);
@@ -712,6 +773,13 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     const amrex::RealBox ocn_slab_rb({m_ocn_rb.lo(0), m_ocn_rb.lo(1), 0.0},
                                      {m_ocn_rb.hi(0), m_ocn_rb.hi(1), dz_ocn});
     m_geom_ocn.define(m_ba_ocn.minimalBox(), &ocn_slab_rb, amrex::CoordSys::cartesian, m_is_periodic.data());
+
+    // Compute domain extent comparison once for reuse
+    constexpr amrex::Real eps = 1.0e-6;
+    m_atm_extends_beyond_ocn = (m_atm_rb.lo(0) < m_ocn_rb.lo(0) - eps) ||
+                               (m_atm_rb.hi(0) > m_ocn_rb.hi(0) + eps) ||
+                               (m_atm_rb.lo(1) < m_ocn_rb.lo(1) - eps) ||
+                               (m_atm_rb.hi(1) > m_ocn_rb.hi(1) + eps);
 
     DriverPrintLine(m_driver_verbose, "validating solver-reported coupling layouts against driver assumptions");
     ValidateCouplingLayoutsFromSolvers();

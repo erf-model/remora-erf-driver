@@ -26,10 +26,17 @@ keeps solver-core changes minimal.
 mode REMORA consumes atmospheric state variables and computes surface fluxes
 internally via its bulk-physics path.
 
+### Forcing lane ownership
+
+Each atmosphere-to-ocean lane has one source, resolved at startup and printed as
+a provenance table. ERF supplies a lane by default; a lane the REMORA deck
+configures explicitly, or one ERF cannot fill, is left to REMORA. Override with
+`driver.atm2ocn_lane_source.<lane> = erf | remora | auto`; see `Exec/README.md`.
+
 ### Known limitations
 
-- `driver.atm2ocn_mode = flux` is present in the driver but is **not** a
-  documented or validated workflow.
+- `driver.atm2ocn_mode = flux` has a validated startup bootstrap (see
+  `INSTALL.md`), but is less exercised than the state path.
 - REMORA does not currently support vertical refinement in the z-direction in
   coupled mode; the z refinement ratio must be 1.
 - Spatial remapping between non-matching horizontal grids is not yet

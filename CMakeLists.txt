@@ -116,6 +116,30 @@ if(ERF_REMORA_ENABLE_FCOMPARE)
   endif()
 endif()
 
+# Bake the library paths this build linked against into the driver's RPATH.
+#
+# ERF already does this for its own targets — Submodules/ERF/CMake/SetRpath.cmake,
+# included at Submodules/ERF/CMakeLists.txt:688 — but CMAKE_INSTALL_RPATH and
+# add_link_options() are both directory-scoped. ERF's copy runs inside the scope
+# opened by add_subdirectory(Submodules/ERF) above, which closes before
+# erf-remora-driver is defined here, so none of it reaches this executable. It has
+# to be included again in this scope, ahead of add_executable(), because
+# BUILD_WITH_INSTALL_RPATH and INSTALL_RPATH are read when the target is created.
+#
+# Without it the driver carries no RPATH for the Cray PE, and the loader resolves
+# libmpi/libmpi_gtl_cuda through /opt/cray/pe/lib64 — the *default* PE version —
+# regardless of what `module load` selected. On Perlmutter that silently ignores
+# the cray-mpich/9.0.1 and cudatoolkit/12.9 pins in
+# Submodules/ERF/Build/machines/perlmutter_erf.profile: the run picks up the
+# default cray-mpich, whose GTL wants libcudart.so.13, and dies at startup with
+# "libcudart.so.13: cannot open shared object file" against the 12.9 that is
+# actually loaded. The pins bind at compile time; this is what makes them bind at
+# run time too.
+#
+# The file stands down on its own when CRAY_ADD_RPATH=yes, since the Cray wrappers
+# inject RPATH themselves in that case.
+include(${CMAKE_CURRENT_SOURCE_DIR}/Submodules/ERF/CMake/SetRpath.cmake)
+
 add_executable(
   erf-remora-driver
   Source/main.cpp
@@ -288,6 +312,8 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_mpi_upwelling_compare.cmake")
   set(ERF_REMORA_SST_COVERAGE_TEST_SCRIPT
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_coupled_sst_coverage.cmake")
+  set(ERF_REMORA_LANE_PROVENANCE_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_lane_provenance.cmake")
 
   add_test(
     NAME compile_erf_remora_driver
@@ -321,31 +347,46 @@ if(ERF_REMORA_ENABLE_TESTS)
       PROCESSORS 1
   )
 
+  # Every atmos->ocean forcing lane must have exactly one source, and the driver
+  # must not hand REMORA a lane ERF never wrote. See issue #4.
+  add_test(
+    NAME reproducer_lane_provenance
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/Upwelling/inputs_oneway
+      -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+      -DERF_REMORA_MAX_STEP=1
+      -P "${ERF_REMORA_LANE_PROVENANCE_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_lane_provenance
+    PROPERTIES
+      LABELS "reproducer;coupling"
+      PROCESSORS 1
+  )
+
   # The reproducibility tests below ask whether the coupled run gives the same
   # answer twice: once across rank counts, once across a checkpoint/restart.
-  # Both require every other source of run-to-run variation to be absent, and
-  # erf.pbl_type=MYNN25 is not one. Measured on the Upwelling deck:
+  # Both require every other source of run-to-run variation to be absent, so
+  # they run the deck's own PBL scheme rather than overriding it, and the deck
+  # scheme has to be one that holds still. erf.pbl_type=MRF does. Measured on
+  # the Upwelling deck: cold vs restarted and np1 vs np4 both fcompare to
+  # exactly zero absolute error on every ERF, REMORA and exchange field.
+  #
+  # These tests used to force erf.pbl_type=None, because the deck's previous
+  # scheme, MYNN25, is neither rank- nor restart-reproducible:
   #
   #   - across ranks, np1 vs npN is identical at step 0, diverges to 7e-06 in
   #     Kmv by step 10 and 2.4e-02 (0.37% relative) by step 20, saturating at
   #     the same magnitude for np2, np4 and np8
   #   - across restart, cold vs restarted diverges to 1.3 in Kmv (19% relative)
   #
-  # Disabling the PBL scheme makes the first comparison bit-identical and the
-  # second agree outright, with everything else held fixed. So the divergence
-  # belongs to MYNN25, not to the decomposition, the checkpoint, or the
-  # coupling. Running these without a PBL scheme keeps them a real test of what
-  # they are named for. MOST requires some diffusion path (ERF.cpp asserts
-  # has_diff), so constant molecular diffusion stands in for the eddy viscosity
-  # MYNN25 would have supplied.
-  #
-  # This is a workaround, not a fix. MYNN25's rank and restart dependence is an
-  # open ERF issue, and no test in this suite covers it while these carry the
-  # _nopbl suffix. Drop the suffix and these arguments once it lands.
-  set(_erf_remora_nopbl_args
-    "erf.pbl_type=None"
-    "erf.molec_diff_type=Constant"
-    "erf.dynamic_viscosity=1.0")
+  # That is still an open ERF issue and nothing here covers it; it is simply no
+  # longer in the path of these tests. The override also had to supply constant
+  # molecular diffusion, because MOST asserts has_diff (ERF.cpp) and disabling
+  # the PBL scheme removed the only diffusion the deck had. MRF satisfies
+  # has_diff on its own, so the deck's erf.molec_diff_type=None stands.
 
   if(FCOMPARE_EXE)
     set(_erf_remora_upwelling_cases
@@ -358,9 +399,9 @@ if(ERF_REMORA_ENABLE_TESTS)
       list(GET _case_fields 1 _case_input)
       foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
         erf_remora_add_restart_test(
-          reproducer_restart_${_case_name}_${_atm2ocn_mode}_matched_nopbl
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_matched
           ${_case_input}
-          restart_${_case_name}_${_atm2ocn_mode}_matched_nopbl
+          restart_${_case_name}_${_atm2ocn_mode}_matched
           ERF_RESTART_SUFFIX 00001
           REMORA_RESTART_SUFFIX 00001
           ERF_COMPARE_SUFFIX 00002
@@ -375,16 +416,14 @@ if(ERF_REMORA_ENABLE_TESTS)
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=1"
-            "remora.fixed_fast_dt=1"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
             "max_step=2"
-            ${_erf_remora_nopbl_args}
         )
 
         erf_remora_add_restart_test(
-          reproducer_restart_${_case_name}_${_atm2ocn_mode}_substep_nopbl
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_substep
           ${_case_input}
-          restart_${_case_name}_${_atm2ocn_mode}_substep_nopbl
+          restart_${_case_name}_${_atm2ocn_mode}_substep
           ERF_RESTART_SUFFIX 00010
           REMORA_RESTART_SUFFIX 00001
           ERF_COMPARE_SUFFIX 00020
@@ -399,10 +438,38 @@ if(ERF_REMORA_ENABLE_TESTS)
             "driver.atm2ocn_mode=${_atm2ocn_mode}"
             "erf.fixed_dt=1"
             "remora.fixed_dt=10"
-            "remora.fixed_fast_dt=10"
-            "remora.fixed_ndtfast_ratio=1"
+            "remora.ndtfast=1"
             "max_step=2"
-            ${_erf_remora_nopbl_args}
+        )
+
+        if(_atm2ocn_mode STREQUAL "state")
+          set(_a2o_average_variant average_state_lanes)
+          set(_a2o_average_arg "driver.time_average_atm2ocn_state=1")
+        else()
+          set(_a2o_average_variant average_flux_lanes)
+          set(_a2o_average_arg "driver.time_average_atm2ocn_flux=1")
+        endif()
+        erf_remora_add_restart_test(
+          reproducer_restart_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep
+          ${_case_input}
+          restart_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep
+          ERF_RESTART_SUFFIX 00010
+          REMORA_RESTART_SUFFIX 00001
+          ERF_COMPARE_SUFFIX 00020
+          REMORA_COMPARE_SUFFIX 00002
+          EXCHANGE_COMPARE_SUFFIX 00001
+          ERF_PLOT_INT 10
+          ERF_CHECK_INT 10
+          REMORA_PLOT_INT 1
+          REMORA_CHECK_INT 1
+          EXCHANGE_PLOT_INT 1
+          RUNTIME_ARGS
+            "driver.atm2ocn_mode=${_atm2ocn_mode}"
+            "${_a2o_average_arg}"
+            "erf.fixed_dt=1"
+            "remora.fixed_dt=10"
+            "remora.ndtfast=1"
+            "max_step=2"
         )
       endforeach()
     endforeach()
@@ -420,8 +487,8 @@ if(ERF_REMORA_ENABLE_TESTS)
       "twoway|Exec/Upwelling/inputs_twoway")
     set(_erf_remora_atm2ocn_modes state flux)
 
-    # See the _erf_remora_nopbl_args comment above for why these run with the
-    # PBL scheme disabled.
+    # See the comment above the restart tests for why these run the deck's
+    # own PBL scheme rather than overriding it.
     foreach(_case_entry IN LISTS _erf_remora_upwelling_cases)
       string(REPLACE "|" ";" _case_fields "${_case_entry}")
       list(GET _case_fields 0 _case_name)
@@ -429,9 +496,9 @@ if(ERF_REMORA_ENABLE_TESTS)
       foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
         foreach(_mpi_nprocs 2 4 6 8)
           erf_remora_add_parallel_tests(
-            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_matched_nopbl
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_matched
             ${_case_input}
-            mpi_${_case_name}_${_atm2ocn_mode}_matched_nopbl_np${_mpi_nprocs}
+            mpi_${_case_name}_${_atm2ocn_mode}_matched_np${_mpi_nprocs}
             MPI_NPROCS ${_mpi_nprocs}
             ERF_COMPARE_SUFFIX 00002
             REMORA_COMPARE_SUFFIX 00002
@@ -443,16 +510,14 @@ if(ERF_REMORA_ENABLE_TESTS)
               "driver.atm2ocn_mode=${_atm2ocn_mode}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=1"
-              "remora.fixed_fast_dt=1"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
               "max_step=2"
-              ${_erf_remora_nopbl_args}
           )
 
           erf_remora_add_parallel_tests(
-            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_substep_nopbl
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_substep
             ${_case_input}
-            mpi_${_case_name}_${_atm2ocn_mode}_substep_nopbl_np${_mpi_nprocs}
+            mpi_${_case_name}_${_atm2ocn_mode}_substep_np${_mpi_nprocs}
             MPI_NPROCS ${_mpi_nprocs}
             ERF_COMPARE_SUFFIX 00020
             REMORA_COMPARE_SUFFIX 00002
@@ -464,10 +529,35 @@ if(ERF_REMORA_ENABLE_TESTS)
               "driver.atm2ocn_mode=${_atm2ocn_mode}"
               "erf.fixed_dt=1"
               "remora.fixed_dt=10"
-              "remora.fixed_fast_dt=10"
-              "remora.fixed_ndtfast_ratio=1"
+              "remora.ndtfast=1"
               "max_step=2"
-              ${_erf_remora_nopbl_args}
+          )
+
+          if(_atm2ocn_mode STREQUAL "state")
+            set(_a2o_average_variant average_state_lanes)
+            set(_a2o_average_arg "driver.time_average_atm2ocn_state=1")
+          else()
+            set(_a2o_average_variant average_flux_lanes)
+            set(_a2o_average_arg "driver.time_average_atm2ocn_flux=1")
+          endif()
+          erf_remora_add_parallel_tests(
+            parallel_upwelling_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep
+            ${_case_input}
+            mpi_${_case_name}_${_atm2ocn_mode}_${_a2o_average_variant}_substep_np${_mpi_nprocs}
+            MPI_NPROCS ${_mpi_nprocs}
+            ERF_COMPARE_SUFFIX 00020
+            REMORA_COMPARE_SUFFIX 00002
+            EXCHANGE_COMPARE_SUFFIX 00001
+            ERF_PLOT_INT 10
+            REMORA_PLOT_INT 1
+            EXCHANGE_PLOT_INT 1
+            RUNTIME_ARGS
+              "driver.atm2ocn_mode=${_atm2ocn_mode}"
+              "${_a2o_average_arg}"
+              "erf.fixed_dt=1"
+              "remora.fixed_dt=10"
+              "remora.ndtfast=1"
+              "max_step=2"
           )
         endforeach()
       endforeach()

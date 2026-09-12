@@ -38,14 +38,13 @@ void ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
                                          const amrex::MultiFab** y_corner);
 // Land mask (1 = land, 0 = water) at ERF level-0, cell-centered on the rho grid.
 void ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land);
-// Whether ERF has an active radiation model producing fluxes. False means the
-// SWrad/LWrad atmos->ocean lanes would carry zeros, which REMORA treats as
-// authoritative and lets suppress its own NetCDF radiative forcing.
-bool ERFHasRadiation(void* erf_handle);
-// Whether ERF can fill the atmos->ocean Cloud lane (moisture active and carrying
-// cloud liquid or ice). False means the lane would only carry the driver prefill,
-// which REMORA would otherwise treat as an authoritative atmospheric value.
-bool ERFHasCloudWater(void* erf_handle);
+// Which atmos->ocean lanes ERF's pack actually writes, as 0/1 in active-view
+// slot order (9 state lanes, or 8 flux). A lane reported 0 would reach REMORA
+// holding only the driver's prefill, which REMORA treats as authoritative.
+// Defined next to ERF's pack so the two cannot drift apart.
+void ERFGetFillableAtmosToOceanLanes(void* erf_handle,
+                                     bool state_contract,
+                                     amrex::Vector<int>& can_fill);
 // erf_coverage is the per-cell ocean->atmos coverage flag on the layout returned by
 // ERFGetOceanToAtmosSurfaceLayout: nonzero where the remap found enough wet
 // REMORA rho-cell source area and at least one ocean donor for that ERF cell.
@@ -110,6 +109,17 @@ void REMORAPackSurfaceState(void* remora_handle,
                             const amrex::iMultiFab* index_o2a_mf,
                             int max_stencil_size,
                             const amrex::iMultiFab* dst_land_mask = nullptr);
+// Which atmos->ocean state lanes this run's REMORA deck configured explicitly,
+// as 0/1 in state active-view slot order. Not recoverable from ParmParse: REMORA
+// reads those keys with queryAdd, which materializes the defaults, so it records
+// the answer during parsing instead.
+void REMORAGetDeckConfiguredAtmosLanes(void* remora_handle,
+                                       amrex::Vector<int>& deck_configured);
+// Have REMORA consume the driver-supplied DOWNWARD longwave rather than
+// computing it. Without this its default lwrad_type of "computed" ignores the
+// lane and uses Berliand. Must precede REMORA InitData, which opens NetCDF
+// forcing handles off the same selector this changes.
+void SetREMORALongwaveFromDriver(void* remora_handle);
 void REMORAApplyAtmosphericStates(void* remora_handle,
                                   const amrex::Vector<amrex::MultiFab*>& states,
                                   amrex::Real time);

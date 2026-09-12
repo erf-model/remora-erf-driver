@@ -174,10 +174,15 @@ is not "what does it say" but "what value is normal here".
 
 - `driver.v = 1` — driver lifecycle and layout queries.
 - `driver.remap_v = 1` — remap geometry detail: corner ranges, extents, stencil
-  occupancy, and per-direction coverage summaries.
+  occupancy, the resolved donor-fill mode, and per-direction coverage summaries.
+- `driver.remap_v = 2` — additionally the per-REMORA-box staged lon/lat bounding
+  box, one line per box. That box is the geographic clip the `coawst` donor search
+  is restricted to, so this is the view to raise when a donor choice looks wrong.
 
-Warnings and the coverage summary print regardless. Raise `remap_v` when a
-coverage number looks wrong and you need the geometry behind it.
+Warnings and the coverage summary print regardless. So do the donor-fill mode
+warnings: opting out of the default is never silent, whatever `remap_v` says.
+Raise `remap_v` when a coverage number looks wrong and you need the geometry
+behind it.
 
 ### What contract is running
 
@@ -186,26 +191,67 @@ Atmos->ocean contract mode: <name> (<N> active layers)
 Atmos->ocean active lanes: <names>
 ```
 
-Under the flux-passing contract the lane set changes after the first ocean step,
-which is reported separately:
+The lane set is fixed for the whole run. Flux decks used to substitute the
+state contract at `ocean_step = 0`, because the atmos->ocean pack happened before
+ERF advanced and the stress tensor was still zero at that point. The pack now
+follows the atmosphere substeps, so real stress exists at the first ocean step and
+the substitution has been removed.
+
+One consequence for a deck with no ERF radiation model: the old step-0 state pass
+withheld SWrad/LWrad, so REMORA used its own `remora.swrad_type`/`lwrad_type`
+forcing for that one step. Flux mode passes zeros deliberately, so those lanes are
+now zero from the start rather than for every step but the first.
+
+### Where each forcing lane's data comes from
+
+Startup prints one row per atmosphere-to-ocean lane:
 
 ```
-Atmos->ocean bootstrap lanes (ocean_step=0): <names>
-Atmos->ocean steady-state lanes (ocean_step>=1): <names>
+Atmos->ocean lane provenance (configured mode=state)
+  lane    source  reason
+  Uwind   ERF     packed by ERF
+  Qair    REMORA  ERF does not fill it; REMORA default stands
+  rain    REMORA  remora.rain_type or its value set in deck
+  LWrad   ERF     packed by ERF; REMORA longwave set to external downward
 ```
 
-A lane can also be deliberately withheld, reported per lane as
-`<lane>: withheld (not supplied by ERF)`. Withheld is not a failure: it means
-the driver declined to pass a value it does not have, so REMORA keeps whatever
-its own configuration provides. The two common cases announce themselves:
+Each lane resolves in order: one the deck configured explicitly stays with
+REMORA; otherwise ERF supplies it if ERF's pack fills it; otherwise it is
+withheld and REMORA's own default stands. Today ERF never fills `Qair` or
+`rain`, fills `SWrad`/`LWrad` only with a radiation model, and `cloud` only with
+cloud liquid or ice.
 
-- `[driver] ERF reports no active radiation model, so the SWrad/LWrad
-  atmos->ocean lanes are withheld rather than passed as zeros.`
-- `[driver] ERF has no cloud condensate ... so the Cloud atmos->ocean lane is
-  withheld ...`
+Withholding is how the driver declines a lane, not a failure: REMORA treats any
+non-null lane as authoritative, so a lane of zeros would read as real forcing and
+displace REMORA's own. Withheld lanes also appear during validation as
+`<lane>: withheld (not supplied by ERF)`. The flux contract is exempt — REMORA
+drops the whole apply if any flux lane is null.
 
-Both are correct behaviour when ERF has no radiation or moisture model. They
-matter because the alternative — passing zeros — would look like real forcing.
+`LWrad` gets one extra step: `remora.lwrad_type` defaults to `computed`, under
+which REMORA's bulk fluxes ignore the field entirely, so when that lane resolves
+to ERF the driver points REMORA at it. A deck setting `lwrad_type` owns the lane.
+
+Override with `driver.atm2ocn_lane_source.<lane> = erf | remora | auto`, using
+the printed lane name. Asking for `erf` on a lane ERF cannot fill aborts rather
+than passing an unwritten lane.
+
+### Atmosphere-to-ocean time averaging
+
+The driver uses the atmosphere state at the end of each ocean interval by
+default. Two independent, default-off controls replace selected lanes with the
+trapezoidal mean over that same interval:
+
+- `driver.time_average_atm2ocn_state = 1` averages `Uwind`, `Vwind`, `Patm`,
+  `Qair`, `Tair`, and `cloud`.
+- `driver.time_average_atm2ocn_flux = 1` averages `rain`, `SWrad`, `LWrad`,
+  `tau_x`, `tau_y`, `SHflux`, `LHflux`, and `evap`.
+
+Lane character, not `driver.atm2ocn_mode`, selects the control. In particular,
+`rain`, `SWrad`, and `LWrad` follow the flux-lane control even though they also
+appear in the state contract. The controls can be enabled separately or
+together. Non-averaged lanes retain the interval-end sample, and averaged
+exchange plotfiles are stamped at the interval midpoint. The accumulator is
+reset and consumed within one ocean macro-step; it is not checkpoint state.
 
 ### Which geometry the remap chose
 
@@ -280,26 +326,191 @@ directly.
 
 ### Coverage, atmosphere to ocean
 
+Reported once per weight family — `A2O scalar/rho`, `A2O tau_x/u-face`,
+`A2O tau_y/v-face`, `A2O wind->rho` — because each is built against its own
+destination stagger and each can be uncovered differently.
+
 ```
 [driver] WARNING remap (<label>): <N> of <M> REMORA wet cells have no ERF source
-overlap.
+overlap. ApplyConservativeRemap in Submodules/ERF/Source/Coupling/ERF_to_REMORA.cpp
+branches on the -1 index sentinel and assigns a per-lane fallback: ...
 ```
 
-Those cells fall back to standard-atmosphere placeholders rather than coupled
-values — forced, but not coupled. Expect a small count along coastlines where
-the two land masks disagree, or where the ocean grid reaches past the
-atmosphere. A large count means the atmosphere does not cover the ocean nest.
+Do not read that as "these cells fall back to a standard atmosphere". Two lanes
+get a standard-atmosphere value. Every other lane gets zero, or nothing:
 
-Under `remap_v = 1`, the per-direction summary:
+| Lane | What an uncovered wet cell receives |
+|---|---|
+| Patm | 101325 Pa — sea-level standard |
+| Tair | 288.15 K — 15 C, standard |
+| Uwind, Vwind | 0 m/s — calm, not a standard-atmosphere value |
+| Cloud, SWrad, LWrad | literal 0.0 |
+| all eight flux lanes | literal 0.0 |
+| Qair, Rain | not remapped at all; they keep whatever `PrefillAtmosToOceanFallbacks` wrote from `remora.air_humidity` / `remora.rain`, both defaulting to 0.0 |
+
+So "forced but not coupled" is true of Patm and Tair. For the wind and flux lanes
+an uncovered cell is neither forced nor coupled. It is also an assignment, not
+retention: the remap zeroes the destination first and then writes the fallback,
+so a prefill does not survive on the lanes that are remapped.
+
+Expect a small count along coastlines where the two land masks disagree, or where
+the ocean grid reaches past the atmosphere. A large count means the atmosphere
+does not cover the ocean nest.
+
+Under `remap_v = 1`, the per-family summary:
 
 ```
 [driver] remap coverage (<label>): cells=... uncovered=... no_stencil=...
-                                   frac min/mean/max=.../.../... max|frac-1|=...
+                                   donor_filled=... frac min/mean/max=.../.../...
+                                   max|frac-1|=...
 ```
 
-`max|frac-1|` is the conservation check. The remapped weights should sum to one
-over each destination cell; a large deviation means the weights are not
-conservative and the coupled fluxes are not either.
+- `uncovered` — destination cells whose weight sum is zero.
+- `no_stencil` — destination cells whose stored source index is still the `-1`
+  sentinel. The ERF-side fallback keys on this one, not on the weight sum. The two
+  must agree and the driver asserts it, because a cell with an index but no weight
+  would receive 0 Pa / 0 K rather than its lane fallback.
+- `donor_filled` — cells whose stencil is a donor graft rather than a real
+  overlap. Always `0` under the default `driver.remap_donor_fill = withhold` and
+  in the cartesian frame; see the next section. The field is absent from the
+  `O2A SST` line, which has no donor mechanism at all.
+- `max|frac-1|` is the coverage error, not a conservation error. Before
+  normalization the weight sum *is* the covered fraction, so a destination cell
+  the source grid only half covers reports `0.5` here and is working correctly.
+  What it does catch is a `frac_max` above 1, which is polygon-clipping round-off.
+
+The all-clear, also under `remap_v = 1`:
+
+```
+[driver] remap coverage (<label>): all <M> wet cells covered by real source
+overlap (donor_filled=0), min wet frac=<x>
+```
+
+It is suppressed whenever any cell was donor-filled, so a clean sheet is a clean
+sheet.
+
+### Donor fill: `driver.remap_donor_fill`
+
+What a wet REMORA cell with no overlapping ERF source cell actually gets. The flag
+only has an effect in the spherical frame — the donor search never runs in the
+cartesian frame — and under `remap_v = 1` the driver says which mode resolved:
+
+```
+[driver] BuildRemapWeights: donor fill = withhold (inert in the cartesian frame)
+```
+
+**`withhold`, the default.** No stencil is written. The cell is counted uncovered,
+the warning above fires, and `ApplyConservativeRemap` assigns the per-lane
+fallback in the table above. Nothing is stubbed out: withholding *is* the
+behaviour, and it is what the production couplers do with an unmapped point. ESMF
+defaults `unmappedaction = ERROR`; CMEPS pre-fills and maps with
+`zeroregion = REGION_SELECT`; YAC does not interpolate unmapped points
+(`partial_coverage` defaults false); CDO pre-fills with a missing value; CESM
+withholds by merge weight. SCRIP and OASIS are the only comparable codes that fill
+at all, and both fill with zero — OASIS documents that as a deficiency.
+
+**`coawst`.** A full-weight stencil is grafted pointing at the nearest non-land
+ERF cell, reproducing COAWST's `check_weights` (`Lib/SCRIP_COAWST/scrip.f:343`).
+Selecting it prints two lines unconditionally, not gated on `remap_v`:
+
+```
+[driver] WARNING remap: driver.remap_donor_fill=coawst grafts a full-weight
+nearest-neighbour stencil into the fracarea-normalized conservative matrix ...
+The resulting atmosphere->ocean operator is NOT conservative.
+```
+
+```
+[driver] remap: coawst donors are restricted to source cells whose centroid lies
+inside the destination box's own grown lon/lat bounding box, and to within
+driver.remap_donor_max_diagonals=<r> donor diagonals ...
+```
+
+On a cartesian deck a third line follows, so a request that cannot take effect
+does not look like one that did:
+
+```
+[driver] remap: driver.remap_donor_fill=coawst has no effect in the cartesian
+frame; the donor search only runs when the frame is spherical.
+```
+
+The non-conservation claim is not a hedge. ESMF refuses to combine extrapolation
+with conservative regridding at all, because "doing so would result in
+non-conservative weights" — and that is precisely what this graft is: a
+full-weight nearest-neighbour row spliced into a `fracarea`-normalized
+conservative matrix. Bounding the donor, as below, makes *which* cell is grafted
+more reproducible. It does not make the graft conservative, and no bound will.
+
+Donor-filled cells are reported as their own category and are never counted as
+covered:
+
+```
+[driver] WARNING remap (<label>): <D> of <M> REMORA wet cells have no ERF source
+cell of their own and were donor-filled from the nearest non-land ERF cell
+(driver.remap_donor_fill=coawst). ...
+```
+
+Their weight sum is nonzero, so they are not in `uncovered` or `no_stencil` —
+those two keep exactly the meaning they have under `withhold`. They are in
+`donor_filled`, they are excluded from `min wet frac` (a graft normalizes to a
+flawless 1.0 and would flatter the statistic), and their presence suppresses the
+all-clear line.
+
+#### What bounds the donor search, and what that does and does not buy
+
+Three restrictions apply, in this order. Only the first two are principled.
+
+1. **A destination box with no geographic ERF overlap is not donor-filled at
+   all.** For such a box the staged ERF region is not a real region: it is a
+   one-cell placeholder parked at the ERF domain corner, because a `BoxArray`
+   cannot hold an empty box. Without this test the search selects that corner, and
+   every wet cell in the box takes the ERF domain corner's atmospheric state. It
+   is rejected on a recorded flag rather than a distance threshold, because no
+   threshold rejects it reliably — two nearly-touching grids could put the corner
+   within any radius.
+2. **Candidates are clipped to the destination box's own grown lon/lat bounding
+   box.** This one is a proof, not a heuristic. Every ERF cell inside that box
+   belongs to some ERF box whose own bounding box intersects it, and the staging
+   plan unions every such ERF box into the staged region, so the surviving
+   candidate set is identical under **every ERF decomposition** — whatever
+   `NProcs()` and `amr.max_grid_size*` do to ERF.
+
+   It removes dependence on **REMORA's** decomposition **not at all.** The
+   bounding box is itself a per-REMORA-box quantity, REMORA's boxes are chopped by
+   the same `NProcs()`, and a destination cell near the edge of one can have the
+   same donor accepted under one REMORA box layout and rejected under another.
+   `coawst` mode is bounded and empirically checkable; it is not proven
+   rank-invariant. Only a global donor search would close that, and it is not
+   implemented.
+3. **An acceptance radius**, `driver.remap_donor_max_diagonals` (default `3.0`),
+   measured against the donor cell's own control-volume diagonal in the same
+   `cos(latitude)`-corrected metric the search uses.
+
+   **This bound is a deliberate departure from precedent, not borrowed practice.**
+   No production coupler bounds a nearest-source fill by distance. ESMF's
+   `NEAREST_STOD` is explicitly unbounded — when no local candidate exists it
+   queries its process directory with an infinite box, so it always finds the
+   globally nearest source however far away — and creep fill bounds by iteration
+   count rather than by distance. `3.0` is a judgement call and has not been
+   calibrated against any production grid pair. If the number matters to your
+   configuration, sweep it and watch `donor_filled` and the uncovered counts move;
+   a plateau means it is not critical, a steep curve means it is.
+
+   Set under `withhold` it does nothing, and the driver says so rather than
+   letting a set value look effective:
+
+   ```
+   [driver] remap: driver.remap_donor_max_diagonals is inert under
+   driver.remap_donor_fill=withhold ...
+   ```
+
+A rejected donor is not a third outcome: the cell falls through to the same `-1`
+index sentinel and takes the same per-lane fallback it would under `withhold`.
+
+Ties in the donor search are broken by smallest global source ID, which is what
+ESMF and YAC do, rather than by scan order. Exact ties are common rather than
+exotic on a structured grid — a destination cell centred between two source cells
+gives bitwise-equal distances — and scan order starts at the staged region's
+corner, which moves with the decomposition.
 
 ### Warnings that degrade silently
 
@@ -310,10 +521,18 @@ These do not stop the run and nothing downstream reports them:
 filled from their nearest non-land source cell (COAWST check_weights behaviour).
 ```
 
-By design, and it matches COAWST (Warner et al. 2010), the coupled system this
-driver's remap was ported from. Those cells carry a neighbour's atmospheric
-state rather than their own. Watch the trend: a count that *rises* between runs
-means the two land masks are drifting apart.
+Only under `driver.remap_donor_fill = coawst`; the default never prints it. It
+matches COAWST (Warner et al. 2010), the coupled system this driver's remap was
+ported from, and those cells carry a neighbour's atmospheric state rather than
+their own.
+
+`<N>` here is a raw running total, summed over all four weight families and
+incremented once per box visit, so a donor-filled face on a box seam can be
+counted once per adjacent box and the number moves with the decomposition. Use
+the per-family `donor_filled=` fields on the coverage lines when comparing runs:
+those apply the same seam-ownership rule as every other coverage count. Watch the
+trend either way — a count that *rises* between runs means the two land masks are
+drifting apart.
 
 ```
 [driver] WARNING BuildOceanToAtmosWeights: <N> ocean overlaps dropped because a
@@ -347,6 +566,20 @@ across them. `staged_cells` far exceeding the domain cell count means boxes are
 being replicated more than the decomposition requires. `[coupling-layout]` lines
 under `driver.v = 1` dump the BoxArrays and process maps behind this.
 
+`remora_boxes_without_overlap` counts REMORA boxes whose grown geographic
+footprint intersected no ERF box at all. Those boxes hold a placeholder staged
+region rather than a real one, and they are the boxes the `coawst` donor search
+refuses to fill. If it is zero on your configuration, that failure mode never
+arises there.
+
+Under `remap_v = 2` each box's own footprint is printed, one line per box:
+
+```
+[driver] remap staging box <d> bbox=[(<lon_lo>, <lat_lo>), (<lon_hi>, <lat_hi>)]
+```
+
+That is the same box the `coawst` donor search clips its candidates to.
+
 The staging path asserts three assumptions about solver layouts: that REMORA psi
 boxes are nodal conversions of the rho mask boxes, that `lon_psi` and `lat_psi`
 share box indexing and processor mapping, and that ERF corners are nodal
@@ -355,22 +588,37 @@ aborts on the assertion rather than mis-mapping quietly.
 
 ## Tests
 
-The CTest suite drives the Upwelling decks with runtime overrides — 74 tests,
+The CTest suite drives the Upwelling decks with runtime overrides — 111 tests,
 all from `Exec/Upwelling`. OCCAMS is not in the suite; its external data is not
 in the repository.
 
-### Run the suite at `-j1`
+### Run the suite by label, not in one `ctest` call
 
 ```bash
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -L compile  --output-on-failure --no-tests=error
+ctest --test-dir build -L coupling --output-on-failure --no-tests=error
+ctest --test-dir build -L restart  -j4 --output-on-failure --no-tests=error
+ctest --test-dir build -L parallel -j4 --output-on-failure --no-tests=error
 ```
 
-**The suite is only valid at `-j1`.** The harnesses `file(REMOVE_RECURSE)` their
-working directories, so concurrent tests delete each other's output and fail in
-ways that look like solver bugs — a stale plotfile, a missing checkpoint, a
-comparison against a directory that vanished mid-run. Two suites run at once
-produced 49 phantom failures; `-j2` alone produced 5. Do not add `-j` here, and
-do not start a second suite in another worktree while one is running.
+**`compile_erf_remora_driver` must not run alongside anything else.** It invokes
+the build, and the driver relinks on every invocation, so the binary is replaced
+underneath any test currently executing it. Those tests die on `SIGILL` (exit
+132) with an `mpiexec ... could not access or execute` message that points at the
+executable rather than at the race. A plain `ctest -jN` over the whole suite
+schedules the compile test concurrently with the rest and produces a burst of
+exactly these. `.github/workflows/ci.yml` avoids it by invoking `ctest` once per
+label, which is why the commands above are split.
+
+Within a label, concurrency is fine. All 108 matrix tests take a distinct
+`ERF_REMORA_WORK_SUBDIR`, so no two can `file(REMOVE_RECURSE)` each other's
+output. Measured: `-L restart` passes 12/12 at both `-j3` and `-j6` (222 s and
+62 s), `-L parallel` passes 96/96 at `-j3`. `PROCESSORS` is set from the rank
+count, so `ctest` will not oversubscribe the `np8` tests.
+
+Two suites sharing one build directory is a different matter — they do collide,
+because the work subdirs are keyed by test name, not by run. Use separate build
+directories.
 
 ### Test name structure
 
@@ -378,8 +626,8 @@ Names are generated from the coupling axes, so you can select any slice with
 `-R`:
 
 ```
-reproducer_restart_<direction>_<contract>_<cadence>_nopbl
-parallel_upwelling_<direction>_<contract>_<cadence>_nopbl_np<N>_<kind>
+reproducer_restart_<direction>_<contract>_<cadence>
+parallel_upwelling_<direction>_<contract>_<cadence>_np<N>_<kind>
 ```
 
 - `<direction>` — `oneway` or `twoway`
@@ -393,7 +641,7 @@ parallel_upwelling_<direction>_<contract>_<cadence>_nopbl_np<N>_<kind>
 A single restart test:
 
 ```bash
-ctest --test-dir build -R '^reproducer_restart_twoway_state_matched_nopbl$' \
+ctest --test-dir build -R '^reproducer_restart_twoway_state_matched$' \
   --output-on-failure
 ```
 
@@ -401,12 +649,12 @@ A single np4-to-np1 comparison:
 
 ```bash
 ctest --test-dir build \
-  -R '^parallel_upwelling_twoway_state_matched_nopbl_np4_compare_to_np1$' \
+  -R '^parallel_upwelling_twoway_state_matched_np4_compare_to_np1$' \
   --output-on-failure
 ```
 
 Anchor the regex with `^...$`. Without it, `-R parallel_upwelling_twoway_state`
-matches all cadences and all four rank counts — 16 tests, not one — and `-R
+matches all cadences and all four rank counts — 24 tests, not one — and `-R
 ..._np4` also matches the paired `_smoke` test.
 
 Use `-N` to see what a selection would run before running it:
@@ -420,8 +668,8 @@ ctest --test-dir build -N -R np4_compare_to_np1
 By label:
 
 ```bash
-ctest --test-dir build -L restart --output-on-failure     # the 8 restart tests
-ctest --test-dir build -L parallel --output-on-failure    # the 64 MPI tests
+ctest --test-dir build -L restart --output-on-failure     # the 12 restart tests
+ctest --test-dir build -L parallel --output-on-failure    # the 96 MPI tests
 ```
 
 Available labels: `compile`, `coupling`, `parallel`, `reproducer`, `restart`.
@@ -433,7 +681,7 @@ ctest --test-dir build -R '_flux_.*_np4_compare_to_np1' --output-on-failure
 ctest --test-dir build -R 'reproducer_restart_twoway' --output-on-failure
 ```
 
-### The two tests that are not Upwelling matrix entries
+### The three tests that are not Upwelling matrix entries
 
 - `compile_erf_remora_driver` — build gate; other tests depend on it.
 - `reproducer_coupled_sst_coverage` — the coverage-contract test. Drives
@@ -445,6 +693,21 @@ ctest --test-dir build -R 'reproducer_restart_twoway' --output-on-failure
 ```bash
 ctest --test-dir build -R reproducer_coupled_sst_coverage --output-on-failure
 ```
+
+- `reproducer_lane_provenance` — the lane-provenance test. Drives
+  `inputs_oneway` three times, once per contract and averaging combination, and
+  asserts on the **exchange_info sidecar** beside each exchange plotfile: that
+  every lane belongs to its contract exactly once in contract order, and that
+  each lane's character and averaged columns follow the contract and the
+  `driver.time_average_atm2ocn_*` flags rather than a default.
+
+```bash
+ctest --test-dir build -R reproducer_lane_provenance --output-on-failure
+```
+
+Neither of these carries the `restart` or `parallel` label, so neither is run by
+`.github/workflows/ci.yml`, which selects only `compile`, `restart` and
+`parallel`. Run them locally or add a `-L coupling` step.
 
 ### What the suite does not cover
 

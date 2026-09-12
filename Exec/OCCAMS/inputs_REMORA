@@ -23,7 +23,6 @@ amr.max_grid_size_z = 128
 remora.boundary_per_variable = true
 remora.bc.temp.type   = orlanski_rad_nudg orlanski_rad_nudg slipwall orlanski_rad_nudg
 remora.bc.salt.type   = orlanski_rad_nudg orlanski_rad_nudg slipwall orlanski_rad_nudg
-remora.bc.scalar.type = orlanski_rad_nudg orlanski_rad_nudg slipwall orlanski_rad_nudg
 remora.bc.u.type      = orlanski_rad_nudg orlanski_rad_nudg slipwall orlanski_rad_nudg
 remora.bc.v.type      = orlanski_rad_nudg orlanski_rad_nudg slipwall orlanski_rad_nudg
 remora.bc.w.type      = outflow outflow slipwall outflow
@@ -33,7 +32,7 @@ remora.bc.zeta.type   = chapman chapman slipwall chapman
 remora.bc.tke.type    = outflow outflow slipwall outflow
 
 remora.fixed_dt            = 15.0
-remora.fixed_ndtfast_ratio = 15
+remora.ndtfast = 15
 
 remora.sum_interval = 1
 remora.v            = 0
@@ -45,13 +44,33 @@ remora.plot_file     = occams_remora_plt
 remora.plot_int      = 720
 remora.plotfile_type = amrex
 remora.plot_vars_3d  = salt temp x_velocity y_velocity z_velocity
-remora.plot_vars_2d  = zeta ubar vbar sustr svstr srflx lrflx shflx lhflx rain
+remora.plot_vars_2d  = zeta ubar vbar sustr svstr srflux lrflux shflux lhflux rain mask_rho
 
-remora.flat_bathymetry                    = false
 remora.tracer_horizontal_advection_scheme = "upstream3"
 remora.horizontal_mixing_type             = "constant"
 remora.visc2                              = 15.0
 remora.vertical_mixing_type               = gls
+
+# ocean.in TNU2 == 0.2d0 0.2d0 (m2/s, :335). In ROMS VISC2 and TNU2 are
+# independent: visc2 above is momentum only, and tnu2_temp/tnu2_salt default to
+# zero (REMORA_DataStruct.H:571-572), so leaving them unset ran this case with
+# no horizontal tracer diffusivity at all.
+remora.tnu2_temp = 0.2
+remora.tnu2_salt = 0.2
+
+# ocean.in AKV_BAK == 1.0d-5 (:367) against a REMORA default of 5.0e-6
+# (REMORA_DataStruct.H:1008) -- background vertical viscosity was running 2x
+# low. AKT_BAK == 1.0d-6 (:360) happens to equal its default (:1010); set it
+# explicitly so the agreement is intentional rather than coincidental.
+remora.Akv_bak = 1.0e-5
+remora.Akt_bak = 1.0e-6
+
+# ocean.in Zos == 0.5d0, Zob == 0.02d0 (:416-417). Zos feeds the GLS surface
+# boundary condition (REMORA_gls.cpp:382) and defaults to 2e-2
+# (REMORA_DataStruct.H:933), so it was 25x low under vertical_mixing_type=gls.
+# Zob already equals its default (:932); set for the same reason as Akt_bak.
+remora.Zos = 0.5
+remora.Zob = 0.02
 
 remora.R0    = 1027.0
 remora.S0    = 30.0
@@ -85,6 +104,19 @@ remora.blk_ZQ = 10.0
 remora.blk_ZT = 10.0
 remora.blk_ZW = 10.0
 remora.obcfac = 30.0
+
+# ocean.in TNUDG == 30.0d0 30.0d0, ZNUDG == 0.0d0, M2NUDG == 0.0d0,
+# M3NUDG == 30.0d0, all in days (:463-466). All four default to zero in REMORA
+# (REMORA_DataStruct.H:725-728), and nudg_coeff is computed as
+# 1/(tnudg*86400) guarded on > 0 (:736-742), so with them unset the coefficient
+# was identically zero and the orlanski_rad_nudg boundaries above ran as pure
+# Orlanski radiation with no nudging at all -- silently, since the guard
+# prevents a divide-by-zero rather than reporting one. Units are days on both
+# sides, so these copy across directly.
+remora.tnudg  = 30.0
+remora.znudg  = 0.0
+remora.m2nudg = 0.0
+remora.m3nudg = 30.0
 
 remora.ic_type        = "netcdf"
 #remora.nc_init_file_0 = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/OCCAMS_ini_20210427.nc"

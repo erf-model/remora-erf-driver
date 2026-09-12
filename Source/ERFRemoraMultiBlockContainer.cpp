@@ -7,16 +7,75 @@
 #include <AMReX_NonLocalBC.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_PlotFileUtil.H>
+#include <AMReX_Reduce.H>
 #include <AMReX_String.H>
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <string>
 
 namespace erf_remora
 {
 namespace {
+
+struct MaskedMinMaxResult
+{
+    amrex::Real min_value = 0.0;
+    amrex::Real max_value = 0.0;
+    amrex::Long included_cells = 0;
+};
+
+// Returns extrema over water cells when a mask is supplied, or over every cell
+// when it is not. The included-cell count makes an all-masked result explicit,
+// so the reduction sentinels are never reported as physical values.
+// Collective; every caller must invoke this on every rank.
+MaskedMinMaxResult
+MaskedMinMax (const amrex::MultiFab& mf,
+              const amrex::MultiFab* mask,
+              bool mask_is_land)
+{
+    using namespace amrex;
+
+    constexpr Real min_sentinel = std::numeric_limits<Real>::max();
+    constexpr Real max_sentinel = -std::numeric_limits<Real>::max();
+
+    ReduceOps<ReduceOpMin, ReduceOpMax, ReduceOpSum> reduce_ops;
+    ReduceData<Real, Real, Long> reduce_data(reduce_ops);
+    using ReduceTuple = typename decltype(reduce_data)::Type;
+
+    const bool use_mask = (mask != nullptr);
+    for (MFIter mfi(mf); mfi.isValid(); ++mfi) {
+        const Box& bx = mfi.validbox();
+        const auto field_arr = mf.const_array(mfi);
+        const auto mask_arr = use_mask ? mask->const_array(mfi) : Array4<const Real>{};
+
+        reduce_ops.eval(bx, reduce_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) -> ReduceTuple
+            {
+                const bool is_water = !use_mask ||
+                    (mask_is_land ? mask_arr(i,j,k) == Real(0.0)
+                                  : mask_arr(i,j,k) > Real(0.5));
+                const Real value = field_arr(i,j,k);
+                return {is_water ? value : min_sentinel,
+                        is_water ? value : max_sentinel,
+                        is_water ? Long(1) : Long(0)};
+            });
+    }
+
+    const auto reduced = reduce_data.value(reduce_ops);
+    MaskedMinMaxResult result;
+    result.min_value = amrex::get<0>(reduced);
+    result.max_value = amrex::get<1>(reduced);
+    result.included_cells = amrex::get<2>(reduced);
+
+    ParallelDescriptor::ReduceRealMin(result.min_value);
+    ParallelDescriptor::ReduceRealMax(result.max_value);
+    ParallelDescriptor::ReduceLongSum(result.included_cells);
+    return result;
+}
 
 // Compute 2D polygon area using Shoelace formula
 amrex::Real PolygonArea (const amrex::Vector<Point2D>& poly) {
@@ -331,6 +390,15 @@ struct RemapStagingPlan
     amrex::BoxArray node_ba;   // nodal: corner coordinates
     amrex::BoxArray cell_ba;   // cell-centered: land mask and remapped fields
 
+    // Per REMORA box d, in the active remap frame:
+    //   box_bbox_lo/hi[2*d], [2*d+1]  the grown lon/lat bounding box used to
+    //                                 select staged ERF boxes.
+    //   box_has_erf_overlap[d]        0 when cell_ba[d] is the one-cell corner
+    //                                 placeholder rather than a real region.
+    amrex::Vector<amrex::Real> box_bbox_lo;
+    amrex::Vector<amrex::Real> box_bbox_hi;
+    amrex::Vector<char>        box_has_erf_overlap;
+
     // Staged copies, living on the REMORA DistributionMapping.
     std::unique_ptr<amrex::MultiFab> node_mf;
     std::unique_ptr<amrex::MultiFab> land_mf;
@@ -455,6 +523,13 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_extend_corner_ring", m_remap_extend_corner_ring);
     pp_driver.query("remap_bin_cells", m_remap_bin_cells);
     pp_driver.query("remap_min_coverage_frac", m_remap_min_coverage_frac);
+    pp_driver.query("remap_donor_fill", m_remap_donor_fill_request);
+    pp_driver.query("remap_donor_max_diagonals", m_remap_donor_max_diagonals);
+    // contains() rather than the query() return, so "set explicitly to the
+    // default" is distinguishable from "not set" when reporting it as inert.
+    m_remap_donor_max_diagonals_set = pp_driver.contains("remap_donor_max_diagonals");
+    pp_driver.query("time_average_atm2ocn_state", m_time_average_atm2ocn_state);
+    pp_driver.query("time_average_atm2ocn_flux", m_time_average_atm2ocn_flux);
 
     DriverPrintHeader(
         m_driver_verbose,
@@ -525,23 +600,30 @@ ERFRemoraMultiBlockContainer::InitializeSolvers ()
     m_remora = CreateREMORASolver(*this);
     DriverPrintLine(m_driver_verbose, "REMORA constructor complete");
 
-    const bool bootstrap_uses_state_contract =
-        (ActiveAtmosToOceanContract(/*ocean_step=*/0) == coupling::AtmosToOceanContract::StatePassing);
+    const bool use_state_contract =
+        (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::StatePassing);
     DriverPrintLine(
         m_driver_verbose,
-        std::string("injecting pre-InitData atm2ocn metadata: bootstrap_contract=") +
-            (bootstrap_uses_state_contract ? "state" : "flux") +
-            " configured_mode=" + coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) +
+        std::string("injecting pre-InitData atm2ocn metadata: configured_contract=") +
+            (use_state_contract ? "state" : "flux") +
             " two_way=" + (m_use_two_way_coupling ? "1" : "0"));
     ConfigureERFDriverAtmosToOceanCoupling(
-        m_erf, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+        m_erf, true, m_use_two_way_coupling, use_state_contract);
     ConfigureREMORADriverAtmosToOceanCoupling(
-        m_remora, true, m_use_two_way_coupling, bootstrap_uses_state_contract);
+        m_remora, true, m_use_two_way_coupling, use_state_contract);
     SetREMORAStartTime(m_remora, m_ocean_time_offset);
 
     DriverPrintLine(m_driver_verbose, "calling ERF InitData (enters ERF InitData_pre -> ERF InitData_post)");
     InitERFSolver(m_erf);
     DriverPrintLine(m_driver_verbose, "ERF InitData complete");
+
+    // Between the two InitData calls on purpose, and the only window that works:
+    // the ERF capability query reads fields ERF allocates above, and the REMORA
+    // longwave reconfiguration this may perform has to land before REMORA
+    // InitData opens NetCDF forcing handles off the same selector.
+    DriverPrintLine(m_driver_verbose, "resolving atm2ocn lane ownership from ERF capability and REMORA deck");
+    ResolveAtmosToOceanLaneSources();
+
     DriverPrintLine(m_driver_verbose, "calling REMORA InitData");
     InitREMORASolver(m_remora);
     DriverPrintLine(m_driver_verbose, "REMORA InitData complete");
@@ -604,12 +686,14 @@ ERFRemoraMultiBlockContainer::SetLandMaskFromDomainOverlap(const amrex::iMultiFa
 void
 ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
 {
-    amrex::ParmParse pp_rem("remora");
-    amrex::Real humidity_val = 0.0, cloud_val = 0.0, rain_val = 0.0;
-    pp_rem.query("air_humidity", humidity_val);
-    pp_rem.query("cloud", cloud_val);
-    pp_rem.query("rain",  rain_val);
-
+    // Only the flux lanes need seeding, and only with zero.
+    //
+    // The state lanes used to be prefilled with REMORA's own constants read back
+    // out of ParmParse. That was redundant - a lane the driver does not own is
+    // withheld and never read, so REMORA keeps its value directly - and fragile,
+    // since it depended on REMORA's queryAdd having already written its defaults
+    // into the table. Resolving lane ownership up front removes the need for the
+    // driver to guess at REMORA's defaults at all.
     for (int global_idx = 0; global_idx < static_cast<int>(m_atmos_to_ocean.size()); ++global_idx) {
         auto* mf = m_atmos_to_ocean[global_idx];
         if (mf == nullptr) {
@@ -617,15 +701,6 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
         }
 
         switch (global_idx) {
-        case coupling::Qair:
-            mf->setVal(humidity_val); // RH fallback [0-1] for REMORA bulk fluxes
-            break;
-        case coupling::Cloud:
-            mf->setVal(cloud_val); // cloud fraction [0-1]
-            break;
-        case coupling::Rain:
-            mf->setVal(rain_val);  // rain rate [kg m-2 s-1]
-            break;
         case coupling::TauX:
             mf->setVal(0.0);       // surface stress [Pa]: reset each macro-step
             break;
@@ -637,12 +712,6 @@ ERFRemoraMultiBlockContainer::PrefillAtmosToOceanFallbacks ()
             break;
         case coupling::LHflux:
             mf->setVal(0.0);       // latent heat flux [W m-2]
-            break;
-        case coupling::SWrad:
-            mf->setVal(0.0);       // shortwave [W m-2]: no radiation fallback
-            break;
-        case coupling::LWrad:
-            mf->setVal(0.0);       // longwave  [W m-2]: no radiation fallback
             break;
         case coupling::Evap:
             mf->setVal(0.0);       // evaporation rate [kg m-2 s-1]
@@ -693,8 +762,8 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     }
 
     BuildRemapWeights();
-    DriverPrintLine(m_driver_verbose, "selecting bootstrap active atm2ocn cache view for ocean_step=0");
-    SelectAtmosToOceanActiveView(/*ocean_step=*/0);
+    DriverPrintLine(m_driver_verbose, "selecting configured active atm2ocn cache view");
+    SelectAtmosToOceanActiveView();
     if (m_use_two_way_coupling && !m_ocean_to_atmos.empty()) {
         DriverPrintLine(m_driver_verbose, "packing REMORA surface state into ocean->atmos bootstrap cache");
         const amrex::iMultiFab* erf_is_land_bootstrap = nullptr;
@@ -706,7 +775,7 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     }
 
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        DriverPrintLine(m_driver_verbose, "validating steady-state flux active view shape and centering");
+        DriverPrintLine(m_driver_verbose, "validating flux active view shape and centering");
         ValidateFluxActiveViewOrAbort(m_atmos_to_ocean_flux_active, m_atmos_to_ocean_flux_active_names);
     }
 
@@ -714,15 +783,40 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
                        << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
                        << " (" << coupling::NumAtmosToOceanActiveLayers(m_atmos_to_ocean_contract)
                        << " active layers)\n";
-    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        amrex::Print() << "Atmos->ocean bootstrap lanes (ocean_step=0): "
-                       << JoinLaneNames(m_atmos_to_ocean_state_active_names) << "\n"
-                       << "Atmos->ocean steady-state lanes (ocean_step>=1): "
-                       << JoinLaneNames(m_atmos_to_ocean_flux_active_names) << "\n";
-    } else {
-        amrex::Print() << "Atmos->ocean active lanes: "
-                       << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
+    amrex::Print() << "Atmos->ocean active lanes: "
+                   << JoinLaneNames(m_atmos_to_ocean_active_names) << "\n";
+
+    // Every active lane in the flux contract is flux-character (tau_x, tau_y, SHflux,
+    // LHflux, SWrad, LWrad, rain, evap), so driver.time_average_atm2ocn_state selects
+    // no lane at all there. It cannot average anything, yet it is enough to make the
+    // report below say ENABLED and to suppress the instantaneous-forcing warning.
+    // Reject the combination rather than announce averaging that does not happen.
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing &&
+        m_time_average_atm2ocn_state) {
+        amrex::Abort("driver.time_average_atm2ocn_state=1 has no effect when "
+                     "driver.atm2ocn_mode=flux: every lane in the flux contract is "
+                     "flux-character. Set driver.time_average_atm2ocn_flux=1 to average "
+                     "the flux lanes, or drop the state flag.");
     }
+
+    amrex::Print() << "[driver] Atmos->ocean time averaging for state-character lanes is "
+                   << (m_time_average_atm2ocn_state ? "ENABLED" : "disabled")
+                   << " (driver.time_average_atm2ocn_state).\n"
+                   << "[driver] Atmos->ocean time averaging for flux-character lanes is "
+                   << (m_time_average_atm2ocn_flux ? "ENABLED" : "disabled")
+                   << " (driver.time_average_atm2ocn_flux).\n";
+    // Key the warning on whether any lane in the ACTIVE VIEW is actually averaged, not
+    // on the flags. A flag set for a lane character absent from the view averages
+    // nothing, and inspecting the flags alone let exactly that case suppress this
+    // warning while reporting ENABLED.
+    if (m_atm_substeps_per_ocean_step > 1 && !AtmosToOceanAveragingActive()) {
+        amrex::Print()
+            << "[driver] WARNING: atmosphere->ocean forcing uses the instantaneous "
+               "interval-end sample. Enable driver.time_average_atm2ocn_state=1 and/or "
+               "driver.time_average_atm2ocn_flux=1 to force REMORA with the atmosphere "
+               "mean over each ocean interval.\n";
+    }
+    PrintAtmosToOceanLaneProvenance();
 
     // TODO(initial-step-testing): implement a soft-start / ramp-in protocol for coupled forcing.
     // COAWST-style coupled systems can exhibit an initialization shock at t=0 when
@@ -803,6 +897,19 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     }
     m_atmos_to_ocean = amrex::GetVecOfPtrs(m_atmos_to_ocean_storage);
 
+    if (m_time_average_atm2ocn_state || m_time_average_atm2ocn_flux) {
+        m_atmos_to_ocean_accumulator_storage.resize(coupling::NumAtmosToOceanLayers);
+        for (int idx = 0;
+             idx < static_cast<int>(m_atmos_to_ocean_accumulator_storage.size()); ++idx) {
+            if (!TimeAverageAtmosToOceanLane(idx)) { continue; }
+            const amrex::MultiFab& lane = *m_atmos_to_ocean[idx];
+            auto& accumulator = m_atmos_to_ocean_accumulator_storage[idx];
+            accumulator = std::make_unique<amrex::MultiFab>(
+                lane.boxArray(), lane.DistributionMap(), 1, 0);
+            accumulator->setVal(0.0);
+        }
+    }
+
     // Atmosphere -> Ocean (A2O) stencils, one per WeightFamily slot, each built
     // against its own destination stagger (rho for scalars, u-face for TauX,
     // v-face for TauY, rho for WIND_FACE_TO_CENTER since the face->center
@@ -819,6 +926,16 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
                 *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0);
             m_index_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
                 *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0);
+            // The donor-fill flag array is NOT allocated here. It is only ever
+            // written by the coawst donor search, which runs solely in the
+            // spherical frame, and neither the mode nor the frame is resolved
+            // yet: this function is reached from AllocateCaches() one line before
+            // BuildRemapWeights(), which is what calls ResolveRemapFrame() and
+            // ResolveDonorFillMode(). Allocating it unconditionally here gave four
+            // full-layout iMultiFabs that are structurally all-zero under the
+            // shipped default, read back per cell only to add zero. It is
+            // allocated lazily in BuildAtmosToOceanWeights instead, where both are
+            // known.
         }
     }
 
@@ -855,6 +972,80 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         m_ocean_to_atmos_storage.clear();
     }
     m_ocean_to_atmos = amrex::GetVecOfPtrs(m_ocean_to_atmos_storage);
+}
+
+bool
+ERFRemoraMultiBlockContainer::TimeAverageAtmosToOceanLane (int global_idx) const
+{
+    const bool flux_character =
+        global_idx == coupling::Rain || global_idx == coupling::SWrad ||
+        global_idx == coupling::LWrad || global_idx == coupling::TauX ||
+        global_idx == coupling::TauY || global_idx == coupling::SHflux ||
+        global_idx == coupling::LHflux || global_idx == coupling::Evap;
+    return flux_character ? m_time_average_atm2ocn_flux : m_time_average_atm2ocn_state;
+}
+
+bool
+ERFRemoraMultiBlockContainer::AtmosToOceanAveragingActive () const
+{
+    for (int global_idx : m_atmos_to_ocean_active_indices) {
+        if (TimeAverageAtmosToOceanLane(global_idx)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void
+ERFRemoraMultiBlockContainer::ResetAtmosToOceanAccumulators ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        !m_atmos_to_ocean_accumulator_storage.empty(),
+        "Atmos->ocean averaging requested without allocated accumulators");
+    for (auto& accumulator : m_atmos_to_ocean_accumulator_storage) {
+        if (accumulator) { accumulator->setVal(0.0); }
+    }
+    m_a2o_accum_weight = amrex::Real(0.0);
+}
+
+void
+ERFRemoraMultiBlockContainer::AccumulateAtmosToOcean (amrex::Real weight)
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        weight > amrex::Real(0.0),
+        "Atmos->ocean averaging sample weight must be positive");
+    for (int local_idx = 0;
+         local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+        auto* accumulator = m_atmos_to_ocean_accumulator_storage[global_idx].get();
+        if (accumulator != nullptr) {
+            amrex::MultiFab::Saxpy(*accumulator,
+                                   weight, *m_atmos_to_ocean_active[local_idx],
+                                   0, 0, 1, 0);
+        }
+    }
+    m_a2o_accum_weight += weight;
+}
+
+void
+ERFRemoraMultiBlockContainer::DrainAtmosToOceanAccumulators ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_a2o_accum_weight > amrex::Real(0.0),
+        "Atmos->ocean averaging drained an empty accumulator");
+    const amrex::Real inverse_weight = amrex::Real(1.0) / m_a2o_accum_weight;
+    for (int local_idx = 0;
+         local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
+        const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
+        const auto* accumulator = m_atmos_to_ocean_accumulator_storage[global_idx].get();
+        if (accumulator != nullptr) {
+            amrex::MultiFab::Copy(*m_atmos_to_ocean_active[local_idx],
+                                  *accumulator,
+                                  0, 0, 1, 0);
+            m_atmos_to_ocean_active[local_idx]->mult(inverse_weight, 0);
+        }
+    }
+    m_a2o_accum_weight = amrex::Real(0.0);
 }
 
 void
@@ -899,6 +1090,7 @@ void
 ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiFab& weight_mf,
                                                                    const amrex::iMultiFab& index_mf,
                                                                    const amrex::MultiFab* wet_mask,
+                                                                   const amrex::iMultiFab* donor_fill,
                                                                    const char* label)
 {
     using namespace amrex;
@@ -915,6 +1107,13 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     amrex::Long n_wet = 0;
     amrex::Long n_wet_uncovered = 0;
     amrex::Real wet_frac_min = std::numeric_limits<amrex::Real>::max();
+    // Cells whose stencil is a donor graft rather than a real overlap. These have
+    // sum_w > 0, so every count above already treats them as covered; without a
+    // separate tally the verdict below would report a clean sheet for a run in
+    // which some cells took a neighbour's atmospheric state instead of their own.
+    // The donor search only fires for cells that are wet under this same mask, so
+    // this is a wet-cell count whenever it is nonzero.
+    amrex::Long n_donor_filled = 0;
 
     // Faces on a box seam belong to both adjacent boxes, so summing validbox over
     // boxes would count them twice. Give each face to the lower box and let the
@@ -930,6 +1129,9 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
         auto const& idx_arr = index_mf.const_array(mfi);
         const bool has_mask = (wet_mask != nullptr);
         auto const& wet_arr = has_mask ? wet_mask->const_array(mfi) : Array4<const Real>{};
+        const bool has_donor_flag = (donor_fill != nullptr);
+        auto const& donor_arr = has_donor_flag ? donor_fill->const_array(mfi)
+                                               : Array4<const int>{};
 
         Box count_bx = bx;
         for (int dir = 0; dir < 2; ++dir) {
@@ -947,10 +1149,12 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
 
                 const bool counted = count_bx.contains(IntVect(i,j,0));
                 const bool is_wet = has_mask ? (wet_arr(i,j,0) > Real(0.5)) : false;
+                const bool is_donor_filled = has_donor_flag && (donor_arr(i,j,0) != 0);
                 if (counted) {
                     ++n_cells;
                     if (idx_arr(i, j, 0, 0) < 0) { ++n_no_stencil; }
                     if (has_mask && is_wet) { ++n_wet; }
+                    if (is_donor_filled) { ++n_donor_filled; }
                 }
 
                 if (sum_w > 0.0) {
@@ -959,7 +1163,14 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                         frac_max = std::max(frac_max, sum_w);
                         frac_sum += sum_w;
                         max_cover_err = std::max(max_cover_err, std::abs(sum_w - 1.0));
-                        if (has_mask && is_wet) { wet_frac_min = std::min(wet_frac_min, sum_w); }
+                        // A donor graft is a single full-area overlap, so its
+                        // sum_w is exactly the destination area and normalizes to
+                        // a flawless 1.0. Letting that into wet_frac_min would
+                        // report the worst real coverage as better than it is, so
+                        // the statistic is taken over genuinely covered wet cells.
+                        if (has_mask && is_wet && !is_donor_filled) {
+                            wet_frac_min = std::min(wet_frac_min, sum_w);
+                        }
                     }
                     for (int m = 0; m < MAX_STENCIL_SIZE; ++m) {
                         w_arr(i, j, 0, m) /= sum_w;
@@ -982,6 +1193,18 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     ParallelDescriptor::ReduceLongSum(n_no_stencil);
     ParallelDescriptor::ReduceLongSum(n_wet);
     ParallelDescriptor::ReduceLongSum(n_wet_uncovered);
+    ParallelDescriptor::ReduceLongSum(n_donor_filled);
+
+    // The fallback in ERF_to_REMORA.cpp:174 branches on the index sentinel;
+    // n_wet_uncovered above is a weight test. They agree today only because the
+    // weight builder never stores an index with zero weight. Assert it, so a
+    // future change that breaks the equivalence surfaces here instead of as
+    // 0 Pa / 0 K arriving in REMORA's bulk-flux chain.
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        n_uncovered == n_no_stencil,
+        "NormalizeWeightsAndCheckConservation: a destination cell has a stored "
+        "source index but zero total weight. The ERF-side fallback keys on the "
+        "index sentinel, so that cell will receive 0 rather than its lane fallback.");
 
     const amrex::Long n_covered = n_cells - n_uncovered;
     if (n_covered == 0) {
@@ -1000,8 +1223,18 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
         // hiding in it.
         amrex::Print() << "[driver] remap coverage (" << label << "): cells=" << n_cells
                        << " uncovered=" << n_uncovered
-                       << " no_stencil=" << n_no_stencil
-                       << " frac min/mean/max=" << frac_min << "/"
+                       << " no_stencil=" << n_no_stencil;
+        // Only for directions that can donor-fill at all, so the O2A line keeps
+        // its existing shape rather than carrying a field that is structurally
+        // zero there.
+        if (donor_fill != nullptr) {
+            if (wet_mask != nullptr) {
+                amrex::Print() << " donor_filled=" << n_donor_filled;
+            } else {
+                amrex::Print() << " donor_filled=n/a (no wet mask)";
+            }
+        }
+        amrex::Print() << " frac min/mean/max=" << frac_min << "/"
                        << (frac_sum / static_cast<amrex::Real>(n_covered)) << "/" << frac_max
                        << " max|frac-1|=" << max_cover_err << "\n";
     }
@@ -1009,17 +1242,55 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     // The verdict: an uncovered wet cell is a real hole in the forcing, whereas an
     // uncovered dry cell is expected wherever the atmosphere grid is land.
     if (wet_mask != nullptr) {
+        // Reported before, and independently of, the uncovered warning. A
+        // donor-filled cell is not uncovered -- it has a stencil and sum_w > 0, so
+        // n_uncovered and n_wet_uncovered deliberately exclude it, and those two
+        // counters keep exactly the meaning they had before this category existed.
+        // But it is not covered either, in the sense the coverage numbers are read
+        // for: no source cell of its own overlaps it. Without this line a run in
+        // which every uncovered cell was donor-filled prints the clean-sheet
+        // verdict below, and a reader cannot tell a genuinely covered cell from
+        // one holding a neighbour's value.
+        if (n_donor_filled > 0) {
+            amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_donor_filled
+                           << " of " << n_wet << " REMORA wet cells have no ERF source cell of "
+                           << "their own and were donor-filled from the nearest non-land ERF "
+                           << "cell (driver.remap_donor_fill=coawst). Each carries a "
+                           << "neighbour's atmospheric state, not its own, and the full-weight "
+                           << "graft makes this atmosphere->ocean operator non-conservative. "
+                           << "They are excluded from the min wet frac below and are NOT part "
+                           << "of the uncovered counts. Under the default "
+                           << "driver.remap_donor_fill=withhold these cells would instead be "
+                           << "reported uncovered and take the per-lane ApplyConservativeRemap "
+                           << "fallbacks.\n";
+        }
         if (n_wet_uncovered > 0) {
             amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_wet_uncovered
                            << " of " << n_wet << " REMORA wet cells have no ERF source overlap. "
-                           << "They fall back to the standard-atmosphere placeholders in "
-                           << "ERF_Coupling.cpp rather than coupled values, so they are forced but "
-                           << "not coupled. Expect these along coastlines where the two land masks "
-                           << "disagree, or where the ocean grid reaches past the atmosphere.\n";
-        } else if (ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
+                           << "ApplyConservativeRemap in Submodules/ERF/Source/Coupling/"
+                           << "ERF_to_REMORA.cpp branches on the -1 index sentinel and assigns a "
+                           << "per-lane fallback: Patm=101325 Pa and Tair=288.15 K are the "
+                           << "standard-atmosphere values; Uwind/Vwind=0 m/s; Cloud, SWrad, LWrad, "
+                           << "and all eight flux lanes=0.0. Qair and Rain are not remapped and "
+                           << "retain the PrefillAtmosToOceanFallbacks values from "
+                           << "remora.air_humidity and remora.rain. Thus uncovered Patm/Tair cells "
+                           << "are forced but not coupled; for wind and flux lanes they are neither "
+                           << "forced nor coupled. Expect these along coastlines where the two land "
+                           << "masks disagree, or where the ocean grid reaches past the atmosphere.\n";
+        } else if (n_donor_filled == 0 &&
+                   ParallelDescriptor::IOProcessor() && m_remap_verbose >= 1) {
+            // The clean sheet, and it says donor_filled=0 out loud so the reader
+            // does not have to infer it from the line's absence. When any cell was
+            // donor-filled this message is suppressed and the warning above stands
+            // as the verdict instead.
             amrex::Print() << "[driver] remap coverage (" << label << "): all " << n_wet
-                           << " wet cells covered, min wet frac=" << wet_frac_min << "\n";
+                           << " wet cells covered by real source overlap (donor_filled=0)"
+                           << ", min wet frac=" << wet_frac_min << "\n";
         }
+    } else if (donor_fill != nullptr && ParallelDescriptor::IOProcessor()) {
+        amrex::Print() << "[driver] WARNING remap (" << label
+                       << "): wet-cell verdict skipped because no wet mask was available; "
+                       << "uncovered= counts all cells rather than wet cells.\n";
     }
 }
 
@@ -1361,6 +1632,7 @@ void
 ERFRemoraMultiBlockContainer::BuildRemapWeights()
 {
     ResolveRemapFrame();
+    ResolveDonorFillMode();
 
     if (m_remap_spherical) {
         BuildERFCornerMesh();
@@ -1451,6 +1723,94 @@ ERFRemoraMultiBlockContainer::ResolveRemapFrame()
                            << m_atm_rb.lo(0) << "," << m_atm_rb.hi(0) << "]x["
                            << m_atm_rb.lo(1) << "," << m_atm_rb.hi(1) << "]\n";
         }
+    }
+}
+
+// Decide what an uncovered wet destination cell receives, and refuse to guess:
+// like driver.remap_frame, an unrecognized request aborts with the valid values
+// rather than silently selecting one of them.
+//
+// The default is withhold, not COAWST fidelity. A source-level survey of
+// production couplers found none that donor-fills an unmapped destination cell:
+// ESMF's unmappedaction defaults to ERROR, CMEPS pre-fills the destination and
+// then maps with zeroregion=REGION_SELECT so unmapped cells keep the pre-fill,
+// YAC does not interpolate unmapped points, and CDO writes a missing value.
+// SCRIP and OASIS are the two that fill, and both fill with zero -- OASIS
+// documents that as a deficiency, not a feature. ESMF goes further and refuses
+// to combine extrapolation with conservative regridding at all, because "doing
+// so would result in non-conservative weights". That objection applies exactly
+// here: the donor fill grafts a full-weight nearest-neighbour row into a
+// fracarea-normalized conservative matrix. So COAWST's check_weights behaviour
+// is opt-in and says so loudly, and the shipped default is the one the
+// literature supports.
+void
+ERFRemoraMultiBlockContainer::ResolveDonorFillMode()
+{
+    if (m_remap_donor_fill_request == "withhold") {
+        m_remap_donor_fill_mode = DonorFillMode::Withhold;
+    } else if (m_remap_donor_fill_request == "coawst") {
+        m_remap_donor_fill_mode = DonorFillMode::Coawst;
+    } else {
+        amrex::Abort("driver.remap_donor_fill must be withhold or coawst; got '" +
+                     m_remap_donor_fill_request + "'");
+    }
+
+    if (m_remap_donor_max_diagonals < amrex::Real(0.0)) {
+        amrex::Abort("driver.remap_donor_max_diagonals must be >= 0; got " +
+                     std::to_string(m_remap_donor_max_diagonals));
+    }
+
+    if (m_remap_verbose >= 1) {
+        amrex::Print() << "[driver] BuildRemapWeights: donor fill = "
+                       << m_remap_donor_fill_request
+                       << (m_remap_spherical ? "" : " (inert in the cartesian frame)") << "\n";
+    }
+
+    if (m_remap_donor_fill_mode != DonorFillMode::Coawst) {
+        if (m_remap_donor_max_diagonals_set) {
+            amrex::Print() << "[driver] remap: driver.remap_donor_max_diagonals is inert under "
+                           << "driver.remap_donor_fill=withhold; it bounds the coawst donor "
+                           << "search, and no donor search runs in withhold mode.\n";
+        }
+        return;
+    }
+
+    // Not verbosity-gated. Opting out of the literature-supported default must
+    // never be silent, and the operator needs the word "coawst" in the log to
+    // connect a non-conservative A2O operator back to the flag that caused it.
+    amrex::Print()
+        << "[driver] WARNING remap: driver.remap_donor_fill=coawst grafts a full-weight "
+        << "nearest-neighbour stencil into the fracarea-normalized conservative matrix for "
+        << "every wet destination cell with no source overlap. This reproduces COAWST's "
+        << "check_weights (Lib/SCRIP_COAWST/scrip.f:343), but no production coupler does it: "
+        << "ESMF defaults unmappedaction=ERROR and refuses to combine extrapolation with "
+        << "conservative regridding because \"doing so would result in non-conservative "
+        << "weights\"; CMEPS pre-fills and maps with zeroregion=REGION_SELECT; YAC does not "
+        << "interpolate unmapped points; CDO writes a missing value. The resulting "
+        << "atmosphere->ocean operator is NOT conservative. The default, "
+        << "driver.remap_donor_fill=withhold, instead leaves these cells to the per-lane "
+        << "fallbacks in ApplyConservativeRemap and reports them uncovered.\n";
+
+    // Say plainly what the bounds do and do not buy, so nobody reads the clip as
+    // a rank-invariance guarantee it does not deliver.
+    amrex::Print()
+        << "[driver] remap: coawst donors are restricted to source cells whose centroid lies "
+        << "inside the destination box's own grown lon/lat bounding box, and to within "
+        << "driver.remap_donor_max_diagonals=" << m_remap_donor_max_diagonals
+        << " donor diagonals of the destination centroid; destination boxes with no "
+        << "geographic source overlap are not donor-filled at all. The geographic clip "
+        << "removes the ERF decomposition from the donor choice, because every source cell "
+        << "inside that bounding box is staged under every ERF decomposition. It does NOT "
+        << "remove the REMORA decomposition: the bounding box is itself per-REMORA-box, so a "
+        << "destination cell near its edge can have the same donor accepted under one REMORA "
+        << "box layout and rejected under another. The acceptance radius has no precedent in "
+        << "any production coupler -- ESMF's nearest-source search is explicitly unbounded -- "
+        << "and is a deliberate departure.\n";
+
+    if (!m_remap_spherical) {
+        amrex::Print() << "[driver] remap: driver.remap_donor_fill=coawst has no effect in the "
+                       << "cartesian frame; the donor search only runs when the frame is "
+                       << "spherical.\n";
     }
 }
 
@@ -1676,10 +2036,17 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
 
     // Every rank now derives the same staging BoxArray.
     BoxList cell_bl, node_bl;
+    plan.box_bbox_lo.resize(2 * n_remora_boxes);
+    plan.box_bbox_hi.resize(2 * n_remora_boxes);
+    plan.box_has_erf_overlap.resize(n_remora_boxes);
     for (int d = 0; d < n_remora_boxes; ++d) {
         PlanarBBox remora_bb;
         remora_bb.xlo = remora_lo[2*d  ]; remora_bb.xhi = remora_hi[2*d  ];
         remora_bb.ylo = remora_lo[2*d+1]; remora_bb.yhi = remora_hi[2*d+1];
+        plan.box_bbox_lo[2*d  ] = remora_bb.xlo;
+        plan.box_bbox_hi[2*d  ] = remora_bb.xhi;
+        plan.box_bbox_lo[2*d+1] = remora_bb.ylo;
+        plan.box_bbox_hi[2*d+1] = remora_bb.yhi;
 
         Box need;
         for (int s = 0; s < n_erf_boxes; ++s) {
@@ -1690,6 +2057,7 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
             need = need.ok() ? minBox(need, erf_cell_ba[s]) : erf_cell_ba[s];
         }
 
+        plan.box_has_erf_overlap[d] = static_cast<char>(need.ok());
         if (!need.ok()) {
             // No geographic overlap for this REMORA box. A BoxArray cannot hold
             // an empty box, so park a 1-cell placeholder inside the ERF domain;
@@ -1743,6 +2111,15 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
                        << " (erf domain " << plan.erf_domain_cells << ")"
                        << " max_box_cells=" << plan.max_box_cells
                        << " remora_boxes_without_overlap=" << plan.empty_boxes << "\n";
+    }
+    if (m_remap_verbose >= 2) {
+        for (int d = 0; d < n_remora_boxes; ++d) {
+            amrex::Print() << "[driver] remap staging box " << d
+                           << " bbox=[(" << remora_lo[2*d] << ", "
+                           << remora_lo[2*d+1] << "), ("
+                           << remora_hi[2*d] << ", "
+                           << remora_hi[2*d+1] << ")]\n";
+        }
     }
 }
 
@@ -1944,6 +2321,12 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     static const std::array<amrex::IntVect, kNumWeightFamilies> kExpectedFamilyStagger = {
         amrex::IntVect(0,0,0), amrex::IntVect(1,0,0), amrex::IntVect(0,1,0), amrex::IntVect(0,0,0)
     };
+    static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
+        "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
+    };
+    static const std::array<const char*, kNumWeightFamilies> kExpectedRemoraMask = {
+        "mskr", "msku", "mskv", "mskr"
+    };
     // Stencil-capacity accounting: a destination cell that overlaps more than
     // MAX_STENCIL_SIZE source cells keeps the largest-area overlaps and reports
     // the shortfall. Aborting here would kill a run mid-init over a geometry
@@ -1961,12 +2344,30 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         iMultiFab* index_mf = m_index_mf_by_family[f].get();
         if (!weight_mf || !index_mf) { continue; }
 
+        // Allocate the donor-fill flag array only when the donor search can
+        // actually run. Under the default driver.remap_donor_fill=withhold, or in
+        // the cartesian frame, nothing ever writes it. A null array here is
+        // therefore normal, not a failure, and must NOT skip the family the way
+        // a missing weight or index array would -- the remap itself is unaffected.
+        // NormalizeWeightsAndCheckConservation already treats a null donor_fill as
+        // "this direction cannot donor-fill" and omits the donor_filled= field,
+        // which is exactly right here; ResolveDonorFillMode has already reported
+        // the mode, so the reader is not left guessing why it is absent.
+        const bool donor_fill_can_run =
+            (m_remap_donor_fill_mode == DonorFillMode::Coawst) && m_remap_spherical;
+        if (donor_fill_can_run && !m_donor_fill_mf_by_family[f]) {
+            m_donor_fill_mf_by_family[f] = std::make_unique<iMultiFab>(
+                weight_mf->boxArray(), weight_mf->DistributionMap(), 1, 0);
+        }
+        iMultiFab* donor_fill_mf = m_donor_fill_mf_by_family[f].get();
+
         AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
             weight_mf->boxArray().ixType().toIntVect() == kExpectedFamilyStagger[f],
             "BuildRemapWeights: A2O weight MultiFab stagger does not match its WeightFamily slot.");
 
         weight_mf->setVal(0.0);
         index_mf->setVal(-1);
+        if (donor_fill_mf) { donor_fill_mf->setVal(0); }
 
         const IntVect stagger = kExpectedFamilyStagger[f];
         // TauX/TauY carry a face-staggered ERF source as well (tau13/tau23 on
@@ -1975,13 +2376,43 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         const int src_face_dir =
             (stagger == IntVect(1,0,0)) ? 0 : ((stagger == IntVect(0,1,0)) ? 1 : -1);
 
+        // Index space this family's source cells live in, on the ERF level-0
+        // domain rather than on any one rank's staged region. Used only to key
+        // the donor-search tie-break below. Empty in the cartesian frame, where
+        // there is no staging plan and no donor search.
+        const Box donor_src_domain =
+            (!m_remap_spherical)
+                ? Box()
+                : ((src_face_dir < 0)
+                       ? m_staging_plan->erf_cell_domain
+                       : amrex::convert(m_staging_plan->erf_cell_domain,
+                                        amrex::IntVect::TheDimensionVector(src_face_dir)));
         // Each family's mask must sit on that family's stagger, or const_array()
         // would be reading a differently shaped array.
         const MultiFab* family_mask = remora_mskr;
         if (f == static_cast<int>(WeightFamily::TAUX_FACE))      { family_mask = remora_msku; }
         else if (f == static_cast<int>(WeightFamily::TAUY_FACE)) { family_mask = remora_mskv; }
-        if (family_mask != nullptr &&
-            family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+        const bool donor_fill_needs_mask =
+            m_remap_donor_fill_mode == DonorFillMode::Coawst && m_remap_spherical;
+        if (family_mask == nullptr) {
+            if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "[driver] WARNING remap (" << kFamilyLabel[f]
+                               << "): REMORA supplied no " << kExpectedRemoraMask[f]
+                               << " wet mask. Donor fill is inactive for this family; wet cells "
+                               << "without usable source overlap will take the same per-lane "
+                               << "fallback they would under driver.remap_donor_fill=withhold.\n";
+            }
+        } else if (family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+            if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
+                amrex::Print() << "[driver] WARNING remap (" << kFamilyLabel[f] << "): REMORA "
+                               << kExpectedRemoraMask[f] << " wet mask ixType="
+                               << family_mask->boxArray().ixType().toIntVect()
+                               << " does not match expected ixType="
+                               << weight_mf->boxArray().ixType().toIntVect()
+                               << ". Donor fill is inactive for this family; wet cells without "
+                               << "usable source overlap will take the same per-lane fallback "
+                               << "they would under driver.remap_donor_fill=withhold.\n";
+            }
             family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
         }
 
@@ -1989,6 +2420,11 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             Box bx = mfi.validbox();
             auto weight_arr = weight_mf->array(mfi);
             auto index_arr = index_mf->array(mfi);
+            // Null under withhold / cartesian; the donor search that writes it is
+            // gated on exactly the condition that allocated it, so an empty Array4
+            // here is never dereferenced.
+            auto donor_fill_arr = donor_fill_mf ? donor_fill_mf->array(mfi)
+                                                : amrex::Array4<int>{};
 
             // Spherical frame: REMORA corners from its psi lon/lat, and ERF
             // corners from the staged mesh. All of these arrays are on the REMORA
@@ -1998,6 +2434,12 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             Array4<const Real> erf_land{};
             Box erf_staged_box;
             Box erf_staged_node_box;
+            // Geographic bound on this destination box's donor search. G(B) is
+            // the grown lon/lat bounding box BuildERFStagingPlan used to pick
+            // the ERF boxes to stage, and donor_box_has_erf_overlap is 0 when it
+            // intersected none of them.
+            bool donor_box_has_erf_overlap = false;
+            PlanarBBox donor_box_bbox;
             if (m_remap_spherical) {
                 erf_node = m_staging_plan->node_mf->const_array(mfi);
                 erf_land = m_staging_plan->land_mf->const_array(mfi);
@@ -2005,6 +2447,18 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                 erf_staged_node_box = m_staging_plan->node_mf->boxArray()[mfi.index()];
                 search.define(erf_staged_box, Array4<const Real>(erf_node, 0),
                               Array4<const Real>(erf_node, 1), m_remap_bin_cells);
+                // Same index space the erf_staged_box lookup just above uses:
+                // the staging plan's per-box vectors are indexed by REMORA box,
+                // and this family's BoxArray is m_ba_ocn on that family's
+                // stagger, so mfi.index() is that box index.
+                const int d = mfi.index();
+                AMREX_ASSERT(d < static_cast<int>(m_staging_plan->box_has_erf_overlap.size()));
+                donor_box_has_erf_overlap =
+                    (m_staging_plan->box_has_erf_overlap[d] != 0);
+                donor_box_bbox.xlo = m_staging_plan->box_bbox_lo[2*d  ];
+                donor_box_bbox.xhi = m_staging_plan->box_bbox_hi[2*d  ];
+                donor_box_bbox.ylo = m_staging_plan->box_bbox_lo[2*d+1];
+                donor_box_bbox.yhi = m_staging_plan->box_bbox_hi[2*d+1];
             }
             // Spherical ERF source geometry on the active source stagger. A
             // face is treated as land when either bracketing ERF cell is land,
@@ -2184,8 +2638,47 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                     // Only wet holes are searched. Dry holes are both uninteresting
                     // and numerous (they are the land-shadowed majority), and
                     // scanning for them would cost orders of magnitude more.
-                    if (overlaps.empty() && m_remap_spherical && wet_arr &&
-                        wet_arr(i,j,0) > Real(0.5)) {
+                    //
+                    // Off by default (driver.remap_donor_fill=withhold), because no
+                    // production coupler donor-fills an unmapped cell and because the
+                    // graft below is not conservative -- ESMF refuses to combine
+                    // extrapolation with conservative regridding for exactly this
+                    // reason. See ResolveDonorFillMode() for the full argument and
+                    // for the warning the coawst mode prints. Under withhold this
+                    // block is simply not entered: `overlaps` stays empty, the
+                    // `continue` below leaves the -1 index sentinel and zero weights
+                    // in place, NormalizeWeightsAndCheckConservation counts the cell
+                    // uncovered, and ApplyConservativeRemap assigns that lane's
+                    // fallback. Nothing else is bypassed.
+                    //
+                    // donor_box_has_erf_overlap excludes destination boxes whose
+                    // grown geographic footprint intersected no ERF box at all.
+                    // For those, erf_staged_box is not a real region: it is the
+                    // one-cell placeholder BuildERFStagingPlan parks at
+                    // erf_cell_domain.smallEnd(), because a BoxArray cannot hold
+                    // an empty box. Without this test the search happily selects
+                    // that corner and grafts a full-weight stencil, so every wet
+                    // cell in such a box takes the ERF domain corner's
+                    // atmospheric state -- and is then counted as covered rather
+                    // than reported uncovered. A distance threshold cannot
+                    // reliably reject it: two nearly-touching grids could place
+                    // the corner within any radius. The recorded flag rejects it
+                    // by construction instead.
+                    if (m_remap_donor_fill_mode == DonorFillMode::Coawst &&
+                        overlaps.empty() && m_remap_spherical && wet_arr &&
+                        wet_arr(i,j,0) > Real(0.5) && donor_box_has_erf_overlap) {
+                        // Global source ID: row-major linear index over donor_src_domain. This
+                        // is deliberately a *domain* quantity. It contains no rank, no box
+                        // index and no reference to erf_staged_box, so two ranks that both hold
+                        // source cell (si,sj) agree on its ID under any decomposition. That is
+                        // the whole point: an MPI_MINLOC-style tie-break is only reproducible
+                        // when the key it minimizes over is a global cell ID -- feed it a rank
+                        // or a local index and the answer becomes rank-count dependent.
+                        auto donor_global_id = [&] (int si, int sj) -> long long {
+                            return static_cast<long long>(sj - donor_src_domain.smallEnd(1))
+                                     * static_cast<long long>(donor_src_domain.length(0))
+                                 + static_cast<long long>(si - donor_src_domain.smallEnd(0));
+                        };
                         Real dst_cx = 0.0, dst_cy = 0.0;
                         for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }
                         dst_cx /= static_cast<Real>(remora_poly.size());
@@ -2196,8 +2689,34 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                         const Real cos_lat = std::max(std::cos(dst_cy * Real(M_PI) / Real(180.0)),
                                                       Real(1.0e-6));
 
+                        // Ordering is lexicographic on (distance^2, global source
+                        // ID), not on distance alone. Exact ties are common rather
+                        // than exotic on a structured grid -- a destination cell
+                        // centered between two source cells produces bitwise-equal
+                        // d2 -- and a bare `d2 < best_d2` resolves them by scan
+                        // order, which starts at erf_staged_box.smallEnd() and so
+                        // moves with the decomposition. ESMF and YAC both break
+                        // nearest-neighbour ties by smallest global ID for exactly
+                        // this reason; ESMF documents it as "if two points are
+                        // equally close, then the point with the smallest sequence
+                        // index is arbitrarily used".
+                        //
+                        // The `d2 == best_d2` test is exact on purpose. The staged
+                        // node coordinates are exact NonLocalBC::ParallelCopy copies
+                        // of ERF's node values, so d2 for a given (si,sj) is
+                        // bitwise identical under any decomposition; ties here are
+                        // genuine ties, and a tolerance would introduce a new
+                        // ordering ambiguity rather than remove one.
                         Real best_d2 = std::numeric_limits<Real>::max();
+                        long long best_gid = std::numeric_limits<long long>::max();
                         IntVect best_ij(-1,-1,0);
+                        // The winning donor's own control volume. Kept from the
+                        // loop rather than re-derived from the node array
+                        // afterwards, because the search runs one index past
+                        // erf_staged_box in the staggered direction for the face
+                        // families: a raw erf_node(bi+1,bj+1) read at the winning
+                        // index would step one node past erf_staged_node_box.
+                        Vector<Point2D> best_poly;
                         // The donor index is stored in index_arr and dereferenced by
                         // ApplyConservativeRemap against this family's source layout,
                         // so it has to be selected in the same index space the main
@@ -2220,10 +2739,77 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                                 for (const auto& p : src_poly) { sx += p.x; sy += p.y; }
                                 sx /= static_cast<Real>(src_poly.size());
                                 sy /= static_cast<Real>(src_poly.size());
+                                // Clip the candidate set to G(B). This is what
+                                // takes ERF's decomposition out of the answer,
+                                // and it is a proof rather than a heuristic: any
+                                // ERF cell whose lon/lat lies inside G(B) belongs
+                                // to some ERF box whose own geographic bounding
+                                // box intersects G(B), and BuildERFStagingPlan
+                                // minBox-unions every such ERF box into
+                                // erf_staged_box. So the surviving candidates are
+                                // exactly the in-G(B) source cells under every ERF
+                                // box layout, whatever NProcs() and
+                                // amr.max_grid_size* do to ERF. What it does not
+                                // remove is dependence on REMORA's decomposition:
+                                // G(B) is itself a per-REMORA-box quantity, so a
+                                // destination cell near the edge of G(B) can see a
+                                // donor accepted under one REMORA box layout and
+                                // rejected under another. This mode is bounded,
+                                // not proven rank-invariant.
+                                if (sx < donor_box_bbox.xlo || sx > donor_box_bbox.xhi ||
+                                    sy < donor_box_bbox.ylo || sy > donor_box_bbox.yhi) {
+                                    continue;
+                                }
                                 const Real dx = (sx - dst_cx) * cos_lat;
                                 const Real dy = (sy - dst_cy);
                                 const Real d2 = dx*dx + dy*dy;
-                                if (d2 < best_d2) { best_d2 = d2; best_ij = IntVect(si,sj,0); }
+                                const long long gid = donor_global_id(si, sj);
+                                if (d2 < best_d2 || (d2 == best_d2 && gid < best_gid)) {
+                                    best_d2 = d2;
+                                    best_gid = gid;
+                                    best_ij = IntVect(si,sj,0);
+                                    best_poly = src_poly;
+                                }
+                            }
+                        }
+
+                        if (best_ij[0] >= 0) {
+                            // Acceptance radius, measured against the diagonal of
+                            // the donor's own control volume in the same
+                            // cos(latitude)-corrected metric the search used.
+                            // Taken from the polygon the loop already built, not
+                            // from a raw erf_node(bi+1,bj+1) read, which would
+                            // step one node past erf_staged_node_box for the face
+                            // families.
+                            //
+                            // Unlike the geographic clip above this is a
+                            // heuristic, and it is a deliberate departure from
+                            // precedent rather than borrowed practice: no
+                            // production coupler bounds a nearest-source fill by
+                            // distance. ESMF's NEAREST_STOD is explicitly
+                            // unbounded -- it queries its process directory with
+                            // an infinite box when no local candidate exists, so
+                            // it always finds the globally nearest source -- and
+                            // creep fill bounds by iteration count instead. The
+                            // default of 3 diagonals is uncalibrated.
+                            //
+                            // Applied uniformly, not conditioned on whether this
+                            // destination box was partially or fully uncovered,
+                            // because the rank dependence exists in both cases.
+                            // (Zero-overlap boxes are already excluded above, so
+                            // in practice this governs the partially covered
+                            // case.)
+                            const PlanarBBox donor_bb = BBoxOfPolygon(best_poly);
+                            const Real ddx = (donor_bb.xhi - donor_bb.xlo) * cos_lat;
+                            const Real ddy = (donor_bb.yhi - donor_bb.ylo);
+                            const Real donor_diag2 = ddx*ddx + ddy*ddy;
+                            const Real r = m_remap_donor_max_diagonals;
+                            if (best_d2 > r * r * donor_diag2) {
+                                // Rejected. `overlaps` stays empty, the continue
+                                // below leaves the -1 index sentinel, and the cell
+                                // takes the same per-lane ERF-side fallback it
+                                // would under withhold. There is no third outcome.
+                                best_ij = IntVect(-1,-1,0);
                             }
                         }
 
@@ -2232,6 +2818,13 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                             // this cell takes the donor's value exactly.
                             overlaps.emplace_back(remora_area, best_ij);
                             ++donor_filled;
+                            // Mark the cell so the coverage report can separate it
+                            // from a genuinely covered one. Both this flag and
+                            // donor_filled count the same event; they differ in
+                            // that donor_filled is a raw per-box tally used only
+                            // for the one-line summary, whereas this flag is
+                            // de-duplicated across box seams downstream.
+                            donor_fill_arr(i, j, 0) = 1;
                         }
                     }
 
@@ -2258,20 +2851,27 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                 }
             }
         }
-        static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
-            "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
-        };
-        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask, kFamilyLabel[f]);
+        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask,
+                                             donor_fill_mf, kFamilyLabel[f]);
     }
 
     ParallelDescriptor::ReduceIntMax(max_stencil_used);
     ParallelDescriptor::ReduceLongSum(dropped_overlaps);
     ParallelDescriptor::ReduceLongSum(donor_filled);
     if (donor_filled > 0) {
+        // Summed over all four families and incremented once per box visit, so for
+        // TAUX_FACE/TAUY_FACE a donor-filled face on a box seam is counted once
+        // per adjacent box that fills it and this total moves with the
+        // decomposition. The per-family donor_filled= field on the coverage lines
+        // above applies the same seam-ownership rule as every other coverage
+        // count, so that is the number to compare between runs.
         amrex::Print() << "[driver] remap: " << donor_filled
                        << " wet destination cells had no valid source overlap and were filled from "
                        << "their nearest non-land source cell (COAWST check_weights behaviour). "
-                       << "These carry a neighbour's atmospheric state rather than their own.\n";
+                       << "These carry a neighbour's atmospheric state rather than their own. "
+                       << "Counted per box visit, so a donor-filled face on a box seam can be "
+                       << "counted once per adjacent box; the per-family donor_filled= counts "
+                       << "above are seam-de-duplicated.\n";
     }
     if (dropped_overlaps > 0) {
         amrex::Print() << "[driver] WARNING BuildRemapWeights: " << dropped_overlaps
@@ -2582,7 +3182,11 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
             }
         }
 
-        NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf, nullptr, "O2A SST");
+        // No wet mask and no donor flag: O2A reports coverage over all ERF cells,
+        // and the donor search is an atmosphere->ocean-only mechanism, so there is
+        // no donor category to separate out here.
+        NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf,
+                                             nullptr, nullptr, "O2A SST");
 
         ParallelDescriptor::ReduceLongSum(uncovered_outside);
         ParallelDescriptor::ReduceLongSum(uncovered_masked);
@@ -2649,18 +3253,66 @@ ERFRemoraMultiBlockContainer::FillAtmosToOceanGhosts ()
 void
 ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
                              const amrex::Vector<amrex::MultiFab*>& fields,
-                             const amrex::Vector<std::string>& names) const
+                             const amrex::Vector<std::string>& names,
+                             bool ocean_to_atmos) const
 {
+    // m_driver_verbose comes from ParmParse and is identical on every rank, so
+    // this is a rank-uniform gate around the collective reductions below.
+    if (m_driver_verbose < 1) { return; }
+
+    const amrex::MultiFab* remora_mskr = nullptr;
+    const amrex::MultiFab* remora_msku = nullptr;
+    const amrex::MultiFab* remora_mskv = nullptr;
+    if (!ocean_to_atmos && m_remora != nullptr) {
+        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+    }
+
+    auto mask_for = [&] (const amrex::MultiFab& field) -> const amrex::MultiFab* {
+        const amrex::MultiFab* candidate = nullptr;
+        if (ocean_to_atmos) {
+            candidate = m_erf_land_mask.get();
+        } else {
+            const amrex::IntVect stagger = field.boxArray().ixType().toIntVect();
+            if (stagger == amrex::IntVect(1,0,0)) {
+                candidate = remora_msku;
+            } else if (stagger == amrex::IntVect(0,1,0)) {
+                candidate = remora_mskv;
+            } else if (stagger == amrex::IntVect::TheCellVector()) {
+                candidate = remora_mskr;
+            }
+        }
+        // MaskedMinMax indexes the mask with an MFIter built on the field, which is
+        // only defined when the two share a BoxArray *and* a DistributionMapping --
+        // matching ixType alone is not enough. The A2O masks come off the same
+        // REMORA layout as their fields, but m_erf_land_mask is built on the ERF
+        // solver's cell layout while the O2A cache lives on the driver's, so the
+        // O2A pairing is the one that can differ. Fall back to an unmasked
+        // reduction (reported as such) rather than reading across layouts.
+        if (candidate != nullptr &&
+            (candidate->boxArray() != field.boxArray() ||
+             candidate->DistributionMap() != field.DistributionMap())) {
+            candidate = nullptr;
+        }
+        return candidate;
+    };
+
     amrex::Print() << label << "\n";
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
         if (fields[idx] == nullptr) {
             amrex::Print() << "  " << names[idx] << ": withheld (not supplied by ERF)\n";
             continue;
         }
-        const auto min_val = fields[idx]->min(0);
-        const auto max_val = fields[idx]->max(0);
-        amrex::Print() << "  " << names[idx] << ": min=" << min_val << " max=" << max_val << "\n";
-        if (names[idx] == "rain" && (min_val > 100.0 || max_val > 100.0)) {
+        const amrex::MultiFab* mask = mask_for(*fields[idx]);
+        const auto extrema = MaskedMinMax(*fields[idx], mask, ocean_to_atmos);
+        const char* marker = (mask != nullptr) ? " (wet only)" : " (unmasked)";
+        if (extrema.included_cells == 0) {
+            amrex::Print() << "  " << names[idx] << ": no wet cells" << marker << "\n";
+            continue;
+        }
+        amrex::Print() << "  " << names[idx] << ": min=" << extrema.min_value
+                       << " max=" << extrema.max_value << marker << "\n";
+        if (names[idx] == "rain" &&
+            (extrema.min_value > 100.0 || extrema.max_value > 100.0)) {
             amrex::Print() << "  *** WARNING: implausibly large rain values detected! ***\n";
         }
     }
@@ -2671,11 +3323,50 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
                                               const amrex::Vector<amrex::MultiFab*>& fields,
                                               const amrex::Vector<std::string>& names,
                                               amrex::Real time,
-                                              long long ocean_step) const
+                                              long long ocean_step,
+                                              bool ocean_to_atmos) const
 {
     if (fields.size() != names.size()) {
         amrex::Abort("ValidateFields field/name count mismatch.");
     }
+    // Rank-uniform: m_driver_verbose is a ParmParse value shared by all ranks.
+    if (m_driver_verbose < 1) { return; }
+
+    const amrex::MultiFab* remora_mskr = nullptr;
+    const amrex::MultiFab* remora_msku = nullptr;
+    const amrex::MultiFab* remora_mskv = nullptr;
+    if (!ocean_to_atmos && m_remora != nullptr) {
+        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+    }
+
+    auto mask_for = [&] (const amrex::MultiFab& field) -> const amrex::MultiFab* {
+        const amrex::MultiFab* candidate = nullptr;
+        if (ocean_to_atmos) {
+            candidate = m_erf_land_mask.get();
+        } else {
+            const amrex::IntVect stagger = field.boxArray().ixType().toIntVect();
+            if (stagger == amrex::IntVect(1,0,0)) {
+                candidate = remora_msku;
+            } else if (stagger == amrex::IntVect(0,1,0)) {
+                candidate = remora_mskv;
+            } else if (stagger == amrex::IntVect::TheCellVector()) {
+                candidate = remora_mskr;
+            }
+        }
+        // MaskedMinMax indexes the mask with an MFIter built on the field, which is
+        // only defined when the two share a BoxArray *and* a DistributionMapping --
+        // matching ixType alone is not enough. The A2O masks come off the same
+        // REMORA layout as their fields, but m_erf_land_mask is built on the ERF
+        // solver's cell layout while the O2A cache lives on the driver's, so the
+        // O2A pairing is the one that can differ. Fall back to an unmasked
+        // reduction (reported as such) rather than reading across layouts.
+        if (candidate != nullptr &&
+            (candidate->boxArray() != field.boxArray() ||
+             candidate->DistributionMap() != field.DistributionMap())) {
+            candidate = nullptr;
+        }
+        return candidate;
+    };
 
     for (int idx = 0; idx < static_cast<int>(fields.size()); ++idx) {
         const auto* mf = fields[idx];
@@ -2693,21 +3384,27 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
             continue;
         }
 
-        const amrex::Real min_val = mf->min(0);
-        const amrex::Real max_val = mf->max(0);
+        const amrex::MultiFab* mask = mask_for(*mf);
+        const auto extrema = MaskedMinMax(*mf, mask, ocean_to_atmos);
+        const char* marker = (mask != nullptr) ? " (wet only)" : " (unmasked)";
 
         if (amrex::ParallelDescriptor::IOProcessor()) {
             amrex::Print() << label
                            << " ocean_step=" << ocean_step
                            << " time=" << time
                            << " field=" << names[idx]
-                           << " nboxes=" << mf->boxArray().size()
-                           << " min=" << min_val
-                           << " max=" << max_val
-                           << "\n";
+                           << " nboxes=" << mf->boxArray().size();
+            if (extrema.included_cells == 0) {
+                amrex::Print() << " no wet cells" << marker << "\n";
+            } else {
+                amrex::Print() << " min=" << extrema.min_value
+                               << " max=" << extrema.max_value
+                               << marker << "\n";
+            }
         }
 
-        if (!std::isfinite(min_val) || !std::isfinite(max_val)) {
+        if (extrema.included_cells != 0 &&
+            (!std::isfinite(extrema.min_value) || !std::isfinite(extrema.max_value))) {
             amrex::Abort(std::string(label) + ": non-finite extrema in field '" +
                          names[idx] + "' at ocean_step=" + std::to_string(ocean_step));
         }
@@ -2715,29 +3412,46 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
 }
 
 void
-ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real time, long long ocean_step) const
+ERFRemoraMultiBlockContainer::WriteExchangePlotfiles (amrex::Real o2a_time,
+                                                      amrex::Real a2o_time,
+                                                      amrex::Real dt_ocn,
+                                                      long long ocean_step) const
 {
+    // The two directions are sampled at different instants once the atmosphere
+    // substeps run before the A2O pack: ocean->atmos is packed from REMORA at the
+    // start of the ocean interval, atmos->ocean after ERF has advanced across it.
+    // Stamping both with one time silently mislabels the O2A output by a full ocean
+    // step -- invisible to every test here, because each fcompare is a self-comparison
+    // in which both sides move together.
     if (m_use_two_way_coupling) {
         ValidateFields("Exchange validation ocean->atmos",
-                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), time, ocean_step);
+                       m_ocean_to_atmos, coupling::OceanToAtmosNames(), o2a_time, ocean_step,
+                       true);
     }
     ValidateFields("Exchange validation atmos->ocean",
-                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, time, ocean_step);
+                   m_atmos_to_ocean_active, m_atmos_to_ocean_active_names, a2o_time, ocean_step,
+                   false);
 
     if (m_use_two_way_coupling) {
         WriteExchangePlotfile(m_plot_file_exchange_o2a,
                               m_ocean_to_atmos,
                               coupling::OceanToAtmosNames(),
                               m_geom,
-                              time,
-                              ocean_step);
+                              o2a_time,
+                              o2a_time,
+                              dt_ocn,
+                              ocean_step,
+                              true);
     }
     WriteExchangePlotfile(m_plot_file_exchange_a2o,
                           m_atmos_to_ocean_active,
                           m_atmos_to_ocean_active_names,
                           m_geom_ocn,
-                          time,
-                          ocean_step);
+                          a2o_time,
+                          o2a_time,
+                          dt_ocn,
+                          ocean_step,
+                          false);
 }
 
 void
@@ -2747,7 +3461,10 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
     const amrex::Vector<std::string>& names,
     const amrex::Geometry& geom,
     amrex::Real time,
-    long long ocean_step) const
+    amrex::Real ocean_time,
+    amrex::Real dt_ocn,
+    long long ocean_step,
+    bool ocean_to_atmos) const
 {
     if (fields.empty()) {
         return;
@@ -2772,6 +3489,96 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
     const std::string plotfilename = amrex::Concatenate(prefix, static_cast<int>(ocean_step), 5);
     amrex::WriteSingleLevelPlotfile(plotfilename, plot_mf, names, geom, time,
                                     static_cast<int>(ocean_step));
+    // Written after the plotfile so the directory exists.
+    WriteExchangeInfo(plotfilename, fields, names, time, ocean_time, dt_ocn, ocean_step,
+                      ocean_to_atmos);
+}
+
+void
+ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename,
+                                                 const amrex::Vector<amrex::MultiFab*>& fields,
+                                                 const amrex::Vector<std::string>& names,
+                                                 amrex::Real time,
+                                                 amrex::Real ocean_time,
+                                                 amrex::Real dt_ocn,
+                                                 long long ocean_step,
+                                                 bool ocean_to_atmos) const
+{
+    if (!amrex::ParallelDescriptor::IOProcessor()) { return; }
+
+    std::ofstream os(plotfilename + "/exchange_info", std::ios::trunc);
+    if (!os.good()) { return; }
+
+    const amrex::Real t_end = ocean_time + dt_ocn;
+    os << "=== ERF/REMORA driver exchange ===\n"
+       << "direction          : " << (ocean_to_atmos ? "ocean->atmos" : "atmos->ocean") << "\n"
+       << "ocean_step         : " << ocean_step << "\n"
+       << "plotfile time      : " << time << "\n"
+       << "ocean interval     : [" << ocean_time << ", " << t_end << "]\n\n";
+
+    os << "--- coupling ---\n"
+       << "atm2ocn contract   : "
+       << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) << "\n"
+       << "two-way coupling   : " << (m_use_two_way_coupling ? "yes" : "no") << "\n"
+       << "remap frame        : " << (m_remap_spherical ? "spherical" : "cartesian") << "\n"
+       << "donor fill mode    : "
+       << (m_remap_donor_fill_mode == DonorFillMode::Coawst ? "coawst" : "withhold") << "\n"
+       << "atm substeps/ocean : " << m_atm_substeps_per_ocean_step
+       << "  (erf dt=" << m_erf_dt << ")\n\n";
+
+    if (ocean_to_atmos) {
+        os << "--- lanes ---\n"
+           << "The ocean->atmos direction is packed from REMORA at the start of the ocean\n"
+           << "interval and is never time-averaged, so every lane below represents t="
+           << ocean_time << ".\n\n";
+        for (int i = 0; i < static_cast<int>(names.size()); ++i) {
+            const bool present = (i < static_cast<int>(fields.size()) && fields[i] != nullptr);
+            os << "  " << names[i] << (present ? "" : "   [withheld]") << "\n";
+        }
+        return;
+    }
+
+    os << "--- time averaging ---\n"
+       << "driver.time_average_atm2ocn_state : " << (m_time_average_atm2ocn_state ? 1 : 0) << "\n"
+       << "driver.time_average_atm2ocn_flux  : " << (m_time_average_atm2ocn_flux ? 1 : 0) << "\n"
+       << "any lane averaged                 : "
+       << (AtmosToOceanAveragingActive() ? "yes" : "no") << "\n\n";
+
+    os << "--- lanes ---\n"
+       << "A lane is averaged according to its CHARACTER, so a view holding both\n"
+       << "characters can carry lanes representing different instants under a single\n"
+       << "plotfile time. 'represents' below is authoritative; 'plotfile time' is not.\n\n"
+       << "  " << std::left << std::setw(10) << "name"
+       << std::setw(12) << "character"
+       << std::setw(11) << "averaged" << "represents\n";
+
+    for (int local = 0; local < static_cast<int>(names.size()); ++local) {
+        const bool present = (local < static_cast<int>(fields.size()) && fields[local] != nullptr);
+        const int global_idx =
+            (local < static_cast<int>(m_atmos_to_ocean_active_indices.size()))
+                ? m_atmos_to_ocean_active_indices[local] : -1;
+        const bool averaged = (global_idx >= 0) && TimeAverageAtmosToOceanLane(global_idx);
+        const bool flux_character = (global_idx >= 0) &&
+            (global_idx == coupling::Rain   || global_idx == coupling::SWrad  ||
+             global_idx == coupling::LWrad  || global_idx == coupling::TauX   ||
+             global_idx == coupling::TauY   || global_idx == coupling::SHflux ||
+             global_idx == coupling::LHflux || global_idx == coupling::Evap);
+
+        std::string represents;
+        if (!present) {
+            represents = "withheld -- not supplied by ERF";
+        } else if (averaged) {
+            represents = "interval mean over [" + std::to_string(ocean_time) + ", " +
+                         std::to_string(t_end) + "]";
+        } else {
+            represents = "instantaneous at t=" + std::to_string(t_end);
+        }
+
+        os << "  " << std::left << std::setw(10) << names[local]
+           << std::setw(12) << (flux_character ? "flux" : "state")
+           << std::setw(11) << (present ? (averaged ? "yes" : "no") : "n/a")
+           << represents << "\n";
+    }
 }
 
 void
@@ -2788,7 +3595,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
     }
 
     AdvanceBlocksWithCallbacks(
-        [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
+        [this](amrex::Vector<amrex::MultiFab*>& state, amrex::Real time,
+               long long /*ocean_step*/) {
             BL_PROFILE("Driver::Pack_Surface");
             // ERF land mask on the destination (ERF) layout: zeroes out
             // land cells in the remapped ocean->atmos SST. Wet/dry masking
@@ -2812,7 +3620,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                 }
             }
         },
-        [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time) {
+        [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time,
+               long long /*ocean_step*/) {
             BL_PROFILE("Driver::Apply_Surface");
             // Hand the coverage flag over with the SST. Without it ERF cannot
             // tell an uncovered cell's zero fill from a genuine ocean value,
@@ -2820,7 +3629,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
             // ocean grid does not reach the atmosphere footprint.
             ERFApplyOceanSurfaceState(m_erf, state, time, m_valid_o2a_mf.get());
         },
-        [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
+        [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time,
+               long long ocean_step) {
             BL_PROFILE("Driver::Pack_Atmos");
             amrex::Vector<const amrex::MultiFab*> weight_mf_by_family(kNumWeightFamilies);
             amrex::Vector<const amrex::iMultiFab*> index_mf_by_family(kNumWeightFamilies);
@@ -2857,37 +3667,53 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                         // reductions on it is what let the IO rank stop entering
                         // collectives that every other rank still executed. The counter
                         // now limits printing only.
-                        const amrex::Real cmin = mf->min(0);
-                        const amrex::Real cmax = mf->max(0);
-                        if ((cmin < -cloud_tol || cmax > amrex::Real(1.0) + cloud_tol) &&
+                        const amrex::MultiFab* cloud_mask = mskr;
+                        if (cloud_mask != nullptr &&
+                            cloud_mask->boxArray().ixType() != mf->boxArray().ixType()) {
+                            cloud_mask = nullptr;
+                        }
+                        const auto cloud_extrema = MaskedMinMax(*mf, cloud_mask, false);
+                        const char* marker =
+                            (cloud_mask != nullptr) ? " (wet only)" : " (unmasked)";
+                        const bool no_wet_cells = (cloud_extrema.included_cells == 0);
+                        const bool outside_tolerance =
+                            !no_wet_cells &&
+                            (cloud_extrema.min_value < -cloud_tol ||
+                             cloud_extrema.max_value > amrex::Real(1.0) + cloud_tol);
+                        if ((no_wet_cells || outside_tolerance) &&
                             cloud_warn_count < cloud_warn_limit) {
                             ++cloud_warn_count;
                             if (amrex::ParallelDescriptor::IOProcessor()) {
-                                amrex::Print() << "WARNING: packed cloud lane outside tolerance [-1e-6,1+1e-6]: min="
-                                                << cmin << " max=" << cmax << "\n";
+                                if (no_wet_cells) {
+                                    amrex::Print() << "WARNING: packed cloud lane has no wet cells; "
+                                                     "range check skipped" << marker << "\n";
+                                } else {
+                                    amrex::Print() << "WARNING: packed cloud lane outside tolerance "
+                                                     "[-1e-6,1+1e-6]: min="
+                                                   << cloud_extrema.min_value
+                                                   << " max=" << cloud_extrema.max_value
+                                                   << marker << "\n";
+                                }
                             }
                         }
                     }
                 }
             }
-            const long long ocean_step =
-                m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
             ValidateFields("Post-pack atmos->ocean validation",
-                           states, m_atmos_to_ocean_active_names, time, ocean_step);
+                           states, m_atmos_to_ocean_active_names, time, ocean_step, false);
         },
-        [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time) {
+        [this](const amrex::Vector<amrex::MultiFab*>& states, amrex::Real time,
+               long long ocean_step) {
             BL_PROFILE("Driver::Apply_Atmos");
-            const long long ocean_step =
-                m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
             ValidateFields("Pre-apply atmos->ocean validation",
-                           states, m_atmos_to_ocean_active_names, time, ocean_step);
-            if (ActiveAtmosToOceanContract(ocean_step) == coupling::AtmosToOceanContract::FluxPassing) {
+                           states, m_atmos_to_ocean_active_names, time, ocean_step, false);
+            if (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::FluxPassing) {
                 REMORAApplyAtmosphericFluxes(m_remora, states, time);
             } else {
                 REMORAApplyAtmosphericStates(m_remora, states, time);
             }
             ValidateFields("Post-apply atmos->ocean validation",
-                           states, m_atmos_to_ocean_active_names, time, ocean_step);
+                           states, m_atmos_to_ocean_active_names, time, ocean_step, false);
         },
         ocean_steps);
 }
@@ -2905,19 +3731,185 @@ ERFRemoraMultiBlockContainer::AtmosToOceanActiveNames () const
 }
 
 coupling::AtmosToOceanContract
-ERFRemoraMultiBlockContainer::ActiveAtmosToOceanContract (long long ocean_step) const
+ERFRemoraMultiBlockContainer::ActiveAtmosToOceanContract () const
 {
-    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing &&
-        ocean_step == 0) {
-        return coupling::AtmosToOceanContract::StatePassing;
-    }
     return m_atmos_to_ocean_contract;
 }
 
-void
-ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView (long long ocean_step)
+namespace {
+// Fixed-column padding for the provenance table, without pulling in <iomanip>.
+std::string
+PadTo (const std::string& text, std::size_t width)
 {
-    const auto active_contract = ActiveAtmosToOceanContract(ocean_step);
+    std::string padded = text;
+    if (padded.size() < width) { padded.append(width - padded.size(), ' '); }
+    return padded;
+}
+} // namespace
+
+void
+ERFRemoraMultiBlockContainer::ResolveAtmosToOceanLaneSources ()
+{
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        m_erf != nullptr && m_remora != nullptr,
+        "ResolveAtmosToOceanLaneSources requires both solvers to exist");
+
+    const int n_lanes = coupling::NumAtmosToOceanLayers;
+    m_atmos_to_ocean_lane_source.assign(n_lanes, coupling::LaneSource::RemoraDefault);
+    m_atmos_to_ocean_lane_reason.assign(n_lanes, std::string("not in either active view"));
+
+    // Both signals arrive in active-view slot order, the same order the pack and
+    // apply vectors use, so map back to lane identity through *_active_indices.
+    amrex::Vector<int> erf_can_fill_state;
+    amrex::Vector<int> erf_can_fill_flux;
+    ERFGetFillableAtmosToOceanLanes(m_erf, /*state_contract=*/true,  erf_can_fill_state);
+    ERFGetFillableAtmosToOceanLanes(m_erf, /*state_contract=*/false, erf_can_fill_flux);
+
+    amrex::Vector<int> deck_configured;
+    REMORAGetDeckConfiguredAtmosLanes(m_remora, deck_configured);
+
+    // driver.atm2ocn_lane_source.<lane> = erf | remora | auto
+    const std::string lane_source_prefix = "driver.atm2ocn_lane_source";
+    amrex::ParmParse pp_lane(lane_source_prefix);
+
+    // Reject a misspelled lane rather than ignoring it: these are read with
+    // query(), so "...lane_source.Uwnd = erf" would otherwise do nothing and
+    // leave the lane wherever the default rule put it.
+    for (const auto& entry : amrex::ParmParse::getEntries(lane_source_prefix)) {
+        const std::string lane_name = entry.substr(lane_source_prefix.size() + 1);
+        bool known = false;
+        for (const auto& candidate : coupling::AtmosToOceanLaneSpecs()) {
+            if (lane_name == candidate.name) { known = true; break; }
+        }
+        if (!known) {
+            std::string valid;
+            for (const auto& candidate : coupling::AtmosToOceanLaneSpecs()) {
+                if (candidate.index >= coupling::NumAtmosToOceanStateLayers) { break; }
+                if (!valid.empty()) { valid += ", "; }
+                valid += candidate.name;
+            }
+            amrex::Abort(entry + " names no atmos->ocean lane. Valid lanes: " + valid + ".");
+        }
+    }
+
+    const auto& state_indices = m_atmos_to_ocean_state_active_indices;
+    for (int local = 0; local < static_cast<int>(state_indices.size()); ++local) {
+        const int global_idx = state_indices[local];
+        const auto& spec = coupling::AtmosToOceanLane(global_idx);
+
+        const bool erf_can_fill =
+            (local < static_cast<int>(erf_can_fill_state.size())) && erf_can_fill_state[local] != 0;
+        const bool deck_owns =
+            (local < static_cast<int>(deck_configured.size())) && deck_configured[local] != 0;
+
+        std::string requested = "auto";
+        const bool has_override = pp_lane.query(spec.name, requested);
+        requested = amrex::toLower(requested);
+        if (has_override && requested != "erf" && requested != "remora" && requested != "auto") {
+            amrex::Abort("driver.atm2ocn_lane_source." + std::string(spec.name) + " = " + requested +
+                         " is not a source. Valid values: erf, remora, auto.");
+        }
+
+        coupling::LaneSource source = coupling::LaneSource::RemoraDefault;
+        std::string reason;
+
+        if (has_override && requested == "erf") {
+            // Unsatisfiable, not a preference: the lane would reach REMORA
+            // holding the driver's prefill. Say so rather than quietly obeying.
+            if (!erf_can_fill) {
+                amrex::Abort("driver.atm2ocn_lane_source." + std::string(spec.name) +
+                             " = erf, but ERF's pack does not fill the " + spec.name +
+                             " lane in this configuration, so the lane would carry only the "
+                             "driver's prefill. Configure ERF to produce it, or drop the override.");
+            }
+            source = coupling::LaneSource::Erf;
+            reason = "forced by driver.atm2ocn_lane_source." + std::string(spec.name) + "=erf";
+        } else if (has_override && requested == "remora") {
+            source = deck_owns ? coupling::LaneSource::RemoraDeck
+                               : coupling::LaneSource::RemoraDefault;
+            reason = "withheld by driver.atm2ocn_lane_source." + std::string(spec.name) + "=remora";
+        } else if (deck_owns) {
+            // The one case where ERF could supply a lane and deliberately does not.
+            source = coupling::LaneSource::RemoraDeck;
+            reason = spec.remora_type_key != nullptr
+                         ? "remora." + std::string(spec.remora_type_key) + " or its value set in deck"
+                         : std::string("set in deck");
+        } else if (erf_can_fill) {
+            source = coupling::LaneSource::Erf;
+            reason = "packed by ERF";
+        } else {
+            source = coupling::LaneSource::RemoraDefault;
+            reason = "ERF does not fill it; REMORA default stands";
+        }
+
+        m_atmos_to_ocean_lane_source[global_idx] = source;
+        m_atmos_to_ocean_lane_reason[global_idx] = reason;
+    }
+
+    // Flux lanes are reported but never withheld: ApplyAtmosphericFluxes skips
+    // the whole application if any of the eight is null. Recorded so the report
+    // can still say which ones ERF computes.
+    const auto& flux_indices = m_atmos_to_ocean_flux_active_indices;
+    for (int local = 0; local < static_cast<int>(flux_indices.size()); ++local) {
+        const int global_idx = flux_indices[local];
+        if (global_idx < coupling::TauX) {
+            continue; // SWrad/LWrad/Rain sit in both views; the state pass owns them.
+        }
+        const bool erf_can_fill =
+            (local < static_cast<int>(erf_can_fill_flux.size())) && erf_can_fill_flux[local] != 0;
+        m_atmos_to_ocean_lane_source[global_idx] =
+            erf_can_fill ? coupling::LaneSource::Erf : coupling::LaneSource::RemoraDefault;
+        m_atmos_to_ocean_lane_reason[global_idx] =
+            erf_can_fill ? "packed by ERF"
+                         : "ERF does not compute it; passed as zero (flux mode passes every lane)";
+    }
+
+    // The one lane ERF fills that REMORA would otherwise ignore: lwrad_type
+    // defaults to "computed", under which bulk_fluxes gets a null longwave
+    // pointer and uses Berliand, so copying ERF's longwave in accomplishes
+    // nothing. A deck that set lwrad_type resolved to RemoraDeck above and never
+    // reaches here, so this cannot override an explicit choice.
+    if (m_atmos_to_ocean_lane_source[coupling::LWrad] == coupling::LaneSource::Erf) {
+        SetREMORALongwaveFromDriver(m_remora);
+        m_atmos_to_ocean_lane_reason[coupling::LWrad] +=
+            "; REMORA longwave set to external downward";
+    }
+
+    m_atmos_to_ocean_lane_sources_resolved = true;
+}
+
+void
+ERFRemoraMultiBlockContainer::PrintAtmosToOceanLaneProvenance () const
+{
+    amrex::Print() << "Atmos->ocean lane provenance (configured mode="
+                   << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract) << ")\n"
+                   << "  " << PadTo("lane", 8) << PadTo("source", 8) << "reason\n";
+
+    auto print_lane = [&](int global_idx) {
+        const auto& spec = coupling::AtmosToOceanLane(global_idx);
+        amrex::Print() << "  " << PadTo(spec.name, 8)
+                       << PadTo(coupling::LaneSourceName(m_atmos_to_ocean_lane_source[global_idx]), 8)
+                       << m_atmos_to_ocean_lane_reason[global_idx] << "\n";
+    };
+
+    for (int global_idx : m_atmos_to_ocean_state_active_indices) {
+        print_lane(global_idx);
+    }
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        amrex::Print() << "  (above is the ocean_step=0 bootstrap; steady-state flux lanes follow)\n";
+        for (int global_idx : m_atmos_to_ocean_flux_active_indices) {
+            if (global_idx >= coupling::TauX) { print_lane(global_idx); }
+        }
+    }
+    amrex::Print() << "  A lane sourced from REMORA is withheld from the apply view, so REMORA's own\n"
+                      "  forcing for it stands. Override per lane with "
+                      "driver.atm2ocn_lane_source.<lane>.\n";
+}
+
+void
+ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView ()
+{
+    const auto active_contract = ActiveAtmosToOceanContract();
     if (active_contract == coupling::AtmosToOceanContract::FluxPassing) {
         m_atmos_to_ocean_active = m_atmos_to_ocean_flux_active;
         m_atmos_to_ocean_active_indices = m_atmos_to_ocean_flux_active_indices;
@@ -2928,54 +3920,28 @@ ERFRemoraMultiBlockContainer::SelectAtmosToOceanActiveView (long long ocean_step
         m_atmos_to_ocean_active_names = m_atmos_to_ocean_state_active_names;
     }
 
-    // The view actually handed to REMORA. It is the active view with any lane
-    // nulled that ERF cannot fill, because REMORA decides per lane whether the
-    // driver is authoritative purely from the pointer being non-null
-    // (REMORA.cpp:1220 reads NetCDF shortwave only when the driver did not supply
-    // it). Handing over a lane of zeros therefore does not mean "no contribution",
-    // it means "the atmosphere says zero" - and silently disables REMORA's own
-    // NetCDF radiation. Nulling the lane instead lets that fallback stand.
+    // The view handed to REMORA: the active view with every lane the driver does
+    // not own nulled. REMORA reads authority purely from the pointer being
+    // non-null, so a lane the atmosphere never wrote would read as "the
+    // atmosphere says this" and displace REMORA's own forcing. Withholding is
+    // how the driver declines a lane.
     //
-    // State contract only. The flux contract has no such fallback: REMORA's
+    // ResolveAtmosToOceanLaneSources() decided which; this only applies it.
+    //
+    // State contract only. The flux contract has no per-lane fallback: REMORA's
     // ApplyAtmosphericFluxes requires all eight lanes non-null and skips the whole
     // application if any is missing, so withholding there would disable every flux
     // rather than one. In flux mode a zero radiative flux is at least a truthful
     // statement that the atmosphere computed none.
     m_atmos_to_ocean_apply_view = m_atmos_to_ocean_active;
     if (active_contract == coupling::AtmosToOceanContract::StatePassing &&
-        m_erf != nullptr) {
-        const bool has_radiation = ERFHasRadiation(m_erf);
-        // ERF fills the Cloud lane only when moisture is active and carries cloud
-        // liquid or ice; otherwise the lane holds just the driver prefill, and
-        // passing it would mark it authoritative in REMORA and suppress REMORA's
-        // own cloud forcing (remora.cloud_type).
-        const bool has_cloud_water = ERFHasCloudWater(m_erf);
+        m_atmos_to_ocean_lane_sources_resolved) {
         for (int local_idx = 0;
              local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
             const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
-            if (!has_radiation &&
-                (global_idx == coupling::SWrad || global_idx == coupling::LWrad)) {
+            if (m_atmos_to_ocean_lane_source[global_idx] != coupling::LaneSource::Erf) {
                 m_atmos_to_ocean_apply_view[local_idx] = nullptr;
             }
-            if (!has_cloud_water && global_idx == coupling::Cloud) {
-                m_atmos_to_ocean_apply_view[local_idx] = nullptr;
-            }
-        }
-        if (!has_cloud_water && !m_warned_no_erf_cloud_water) {
-            m_warned_no_erf_cloud_water = true;
-            amrex::Print() << "[driver] ERF has no cloud condensate (no moisture model, or one "
-                              "without cloud liquid/ice), so the Cloud atmos->ocean lane is "
-                              "withheld rather than passed as the constant driver prefill. REMORA "
-                              "keeps whatever cloud forcing its own configuration provides "
-                              "(remora.cloud_type).\n";
-        }
-        if (!has_radiation && !m_warned_no_erf_radiation) {
-            m_warned_no_erf_radiation = true;
-            amrex::Print() << "[driver] ERF reports no active radiation model, so the SWrad/LWrad "
-                              "atmos->ocean lanes are withheld rather than passed as zeros. REMORA "
-                              "keeps whatever radiative forcing its own configuration provides "
-                              "(remora.swrad_type / remora.lwrad_type). Enable ERF radiation to "
-                              "couple radiation from the atmosphere instead.\n";
         }
     }
 }
@@ -2989,9 +3955,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 {
     BL_PROFILE("Driver::Build_Comm_Metadata");
     if (m_use_two_way_coupling) {
-        PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+        PrintDiagnostics("Initial ocean->atmos cache", m_ocean_to_atmos,
+                         coupling::OceanToAtmosNames(), true);
     }
-    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+    PrintDiagnostics("Initial atmos->ocean cache", m_atmos_to_ocean_active,
+                     m_atmos_to_ocean_active_names, false);
 
 
     // Multi-rate clock rationale:
@@ -3043,6 +4011,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
     };
 
+    SelectAtmosToOceanActiveView();
+    const bool averaging_active = AtmosToOceanAveragingActive();
     for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
         bool stop_coupling = false;
         if (m_atm_tick >= expected_atm_ticks) {
@@ -3054,16 +4024,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         const amrex::Real ocean_time = m_ocean_time_offset + m_atm_tick * m_erf_dt;
         const long long global_ocean_step =
             m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
-        SelectAtmosToOceanActiveView(global_ocean_step);
         const bool use_state_contract =
-            (ActiveAtmosToOceanContract(global_ocean_step) == coupling::AtmosToOceanContract::StatePassing);
-        if (global_ocean_step == 0 && amrex::ParallelDescriptor::IOProcessor()) {
-            amrex::Print() << "Bootstrap atm2ocn contract at ocean_step=0: "
-                           << (use_state_contract ? "state" : "flux")
-                           << " (configured mode="
-                           << coupling::AtmosToOceanContractName(m_atmos_to_ocean_contract)
-                           << ")\n";
-        }
+            (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::StatePassing);
         DriverPrintLine(
             m_driver_verbose,
             std::string("ocean_step=") + std::to_string(global_ocean_step) +
@@ -3080,29 +4042,24 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 std::string("ocean_step=") + std::to_string(global_ocean_step) +
                     " pack ocean->atmos surface state from REMORA at time=" +
                     std::to_string(ocean_time));
-            pack_surface_state(m_ocean_to_atmos, ocean_time);
+            pack_surface_state(m_ocean_to_atmos, ocean_time, global_ocean_step);
             FillOceanToAtmosGhosts();
         }
-        DriverPrintLine(
-            m_driver_verbose,
-            std::string("ocean_step=") + std::to_string(global_ocean_step) +
-                " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
-                " from ERF at time=" + std::to_string(ocean_time));
-        pack_atmos_states(m_atmos_to_ocean_active, ocean_time);
-        if (m_plot_int_exchange > 0 &&
-            (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
-            WriteExchangePlotfiles(ocean_time, global_ocean_step);
-        }
-        FillAtmosToOceanGhosts();
-        DriverPrintLine(
-            m_driver_verbose,
-            std::string("ocean_step=") + std::to_string(global_ocean_step) +
-                " apply atmos->ocean " + (use_state_contract ? "state" : "flux") +
-                " to REMORA at time=" + std::to_string(ocean_time));
-        // Masked view: lanes ERF cannot fill are nulled so REMORA keeps its own
-        // forcing for them (see SelectAtmosToOceanActiveView).
-        apply_atmos_states(m_atmos_to_ocean_apply_view, ocean_time);
 
+        if (averaging_active) {
+            ResetAtmosToOceanAccumulators();
+        }
+
+        // At global_ocean_step 0 on a cold start the atmosphere has not advanced
+        // yet, so ERF's diagnostic flux arrays (Tau, SFS_*) still hold the
+        // setVal(zero) from allocation in ERF_MakeNewArrays.cpp rather than a
+        // physical state at t. Sampling them as the trapezoid's left endpoint
+        // would fold an exact zero into the interval mean at weight 0.5/n. So
+        // skip that sample and reconstruct f(t) from the first two post-advance
+        // samples instead -- see the weight correction below. On a restart Tau is
+        // checkpointed and m_atm_tick is restored, so global_ocean_step > 0 and
+        // the ordinary trapezoid runs untouched.
+        const bool cold_start_extrapolate = (global_ocean_step == 0);
 
         for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
@@ -3113,6 +4070,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 stop_coupling = true;
                 break;
             }
+
+            if (averaging_active && substep == 0 && !cold_start_extrapolate) {
+                pack_atmos_states(m_atmos_to_ocean_active, ocean_time, global_ocean_step);
+                AccumulateAtmosToOcean(amrex::Real(0.5));
+            }
             const amrex::Real atm_time = m_atm_tick * m_erf_dt;
 
             BL_PROFILE("Driver::Time_Interpolate");
@@ -3122,7 +4084,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                     std::string("atm_tick=") + std::to_string(m_atm_tick) +
                         " apply ocean->atmos surface state to ERF at time=" +
                         std::to_string(atm_time));
-                apply_ocean_surface_state(m_ocean_to_atmos, atm_time);
+                apply_ocean_surface_state(m_ocean_to_atmos, atm_time, global_ocean_step);
             }
             const amrex::Real dt_used = ERFEvolveOneStep(m_erf, atm_time, m_erf_dt);
             if (dt_used == amrex::Real(0.0)) {
@@ -3138,11 +4100,78 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             enforce_dt("ERF", m_erf_dt, dt_used, ocean_step, substep);
 
             ++m_atm_tick;
+
+            if (averaging_active) {
+                const amrex::Real substep_end_time =
+                    ocean_time + static_cast<amrex::Real>(substep + 1) * m_erf_dt;
+                pack_atmos_states(m_atmos_to_ocean_active,
+                                  substep_end_time, global_ocean_step);
+                amrex::Real sample_weight =
+                    (substep == m_atm_substeps_per_ocean_step - 1)
+                        ? amrex::Real(0.5) : amrex::Real(1.0);
+                // Cold-start reconstruction of the left endpoint skipped above.
+                // Linear extrapolation f(t) ~= 2*f1 - f2 is exact for linear
+                // forcing, which is the property the trapezoid was chosen for, so
+                // folding 0.5*f(t) into the sum adds +1.0 to f1's weight and
+                // -0.5 to f2's and leaves the total at n:
+                //   n=10 -> 2.0 + 0.5 + 7*1.0 + 0.5 = 10.
+                // At n=2 the last-substep 0.5 and this -0.5 cancel, so f2 drops
+                // out and the mean collapses to f1 -- the interval midpoint,
+                // which is the exact linear answer over [t, t+2*dt]. At n=1 there
+                // is no f2 to extrapolate from, so the correction is skipped
+                // entirely; DrainAtmosToOceanAccumulators divides by the total
+                // accumulated weight, so that interval degrades cleanly to the
+                // single sample f1 rather than being mis-normalized.
+                if (cold_start_extrapolate && m_atm_substeps_per_ocean_step >= 2) {
+                    if (substep == 0) {
+                        sample_weight += amrex::Real(1.0);
+                    } else if (substep == 1) {
+                        sample_weight -= amrex::Real(0.5);
+                    }
+                }
+                AccumulateAtmosToOcean(sample_weight);
+            }
         }
 
         if (stop_coupling) {
             break;
         }
+
+        // An interval mean is stamped at its midpoint. With averaging disabled,
+        // preserve commit 1's interval-end sample and label exactly.
+        const amrex::Real a2o_sample_time =
+            averaging_active ? ocean_time + amrex::Real(0.5) * dt_ocn_request
+                             : ocean_time + dt_ocn_request;
+        if (averaging_active) {
+            DriverPrintLine(
+                m_driver_verbose,
+                std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                    " drain atmos->ocean time average at time=" +
+                    std::to_string(a2o_sample_time));
+            DrainAtmosToOceanAccumulators();
+        } else {
+            DriverPrintLine(
+                m_driver_verbose,
+                std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                    " pack atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                    " from ERF at time=" + std::to_string(a2o_sample_time));
+            pack_atmos_states(m_atmos_to_ocean_active, a2o_sample_time, global_ocean_step);
+        }
+        if (m_plot_int_exchange > 0 &&
+            (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
+            // O2A was packed at ocean_time, A2O at a2o_sample_time; stamp each
+            // with the instant it actually represents.
+            WriteExchangePlotfiles(ocean_time, a2o_sample_time, dt_ocn_request, global_ocean_step);
+        }
+        FillAtmosToOceanGhosts();
+        DriverPrintLine(
+            m_driver_verbose,
+            std::string("ocean_step=") + std::to_string(global_ocean_step) +
+                " apply atmos->ocean " + (use_state_contract ? "state" : "flux") +
+                " to REMORA at time=" + std::to_string(a2o_sample_time));
+        // Masked view: lanes ERF cannot fill are nulled so REMORA keeps its own
+        // forcing for them (see SelectAtmosToOceanActiveView).
+        apply_atmos_states(m_atmos_to_ocean_apply_view, a2o_sample_time, global_ocean_step);
 
         const amrex::Real ocn_dt_used = REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request);
         if (ocn_dt_used == amrex::Real(0.0)) {
@@ -3160,9 +4189,11 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                            << " at atmosphere tick " << m_atm_tick << "\n";
 
         if (m_use_two_way_coupling) {
-            PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos, coupling::OceanToAtmosNames());
+            PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos,
+                             coupling::OceanToAtmosNames(), true);
         }
-        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active, m_atmos_to_ocean_active_names);
+        PrintDiagnostics("Atmos->ocean cache", m_atmos_to_ocean_active,
+                         m_atmos_to_ocean_active_names, false);
     }
     REMORAWriteAtFinalTime(m_remora);
     ERFWriteAtFinalTime(m_erf);

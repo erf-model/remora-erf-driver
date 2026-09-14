@@ -24,6 +24,15 @@ set(ERF_REMORA_TEST_FCOMPARE_ATOL "2.0e-10" CACHE STRING
     "Absolute tolerance for top-level ERF fcompare-based regression checks")
 set(ERF_REMORA_RRTMGP_DIR "" CACHE PATH
     "Path to RRTMGP data directory for top-level restart regression tests")
+# Rank counts swept by the upwelling parallel tests. Each entry multiplies the
+# suite by two tests per case/mode/variant, and each test writes a full plotfile
+# set, so this is the main lever on both CI wall clock and CI disk. A
+# GitHub-hosted runner has four cores; 6 and 8 oversubscribe it, which is slow
+# and is the concurrency hazard b9c1ce8 describes. ERF makes the same choice
+# from the other direction (ERF_PARALLEL_TEST_NRANKS defaults to '1;2;4' and
+# oversubscription is opt-in). Pass "2;4;6;8" to restore the full sweep.
+set(ERF_REMORA_PARALLEL_TEST_NRANKS "2;4" CACHE STRING
+    "Semicolon-separated MPI rank counts for the upwelling parallel tests")
 message(STATUS "ERF-REMORA symbol policy: prefixed (fixed)")
 
 if(ERF_REMORA_ENABLE_OPENMP)
@@ -494,7 +503,7 @@ if(ERF_REMORA_ENABLE_TESTS)
       list(GET _case_fields 0 _case_name)
       list(GET _case_fields 1 _case_input)
       foreach(_atm2ocn_mode IN LISTS _erf_remora_atm2ocn_modes)
-        foreach(_mpi_nprocs 2 4 6 8)
+        foreach(_mpi_nprocs IN LISTS ERF_REMORA_PARALLEL_TEST_NRANKS)
           erf_remora_add_parallel_tests(
             parallel_upwelling_${_case_name}_${_atm2ocn_mode}_matched
             ${_case_input}

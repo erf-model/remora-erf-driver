@@ -1,0 +1,92 @@
+name: Parallel Full Sweep
+
+# The per-commit CI runs the upwelling parallel tests at 2 and 4 ranks, which
+# is what fits a four-core GitHub runner. This workflow keeps the 6- and 8-rank
+# coverage that used to run on every push, at a cadence where an hour-plus job
+# and an oversubscribed runner are acceptable.
+#
+# Manual for now. Uncomment the schedule once CI is reliably green -- there is
+# no point spending a weekly hour on a suite that is failing anyway.
+
+on:
+  workflow_dispatch:
+    inputs:
+      nranks:
+        description: 'Semicolon-separated MPI rank counts'
+        required: false
+        default: '2;4;6;8'
+  # schedule:
+  #   - cron: '0 8 * * 0'
+
+concurrency:
+  group: ${{ github.ref }}-parallel-full-sweep
+  cancel-in-progress: false
+
+jobs:
+  full-sweep:
+    runs-on: ubuntu-22.04
+    env:
+      BUILD_NPROCS: 4
+      PARALLEL_TEST_NRANKS: ${{ inputs.nranks || '2;4;6;8' }}
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: true
+
+    - name: Free disk space on Ubuntu
+      uses: ./.github/actions/free-space-ubuntu
+
+    - name: Install MPI and tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y mpich libmpich-dev ccache
+
+    - name: Restore ccache
+      id: ccache-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ github.workflow }}-${{ github.job }}-git-${{ github.sha }}
+        restore-keys: |
+             ccache-${{ github.workflow }}-${{ github.job }}-git-
+
+    - name: Configure
+      run: |
+        cmake -S . -B build \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DCMAKE_C_COMPILER=mpicc \
+          -DCMAKE_CXX_COMPILER=mpicxx \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DERF_REMORA_ENABLE_TESTS=ON \
+          -DREMORA_ENABLE_PNETCDF=OFF \
+          -DERF_ENABLE_NETCDF=OFF \
+          -DERF_ENABLE_RRTMGP=OFF \
+          -DERF_REMORA_PARALLEL_TEST_NRANKS="$PARALLEL_TEST_NRANKS"
+
+    - name: Build
+      run: |
+        export CCACHE_COMPRESS=1
+        export CCACHE_COMPRESSLEVEL=10
+        export CCACHE_MAXSIZE=600M
+        ccache -z
+        cmake --build build --parallel $BUILD_NPROCS
+        ccache -s
+
+    - name: Save ccache
+      if: always() && steps.ccache-restore.outputs.cache-primary-key != ''
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/ccache
+        key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
+
+    - name: Parallel Tests
+      run: |
+        ctest --test-dir build -L parallel --output-on-failure --no-tests=error
+
+    - name: Report disk usage
+      if: always()
+      run: |
+        df -h
+        du -sh build 2>/dev/null || true

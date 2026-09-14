@@ -203,3 +203,14 @@ if(_mpi_compare_failed_checks)
   string(JOIN "\n" _failure_summary ${_mpi_compare_failed_checks})
   message(FATAL_ERROR "${_failure_summary}")
 endif()
+
+# Reaching here means every check passed, so the plotfiles have no further use.
+# The work directory is cleared on entry but never on exit, and ctest keeps all
+# of them for the length of the run; at the current matrix size that is enough
+# accumulated output to exhaust a GitHub-hosted runner's disk mid-suite. Every
+# failure path above exits through FATAL_ERROR, so a failing test still leaves
+# its outputs behind for inspection. Set ERF_REMORA_TEST_KEEP_WORK_DIR=1 in the
+# environment to keep them for a passing test too.
+if(NOT "$ENV{ERF_REMORA_TEST_KEEP_WORK_DIR}")
+  file(REMOVE_RECURSE "${_work_dir}")
+endif()

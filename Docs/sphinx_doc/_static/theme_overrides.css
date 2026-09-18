@@ -1,0 +1,16 @@
+/* Overrides for wide tables in the RTD theme.
+ *
+ * The theme wraps tables in .wy-table-responsive with overflow-x hidden, which
+ * clips rather than scrolls. The driver.* parameter reference is a wide table
+ * (key, type, accepted values, default, meaning), so without this it is
+ * unreadable at narrower widths. Both AMReX and Castro ship the same override.
+ */
+
+.wy-table-responsive table td,
+.wy-table-responsive table th {
+    white-space: normal;
+}
+
+.wy-table-responsive {
+    overflow: visible !important;
+}

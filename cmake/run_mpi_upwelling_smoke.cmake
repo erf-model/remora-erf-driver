@@ -138,3 +138,12 @@ if(_mpi_smoke_status_lines)
   string(JOIN "\n" _status_summary ${_mpi_smoke_status_lines})
   message(STATUS "===== MPI SMOKE SUMMARY (${_rank_tag}) =====\n${_status_summary}")
 endif()
+
+# See the matching comment in run_mpi_upwelling_compare.cmake: the work
+# directory is cleared on entry but never on exit, and the accumulated plotfiles
+# fill a GitHub-hosted runner's disk. Every failure path above exits through
+# FATAL_ERROR, so this only discards the output of a passing test. Set
+# ERF_REMORA_TEST_KEEP_WORK_DIR=1 in the environment to keep it anyway.
+if(NOT "$ENV{ERF_REMORA_TEST_KEEP_WORK_DIR}")
+  file(REMOVE_RECURSE "${_work_dir}")
+endif()

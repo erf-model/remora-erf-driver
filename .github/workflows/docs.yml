@@ -1,0 +1,48 @@
+name: Docs
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.ref }}-${{ github.head_ref }}-docs
+  cancel-in-progress: true
+
+jobs:
+  sphinx:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # The driver's documentation covers only what the driver owns, so it
+          # needs no ERF or REMORA sources. Intersphinx reaches their published
+          # inventories over the network instead.
+          submodules: false
+
+      - name: Set Up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r Docs/sphinx_doc/requirements.txt
+
+      # ERF and REMORA go through Docs/BuildDocs.sh, which exists mainly to run
+      # doxygen and is followed by a deploy step. The driver has neither a
+      # doxygen configuration nor a docs repository to publish to, so the make
+      # target is called directly.
+      - name: Build Docs
+        run: |
+          make -C Docs/sphinx_doc html SPHINXOPTS="-W --keep-going"
+
+      # Advisory. linkcheck reaches third-party sites, so a failure here is
+      # more often their outage than a fault in the change under test. ERF has
+      # this step commented out and REMORA gates on it; this is the middle.
+      - name: Check Links
+        continue-on-error: true
+        run: |
+          make -C Docs/sphinx_doc linkcheck SPHINXOPTS="-W --keep-going"

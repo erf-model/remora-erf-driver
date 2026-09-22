@@ -14,6 +14,8 @@ amr.blocking_factor_x = 1
 amr.blocking_factor_y = 1
 amr.blocking_factor_z = 1
 
+amr.no_box_split_dir = 2
+
 # Periodic in N/S direction
 erf.is_periodic      = 0 1 0
 

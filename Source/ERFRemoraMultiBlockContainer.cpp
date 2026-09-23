@@ -86,19 +86,24 @@ enum class OwnerMatchStatus : int {
     WaterOutside,       // ERF water, ocean grid does not reach: keeps ERF's SST
     WaterOceanDry,      // ERF water, every overlapping REMORA cell dry: keeps ERF's SST
     WaterThin,          // ERF water, wet overlap below remap_min_coverage_frac
-    LandOceanWet,       // ERF land, wet REMORA overlap: SST dropped, ERF land surface
-    Land,               // ERF land, no wet overlap: both models agree
+    LandOceanWet,       // ERF land, wet REMORA overlap >= threshold: SST dropped
+    Land,               // ERF land, no or thin wet overlap: both models agree
+    Degenerate,         // zero-area ERF cell in the corner mesh: skipped
     NumStatus
 };
 
-// Cell count for one OwnerMatchStatus (or one A2O verdict) plus one example cell.
-// The example is the smallest flat (i,j) index over the destination domain, so it
-// names the same cell under any decomposition and log lines compare between runs.
-// reduce() is collective.
+// Cell count for one OwnerMatchStatus (or one A2O verdict), one example cell and
+// the i/j bounding box. The example is the smallest flat (i,j) index over the
+// destination domain, so it names the same cell under any decomposition; the box
+// tells a coastline sliver from a band of misalignment. reduce() is collective.
 struct OwnerMatchTally
 {
     amrex::Long count = 0;
     amrex::Long first = std::numeric_limits<amrex::Long>::max();
+    int ilo = std::numeric_limits<int>::max();
+    int jlo = std::numeric_limits<int>::max();
+    int ihi = std::numeric_limits<int>::lowest();
+    int jhi = std::numeric_limits<int>::lowest();
 
     void add (const amrex::Box& domain, int i, int j) {
         ++count;
@@ -106,11 +111,23 @@ struct OwnerMatchTally
             static_cast<amrex::Long>(j - domain.smallEnd(1)) * domain.length(0)
             + static_cast<amrex::Long>(i - domain.smallEnd(0));
         first = std::min(first, flat);
+        ilo = std::min(ilo, i);  ihi = std::max(ihi, i);
+        jlo = std::min(jlo, j);  jhi = std::max(jhi, j);
     }
 
     void reduce () {
         amrex::ParallelDescriptor::ReduceLongSum(count);
         amrex::ParallelDescriptor::ReduceLongMin(first);
+        amrex::ParallelDescriptor::ReduceIntMin(ilo);
+        amrex::ParallelDescriptor::ReduceIntMin(jlo);
+        amrex::ParallelDescriptor::ReduceIntMax(ihi);
+        amrex::ParallelDescriptor::ReduceIntMax(jhi);
+    }
+
+    // "i[a..b] j[c..d]"; only meaningful when count > 0.
+    std::string extent () const {
+        return "i[" + std::to_string(ilo) + ".." + std::to_string(ihi) + "] j["
+             + std::to_string(jlo) + ".." + std::to_string(jhi) + "]";
     }
 
     amrex::IntVect example (const amrex::Box& domain) const {
@@ -1310,7 +1327,8 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
             const IntVect ex = donor_example.example(stagger_domain);
             amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_donor_filled
                            << " of " << n_wet << " REMORA wet cells (e.g. REMORA (" << ex[0]
-                           << "," << ex[1] << ")) have no ERF source cell of "
+                           << "," << ex[1] << "); " << donor_example.extent()
+                           << ") have no ERF source cell of "
                            << "their own and were donor-filled from the nearest non-land ERF "
                            << "cell (driver.remap_donor_fill=coawst). Each carries a "
                            << "neighbour's atmospheric state, not its own, and the full-weight "
@@ -1325,7 +1343,8 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
             const IntVect ex = wet_uncovered_example.example(stagger_domain);
             amrex::Print() << "[driver] WARNING remap (" << label << "): " << n_wet_uncovered
                            << " of " << n_wet << " REMORA wet cells (e.g. REMORA (" << ex[0]
-                           << "," << ex[1] << ")) have no ERF water source overlap. "
+                           << "," << ex[1] << "); " << wet_uncovered_example.extent()
+                           << ") have no ERF water source overlap. "
                            << "ApplyConservativeRemap in Submodules/ERF/Source/Coupling/"
                            << "ERF_to_REMORA.cpp branches on the -1 index sentinel and assigns a "
                            << "per-lane fallback: Patm=101325 Pa and Tair=288.15 K are the "
@@ -2994,15 +3013,17 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         const Box dst_domain = m_valid_o2a_mf->boxArray().minimalBox();
         std::array<OwnerMatchTally, static_cast<int>(OwnerMatchStatus::NumStatus)> owner_match;
 
-        // ERF's land mask lives on the solver's cell layout; copy it onto the O2A
-        // layout and check nothing was lost, since a copy between non-intersecting
-        // layouts would silently report every cell as water.
-        MultiFab land_dst(m_ba, m_dm, 1, 0);
-        land_dst.setVal(0.0);
-        if (m_erf_land_mask) {
-            land_dst.ParallelCopy(*m_erf_land_mask, 0, 0, 1);
+        // ERF's land mask, read from ERF directly: m_erf_land_mask exists only in
+        // the spherical frame. Copied onto the O2A layout and checked, since a copy
+        // between non-intersecting layouts would silently report every cell as water.
+        const iMultiFab* erf_is_land = nullptr;
+        if (m_erf != nullptr) { ERFGetLandMask(m_erf, &erf_is_land); }
+        iMultiFab land_dst(m_ba, m_dm, 1, 0);
+        land_dst.setVal(0);
+        if (erf_is_land != nullptr) {
+            land_dst.ParallelCopy(*erf_is_land, 0, 0, 1);
             AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-                land_dst.sum(0) == m_erf_land_mask->sum(0),
+                land_dst.sum(0) == erf_is_land->sum(0),
                 "BuildOceanToAtmosWeights: ERF land mask did not copy onto the O2A layout.");
         }
 
@@ -3013,6 +3034,50 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
             if (!any_wet)      { return any_geometric ? OwnerMatchStatus::WaterOceanDry
                                                       : OwnerMatchStatus::WaterOutside; }
             return enough ? OwnerMatchStatus::Coupled : OwnerMatchStatus::WaterThin;
+        };
+
+        // Shared by the spherical and Cartesian loops once `overlaps` holds this
+        // destination cell's wet REMORA overlaps: classify, flag, store the stencil.
+        //
+        // Coverage is thresholded on area rather than on whether any overlap exists
+        // at all. A sliver overlap is worse than no overlap: normalization cannot
+        // turn 1e-6 destination coverage into a trustworthy ocean answer, so it
+        // keeps ERF's own lower-boundary SST. Thresholds of this kind are standard:
+        // CESM drops mapping below a destination fraction of 0.001, OASIS/CERFACS
+        // at 1/1000. classify() tests the overlap count as well as the fraction:
+        // with remap_min_coverage_frac set to 0, a cell no ocean cell touches has
+        // covered_frac == 0, and 0 >= 0 would otherwise report it as covered.
+        // ERF land is never valid, even under a wet ocean cell.
+        auto finish_cell = [&] (int i, int j, Real dst_area, Real covered_frac,
+                                bool any_geometric_overlap, bool is_land,
+                                Array4<Real> const& weight_arr, Array4<int> const& index_arr,
+                                Array4<int> const& valid_arr)
+        {
+            const OwnerMatchStatus status =
+                classify(is_land, !overlaps.empty(), any_geometric_overlap, covered_frac);
+            owner_match[static_cast<int>(status)].add(dst_domain, i, j);
+            if (overlaps.empty()) { return; }
+
+            valid_arr(i, j, 0) = (status == OwnerMatchStatus::Coupled) ? 1 : 0;
+
+            max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
+            if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
+                dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
+                std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
+                                  overlaps.end(),
+                                  [] (const std::pair<Real,IntVect>& a,
+                                      const std::pair<Real,IntVect>& b) {
+                                      return a.first > b.first;
+                                  });
+                overlaps.resize(MAX_STENCIL_SIZE);
+            }
+
+            for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
+                weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
+                index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
+                index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
+                index_arr(i, j, 0, m * 3 + 2) = 0;
+            }
         };
 
         // O2A deliberately does not donor-fill uncovered ERF cells. They keep
@@ -3051,7 +3116,11 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                                                       Array4<const Real>(erf_node, 0),
                                                       Array4<const Real>(erf_node, 1));
                         const Real dst_area = PolygonArea(erf_poly);
-                        if (dst_area <= 0.0) continue;
+                        if (dst_area <= 0.0) {
+                            owner_match[static_cast<int>(OwnerMatchStatus::Degenerate)]
+                                .add(dst_domain, i, j);
+                            continue;
+                        }
 
                         const PlanarBBox erf_bbox = BBoxOfPolygon(erf_poly);
                         search.query(erf_bbox, candidates);
@@ -3089,51 +3158,8 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                             overlaps.emplace_back(intersect_area, IntVect(src_i, src_j, 0));
                         }
 
-                        const OwnerMatchStatus status =
-                            classify(land_arr(i,j,0) != Real(0.0), !overlaps.empty(),
-                                     any_geometric_overlap, covered_frac);
-                        owner_match[static_cast<int>(status)].add(dst_domain, i, j);
-                        if (overlaps.empty()) { continue; }
-
-                        // Coverage for this destination cell, thresholded on area
-                        // rather than on whether any overlap exists at all.
-                        //
-                        // A sliver overlap is worse than no overlap. The weights are
-                        // normalized below before REMORA's raw weighted sum, but
-                        // normalization cannot turn 1e-6 destination coverage into
-                        // a trustworthy ocean answer. Treating it as uncovered keeps
-                        // ERF's own lower-boundary SST.
-                        // Thresholds of this kind are standard: CESM drops mapping
-                        // below a destination fraction of 0.001, OASIS/CERFACS at
-                        // 1/1000.
-                        //
-                        // Wet REMORA coverage only: dry rho cells do not contribute
-                        // to coverage or to the SST stencil. classify() tests the
-                        // overlap count as well as the fraction: with
-                        // remap_min_coverage_frac set to 0, a cell no ocean cell
-                        // touches has covered_frac == 0, and 0 >= 0 would otherwise
-                        // report every uncovered cell as covered. ERF land is never
-                        // valid, even under a wet ocean cell.
-                        valid_arr(i, j, 0) = (status == OwnerMatchStatus::Coupled) ? 1 : 0;
-
-                        max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
-                        if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
-                            dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
-                            std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
-                                              overlaps.end(),
-                                              [] (const std::pair<Real,IntVect>& a,
-                                                  const std::pair<Real,IntVect>& b) {
-                                                  return a.first > b.first;
-                                              });
-                            overlaps.resize(MAX_STENCIL_SIZE);
-                        }
-
-                        for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
-                            weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
-                            index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
-                            index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
-                            index_arr(i, j, 0, m * 3 + 2) = 0;
-                        }
+                        finish_cell(i, j, dst_area, covered_frac, any_geometric_overlap,
+                                    land_arr(i,j,0) != 0, weight_arr, index_arr, valid_arr);
                     }
                 }
             }
@@ -3178,7 +3204,11 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                         };
 
                         Real dst_area = PolygonArea(erf_poly);
-                        if (dst_area <= 0.0) continue;
+                        if (dst_area <= 0.0) {
+                            owner_match[static_cast<int>(OwnerMatchStatus::Degenerate)]
+                                .add(dst_domain, i, j);
+                            continue;
+                        }
 
                         RealBox erf_bbox = erf_bounds;
                         Box remora_candidate_box = m_geom_ocn.Domain();
@@ -3224,51 +3254,8 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                             }
                         }
 
-                        const OwnerMatchStatus status =
-                            classify(land_arr(i,j,0) != Real(0.0), !overlaps.empty(),
-                                     any_geometric_overlap, covered_frac);
-                        owner_match[static_cast<int>(status)].add(dst_domain, i, j);
-                        if (overlaps.empty()) { continue; }
-
-                        // Coverage for this destination cell, thresholded on area
-                        // rather than on whether any overlap exists at all.
-                        //
-                        // A sliver overlap is worse than no overlap. The weights are
-                        // normalized below before REMORA's raw weighted sum, but
-                        // normalization cannot turn 1e-6 destination coverage into
-                        // a trustworthy ocean answer. Treating it as uncovered keeps
-                        // ERF's own lower-boundary SST.
-                        // Thresholds of this kind are standard: CESM drops mapping
-                        // below a destination fraction of 0.001, OASIS/CERFACS at
-                        // 1/1000.
-                        //
-                        // Wet REMORA coverage only: dry rho cells do not contribute
-                        // to coverage or to the SST stencil. classify() tests the
-                        // overlap count as well as the fraction: with
-                        // remap_min_coverage_frac set to 0, a cell no ocean cell
-                        // touches has covered_frac == 0, and 0 >= 0 would otherwise
-                        // report every uncovered cell as covered. ERF land is never
-                        // valid, even under a wet ocean cell.
-                        valid_arr(i, j, 0) = (status == OwnerMatchStatus::Coupled) ? 1 : 0;
-
-                        max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
-                        if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
-                            dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
-                            std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
-                                              overlaps.end(),
-                                              [] (const std::pair<Real,IntVect>& a,
-                                                  const std::pair<Real,IntVect>& b) {
-                                                  return a.first > b.first;
-                                              });
-                            overlaps.resize(MAX_STENCIL_SIZE);
-                        }
-
-                        for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
-                            weight_arr(i, j, 0, m) = overlaps[m].first / dst_area;
-                            index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
-                            index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
-                            index_arr(i, j, 0, m * 3 + 2) = 0;
-                        }
+                        finish_cell(i, j, dst_area, covered_frac, any_geometric_overlap,
+                                    land_arr(i,j,0) != 0, weight_arr, index_arr, valid_arr);
                     }
                 }
             }
@@ -3277,8 +3264,11 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         // No wet mask and no donor flag: O2A reports coverage over all ERF cells,
         // and the donor search is an atmosphere->ocean-only mechanism, so there is
         // no donor category to separate out here.
+        // Its counts are stencils, which ERF-land cells under wet ocean keep; the
+        // owner-match table below is the count of cells that take the coupled SST.
         NormalizeWeightsAndCheckConservation(*m_weight_o2a_mf, *m_index_o2a_mf,
-                                             nullptr, nullptr, "O2A SST");
+                                             nullptr, nullptr,
+                                             "O2A SST stencils; coupled cells in owner match below");
 
         for (auto& t : owner_match) { t.reduce(); }
 
@@ -3313,18 +3303,24 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         // mask disagreement surfaces is if the split is written down. A large
         // disagreement count against a short coastline is the signature of a grid
         // misalignment or a stale ocean mask rather than of correct withholding.
-        struct Line { OwnerMatchStatus s; const char* what; const char* effect; };
+        const std::string thin_effect = "keeps ERF SST; wet fraction < remap_min_coverage_frac="
+                                      + std::to_string(m_remap_min_coverage_frac);
+        struct Line { OwnerMatchStatus s; const char* what; std::string effect; };
         const Line lines[] = {
-            {OwnerMatchStatus::Coupled,       "ERF water, wet ocean donor",  "coupled SST"},
+            {OwnerMatchStatus::Coupled,       "ERF water, wet ocean donor",    "coupled SST"},
             {OwnerMatchStatus::WaterOutside,  "ERF water, outside ocean grid", "keeps ERF SST"},
-            {OwnerMatchStatus::WaterOceanDry, "ERF water, REMORA dry",       "keeps ERF SST; mask disagreement"},
-            {OwnerMatchStatus::WaterThin,     "ERF water, thin wet overlap", "keeps ERF SST; below remap_min_coverage_frac"},
-            {OwnerMatchStatus::LandOceanWet,  "ERF land, REMORA wet",        "SST dropped; mask disagreement"},
-            {OwnerMatchStatus::Land,          "ERF land, no wet ocean",      "masks agree"},
+            {OwnerMatchStatus::WaterOceanDry, "ERF water, REMORA dry",         "keeps ERF SST; mask disagreement"},
+            {OwnerMatchStatus::WaterThin,     "ERF water, thin wet overlap",   thin_effect},
+            {OwnerMatchStatus::LandOceanWet,  "ERF land, REMORA wet",          "SST dropped; mask disagreement"},
+            {OwnerMatchStatus::Land,          "ERF land, no/thin wet ocean",   "masks agree"},
+            {OwnerMatchStatus::Degenerate,    "zero-area ERF cell",            "skipped; degenerate corner mesh"},
         };
-        amrex::Long n_total = 0;
-        for (const auto& t : owner_match) { n_total += t.count; }
-        amrex::Print() << "[driver] O2A SST owner match over " << n_total << " ERF surface cells:\n";
+        const amrex::Long n_cells = m_valid_o2a_mf->boxArray().numPts();
+        amrex::Long n_classified = 0;
+        for (const auto& t : owner_match) { n_classified += t.count; }
+        amrex::Print() << "[driver] O2A SST owner match over " << n_cells << " ERF surface cells"
+                       << (m_remap_spherical ? " (lon/lat in REMORA's convention)" : " (x/y in m)")
+                       << ":\n";
         for (const auto& l : lines) {
             const auto& t = owner_match[static_cast<int>(l.s)];
             // Rank-uniform: counts are reduced, so every rank takes the same branch.
@@ -3333,8 +3329,12 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
             const std::string where = show_example ? locate(t.example(dst_domain)) : std::string{};
             amrex::Print() << "[driver]   " << std::left << std::setw(30) << l.what << std::right
                            << std::setw(9) << t.count << "  " << l.effect;
-            if (show_example) { amrex::Print() << " (e.g. " << where << ")"; }
+            if (show_example) { amrex::Print() << " (e.g. " << where << "; " << t.extent() << ")"; }
             amrex::Print() << "\n";
+        }
+        if (n_classified != n_cells) {
+            amrex::Print() << "[driver] WARNING O2A owner match: " << (n_cells - n_classified)
+                           << " ERF surface cells were not classified.\n";
         }
 
         // 1 where the cell is not Coupled, for the O2A min/max diagnostics, which

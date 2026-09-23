@@ -94,7 +94,7 @@ summarize () {
     local log="$1"
     echo
     echo "--- coupling diagnostics from $(basename "${log}") ---"
-    grep -E 'remap frame =|O2A coverage:|remap staging plan|O2A remap staging plan' "${log}" || true
+    grep -E 'remap frame =|O2A SST owner match|^\[driver\]   (ERF |zero-area)|remap staging plan|O2A remap staging plan' "${log}" || true
     # Warnings are the silent-degradation cases: donor fill, stencil overflow,
     # wet cells with no atmospheric source, non-overlapping longitudes.
     if grep -qE '^\[driver\] (WARNING|remap: [0-9])' "${log}"; then

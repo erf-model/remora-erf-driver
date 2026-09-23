@@ -195,9 +195,8 @@ for diagnostics that only the new code emits.
 
 Notes on this configuration:
 
-- `ERF_ENABLE_RRTMGP` is ON. The OCCAMS decks enable no radiation, so it is
-  compiled but unused; turning it off would speed the build but changes nothing
-  at runtime and forces a full rebuild.
+- `ERF_ENABLE_RRTMGP` is ON. `inputs_OCCAMS_maximal_1day` uses it; the other
+  OCCAMS decks run without radiation.
 - `ERF_ENABLE_NOAHMP` is ON. It pulls in the Noah-MP submodule (Fortran, hence
   `-DCMAKE_Fortran_COMPILER=ftn`) so `erf.land_surface_model = NOAHMP` is available
   at run time; the OCCAMS decks still run with the land model off until Noah-MP's

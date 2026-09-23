@@ -165,10 +165,12 @@ PNetCDF reads of the `pnetcdf_compat` files will not link.
 Configure:
 
 ```bash
-cmake -S . -B build_ncutil \
+cmake -S . -B build_cpu_noahmp \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=cc \
-  -DCMAKE_CXX_COMPILER=CC
+  -DCMAKE_CXX_COMPILER=CC \
+  -DCMAKE_Fortran_COMPILER=ftn \
+  -DERF_ENABLE_NOAHMP=ON
 ```
 
 That is deliberately short. Everything else the coupled OCCAMS build needs is
@@ -183,7 +185,7 @@ already a default or is forced by this repository's own `CMakeLists.txt`:
 Build:
 
 ```bash
-cmake --build build_ncutil -j12
+cmake --build build_cpu_noahmp -j16
 ```
 
 Build once, and let a failure stop you. `cmake --build` leaves the previous
@@ -196,9 +198,25 @@ Notes on this configuration:
 - `ERF_ENABLE_RRTMGP` is ON. The OCCAMS decks enable no radiation, so it is
   compiled but unused; turning it off would speed the build but changes nothing
   at runtime and forces a full rebuild.
-- `ERF_ENABLE_NOAHMP` is OFF. The coupled-SST path works regardless, but the
-  Noah-MP/REMORA-SST coexistence that the coupled-SST design exists to permit is
-  not exercised by this build.
+- `ERF_ENABLE_NOAHMP` is ON. It pulls in the Noah-MP submodule (Fortran, hence
+  `-DCMAKE_Fortran_COMPILER=ftn`) so `erf.land_surface_model = NOAHMP` is available
+  at run time; the OCCAMS decks still run with the land model off until Noah-MP's
+  own inputs are wired.
+
+Module set this recipe was last verified with: `cpe/26.03`, `gcc-native/13.2`,
+`cray-mpich/9.0.1`, `cray-hdf5-parallel/1.14.3.9`, `cray-netcdf-hdf5parallel/4.9.0.13`,
+`cray-parallel-netcdf/1.12.3.13`. The profile loads the Cray defaults, so when
+NERSC moves them an existing binary stops loading with
+`error while loading shared libraries: libhdf5_hl_parallel_gnu_123.so.200` or
+similar. Reconfigure and rebuild into a new directory named for what it contains;
+do not reconfigure the old one, it is the record of what ran.
+
+Converting REMORA inputs: REMORA reads through PNetCDF, which cannot open
+NetCDF-4 files. Convert with `nccopy -k cdf5 in.nc out.nc` (the REMORA docs give
+the NCO equivalent `ncks -5`). The grid, initial and boundary copies under
+`OCCAM/pnetcdf_compat` are CDF-2 and work; the climatology must be CDF-5 because
+its `ocean_time` axis is not a record dimension and each 3-D field exceeds CDF-2's
+4 GiB per-variable limit.
 
 Run:
 

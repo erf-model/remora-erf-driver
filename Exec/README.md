@@ -27,7 +27,7 @@ Run:
 
 ```bash
 cd Exec/Upwelling
-../../build/erf-remora-driver inputs_oneway
+../../build_cpu_noahmp/erf-remora-driver inputs_oneway
 ```
 
 Pulls in `inputs_ERF` and `inputs_REMORA` from the same directory. Needs no
@@ -46,7 +46,7 @@ Run:
 
 ```bash
 cd Exec/Upwelling
-../../build/erf-remora-driver inputs_twoway
+../../build_cpu_noahmp/erf-remora-driver inputs_twoway
 ```
 
 What to verify:
@@ -71,7 +71,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_oneway
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_oneway
 ```
 
 ---
@@ -87,7 +87,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_state
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_state
 ```
 
 ---
@@ -103,7 +103,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_flux
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_flux
 ```
 
 ### `OCCAMS/inputs_OCCAMS_smoke`
@@ -120,7 +120,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build_ncutil/erf-remora-driver inputs_OCCAMS_smoke
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_smoke
 ```
 
 Unlike the production decks it sets `amrex.fpe_trap_invalid = 1`, so floating

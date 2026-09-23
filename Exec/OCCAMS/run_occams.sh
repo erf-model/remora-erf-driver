@@ -16,7 +16,7 @@
 #   Cases are the suffixes of inputs_OCCAMS_*: oneway, state, flux, smoke.
 #
 # Environment overrides:
-#   BUILD_DIR   build directory holding erf-remora-driver (default ../../build_ncutil)
+#   BUILD_DIR   build directory holding erf-remora-driver (default ../../build_cpu_noahmp)
 #   NRANKS      MPI ranks (default 16)
 #   NNODES      nodes (default 1)
 #   LOGDIR      where to write logs (default .)
@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-BUILD_DIR="${BUILD_DIR:-../../build_ncutil}"
+BUILD_DIR="${BUILD_DIR:-../../build_cpu_noahmp}"
 NRANKS="${NRANKS:-16}"
 NNODES="${NNODES:-1}"
 LOGDIR="${LOGDIR:-.}"

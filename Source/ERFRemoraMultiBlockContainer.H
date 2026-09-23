@@ -336,6 +336,9 @@ private:
     // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.
     std::unique_ptr<amrex::MultiFab> m_erf_node_coords;
     std::unique_ptr<amrex::MultiFab> m_erf_land_mask;
+    // 1 where an O2A destination cell has no coupled SST (any OwnerMatchStatus but
+    // Coupled), on the O2A layout. Used as a land-style mask by the O2A min/max.
+    std::unique_ptr<amrex::MultiFab> m_o2a_uncoupled_mask;
     // Same data staged onto the REMORA layout, with the comm plan that put it
     // there. Reused every remap apply, not just at weight-build time.
     std::unique_ptr<RemapStagingPlan> m_staging_plan;

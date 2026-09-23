@@ -34,7 +34,6 @@ driver.ocean_time_offset  = 49939200.0     # [137]
 driver.remap_frame        = spherical      # [162,163]
 driver.remap_v            = 1
 driver.time_average_atm2ocn_flux  = 1      # mean over the 300 s exchange, not the end sample
-driver.time_average_atm2ocn_state = 1
 
 # ---------------------------------------------------------------- ERF: grid and time
 erf.fixed_dt                = 10.0         # WRF time_step [23]
@@ -50,6 +49,8 @@ erf.rad_t_sfc              = 292.0         # required; used as surface T for upw
                                            # when no land model updates it (domain mean guess)
 erf.rad_do_subcol_sampling = false
 erf.rad_write_fluxes       = false
+# WRF o3input = 2 (CAM climatology), 89 layers bottom-up, from o3_profile_from_wrf.py   [268,269]
+erf.o3vmr = 3.815e-08 3.824e-08 3.834e-08 3.847e-08 3.862e-08 3.880e-08 3.901e-08 3.927e-08 3.957e-08 3.994e-08 4.037e-08 4.089e-08 4.150e-08 4.224e-08 4.309e-08 4.409e-08 4.528e-08 4.668e-08 4.823e-08 4.976e-08 5.134e-08 5.296e-08 5.443e-08 5.590e-08 5.742e-08 5.896e-08 6.052e-08 6.212e-08 6.376e-08 6.507e-08 6.623e-08 6.741e-08 6.861e-08 6.976e-08 7.094e-08 7.213e-08 7.335e-08 7.456e-08 7.580e-08 7.706e-08 7.858e-08 8.056e-08 8.259e-08 8.469e-08 8.756e-08 9.140e-08 9.542e-08 9.964e-08 1.040e-07 1.086e-07 1.133e-07 1.183e-07 1.241e-07 1.306e-07 1.374e-07 1.447e-07 1.526e-07 1.613e-07 1.704e-07 1.801e-07 1.930e-07 2.089e-07 2.261e-07 2.447e-07 2.648e-07 2.865e-07 3.099e-07 3.352e-07 3.626e-07 3.923e-07 4.244e-07 4.591e-07 4.968e-07 5.375e-07 5.816e-07 6.293e-07 6.880e-07 7.664e-07 8.538e-07 9.511e-07 1.056e-06 1.162e-06 1.278e-06 1.407e-06 1.542e-06 1.669e-06 1.806e-06 1.956e-06 2.112e-06
 erf.rrtmgp_file_path       = /global/cfs/cdirs/m4304/jmsexton/OCCAM/rrtmgp_coeffs
 erf.rrtmgp_coeffs_sw       = rrtmgp-gas-sw-g112.nc
 erf.rrtmgp_coeffs_lw       = rrtmgp-gas-lw-g128.nc

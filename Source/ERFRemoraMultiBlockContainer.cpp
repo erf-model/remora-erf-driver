@@ -1645,9 +1645,11 @@ ERFRemoraMultiBlockContainer::ResolveRemapFrame()
                    << " (requested " << m_remap_frame_request << ")\n";
     if (m_remap_verbose >= 1) {
         if (m_remap_spherical) {
-            amrex::Print() << "[driver] remap corner ranges: "
-                           << describe("remora(lon,lat)", remora_lon, remora_lat) << " "
-                           << describe("erf(lon,lat)", erf_lon, erf_lat) << "\n";
+            // ERF reports cell centres; its corner mesh, built from them, reaches
+            // half a cell further on each side.
+            amrex::Print() << "[driver] remap lon/lat ranges: "
+                           << describe("remora corners(lon,lat)", remora_lon, remora_lat) << " "
+                           << describe("erf centers(lon,lat)", erf_lon, erf_lat) << "\n";
         } else {
             amrex::Print() << "[driver] remap Cartesian extents: remora=["
                            << m_ocn_rb.lo(0) << "," << m_ocn_rb.hi(0) << "]x["
@@ -1878,7 +1880,8 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
         // sizable fraction of a cell.
         Real max_offset = 0.0;
         for (MFIter mfi(*m_erf_node_coords); mfi.isValid(); ++mfi) {
-            const Box bx = mfi.validbox() & cell_domain;
+            // The node MultiFab's validbox is nodal; iterate its cells.
+            const Box bx = amrex::enclosedCells(mfi.validbox()) & cell_domain;
             auto const& node = m_erf_node_coords->const_array(mfi);
             auto const& lon  = erf_lon->const_array(mfi);
             auto const& lat  = erf_lat->const_array(mfi);

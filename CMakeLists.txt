@@ -55,6 +55,9 @@ set(AMReX_INSTALL OFF CACHE BOOL "" FORCE)
 set(AMReX_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
 set(AMReX_ASSERTIONS ON CACHE BOOL "" FORCE)
 set(AMReX_FPE OFF CACHE BOOL "" FORCE)
+# ERF/REMORA_ENABLE_TINY_PROFILE below only reach AMReX when they build it
+# themselves; this build owns AMReX, so it has to be set here.
+set(AMReX_TINY_PROFILE ON CACHE BOOL "" FORCE)
 set(AMReX_GPU_BACKEND NONE CACHE STRING "" FORCE)
 
 option(ERF_ENABLE_RRTMGP "Enable RTE-RRTMGP Radiation" ON)

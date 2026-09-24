@@ -197,6 +197,9 @@ Notes on this configuration:
 
 - `ERF_ENABLE_RRTMGP` is ON. `inputs_OCCAMS_maximal_1day` uses it; the other
   OCCAMS decks run without radiation.
+- AMReX's TinyProfiler is ON (forced in `CMakeLists.txt`), so every run ends with
+  a timing table. Builds configured before that line was added do not have it,
+  whatever `ERF_ENABLE_TINY_PROFILE` says in their cache.
 - `ERF_ENABLE_NOAHMP` is ON. It pulls in the Noah-MP submodule (Fortran, hence
   `-DCMAKE_Fortran_COMPILER=ftn`) so `erf.land_surface_model = NOAHMP` is available
   at run time; the OCCAMS decks still run with the land model off until Noah-MP's

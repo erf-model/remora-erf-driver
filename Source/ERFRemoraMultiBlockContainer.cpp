@@ -10,6 +10,8 @@
 #include <AMReX_Reduce.H>
 #include <AMReX_String.H>
 
+#include <netcdf.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -578,6 +580,9 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("ocean_time_offset", m_ocean_time_offset);
     pp_driver.query("plot_file_exchange_o2a", m_plot_file_exchange_o2a);
     pp_driver.query("plot_file_exchange_a2o", m_plot_file_exchange_a2o);
+    pp_driver.query("scrip_weights_file", m_scrip_weights_file);
+    pp_driver.query("scrip_a2o_group", m_scrip_a2o_group);
+    pp_driver.query("scrip_o2a_group", m_scrip_o2a_group);
     pp_driver.query("remap_v", m_remap_verbose);
     pp_driver.query("remap_frame", m_remap_frame_request);
     pp_driver.query("remap_extend_corner_ring", m_remap_extend_corner_ring);
@@ -1722,6 +1727,175 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
 
     BuildAtmosToOceanWeights();
     BuildOceanToAtmosWeights();
+    CompareWeightsWithSCRIP();
+}
+
+// Compare our weights with an external SCRIP file (driver.scrip_weights_file,
+// e.g. the scrip_coawst.nc a COAWST run used), once, after they are built. Per
+// direction: which destination cells each side covers, and where both do, the L1
+// difference of the first-order weights. Both are normalized per destination cell
+// (SCRIP fracarea), so L1 runs 0..2; it is only meaningful when the SCRIP map is
+// also conservative, and map_method is printed so the reader can tell. SCRIP
+// addresses are 1-based, i fastest; the grids may carry a boundary ring (ROMS rho
+// points), so the index offset is half the dims difference. Collective.
+void
+ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
+{
+    using namespace amrex;
+    if (m_scrip_weights_file.empty()) { return; }
+
+    auto compare = [&] (const std::string& group, const MultiFab& weight_mf,
+                        const iMultiFab& index_mf, const Box& src_domain,
+                        const char* label, const char* dst_name)
+    {
+        // Read on the IO rank and broadcast: dims, addresses, first weight.
+        int dims[4] = {0, 0, 0, 0};   // src nx, ny, dst nx, ny
+        Long nlinks = 0;
+        Vector<int> src_addr, dst_addr;
+        Vector<Real> w;
+        std::string method;
+        const int io = ParallelDescriptor::IOProcessorNumber();
+        if (ParallelDescriptor::IOProcessor()) {
+            auto ok = [&] (int status, const char* what) {
+                if (status != NC_NOERR) {
+                    amrex::Abort("driver.scrip_weights_file " + m_scrip_weights_file + ": " +
+                                 what + ": " + nc_strerror(status));
+                }
+            };
+            int file = 0, grp = 0, id = 0, nw_dim = 0;
+            size_t len = 0, nw = 1;
+            ok(nc_open(m_scrip_weights_file.c_str(), NC_NOWRITE, &file), "open");
+            // COAWST files hold one group per direction; a plain SCRIP file has none.
+            if (nc_inq_grp_ncid(file, group.c_str(), &grp) != NC_NOERR) { grp = file; }
+            ok(nc_inq_varid(grp, "src_grid_dims", &id), "src_grid_dims");
+            ok(nc_get_var_int(grp, id, dims), "src_grid_dims");
+            ok(nc_inq_varid(grp, "dst_grid_dims", &id), "dst_grid_dims");
+            ok(nc_get_var_int(grp, id, dims + 2), "dst_grid_dims");
+            ok(nc_inq_dimid(grp, "num_links", &id), "num_links");
+            ok(nc_inq_dimlen(grp, id, &len), "num_links");
+            if (nc_inq_dimid(grp, "num_wgts", &nw_dim) == NC_NOERR) { nc_inq_dimlen(grp, nw_dim, &nw); }
+            nlinks = static_cast<Long>(len);
+            src_addr.resize(len);  dst_addr.resize(len);  w.resize(len);
+            Vector<double> all(len * nw);
+            ok(nc_inq_varid(grp, "src_address", &id), "src_address");
+            ok(nc_get_var_int(grp, id, src_addr.data()), "src_address");
+            ok(nc_inq_varid(grp, "dst_address", &id), "dst_address");
+            ok(nc_get_var_int(grp, id, dst_addr.data()), "dst_address");
+            ok(nc_inq_varid(grp, "remap_matrix", &id), "remap_matrix");
+            ok(nc_get_var_double(grp, id, all.data()), "remap_matrix");
+            for (size_t l = 0; l < len; ++l) { w[l] = all[l * nw]; }   // first-order weight
+            size_t alen = 0;
+            if (nc_inq_attlen(grp, NC_GLOBAL, "map_method", &alen) == NC_NOERR) {
+                method.resize(alen);
+                nc_get_att_text(grp, NC_GLOBAL, "map_method", method.data());
+            }
+            nc_close(file);
+        }
+        ParallelDescriptor::Bcast(dims, 4, io);
+        ParallelDescriptor::Bcast(&nlinks, 1, io);
+        src_addr.resize(nlinks);  dst_addr.resize(nlinks);  w.resize(nlinks);
+        ParallelDescriptor::Bcast(src_addr.data(), nlinks, io);
+        ParallelDescriptor::Bcast(dst_addr.data(), nlinks, io);
+        ParallelDescriptor::Bcast(w.data(), nlinks, io);
+
+        const Box dst_domain = weight_mf.boxArray().minimalBox();
+        const int off[4] = {(dims[0] - src_domain.length(0)) / 2, (dims[1] - src_domain.length(1)) / 2,
+                            (dims[2] - dst_domain.length(0)) / 2, (dims[3] - dst_domain.length(1)) / 2};
+        if (*std::min_element(off, off + 4) < 0) {
+            amrex::Print() << "[driver] SCRIP check " << label << ": skipped, " << group
+                           << " grids (" << dims[0] << "x" << dims[1] << " -> " << dims[2] << "x"
+                           << dims[3] << ") are smaller than ours.\n";
+            return;
+        }
+
+        // Links grouped by destination: links of 0-based dst address a are
+        // [start[a], start[a+1]). Weights > 0 only.
+        const Long ndst = Long(dims[2]) * dims[3];
+        Vector<Long> start(ndst + 1, 0);
+        for (Long l = 0; l < nlinks; ++l) { if (w[l] > 0) { ++start[dst_addr[l]]; } }   // 1-based
+        for (Long a = 0; a < ndst; ++a) { start[a + 1] += start[a]; }
+        Vector<Long> cursor(start.begin(), start.end() - 1);
+        Vector<int> link_src(start[ndst]);
+        Vector<Real> link_w(start[ndst]);
+        for (Long l = 0; l < nlinks; ++l) {
+            if (w[l] > 0) {
+                const Long k = cursor[dst_addr[l] - 1]++;
+                link_src[k] = src_addr[l] - 1;
+                link_w[k] = w[l];
+            }
+        }
+
+        OwnerMatchTally both, ours_only, scrip_only;
+        Real l1_sum = 0, l1_max = -1;
+        Long l1_first = std::numeric_limits<Long>::max();
+        for (MFIter mfi(weight_mf); mfi.isValid(); ++mfi) {
+            auto const& wa = weight_mf.const_array(mfi);
+            auto const& ia = index_mf.const_array(mfi);
+            const Box& bx = mfi.validbox();
+            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                    const Long a = Long(j - dst_domain.smallEnd(1) + off[3]) * dims[2]
+                                 + (i - dst_domain.smallEnd(0) + off[2]);
+                    const bool scrip_has = start[a + 1] > start[a];
+                    const bool ours_has = ia(i,j,0,0) >= 0;
+                    if (!ours_has && !scrip_has) { continue; }
+                    if (!scrip_has) { ours_only.add(dst_domain, i, j);  continue; }
+                    if (!ours_has)  { scrip_only.add(dst_domain, i, j); continue; }
+                    both.add(dst_domain, i, j);
+                    // L1 over the union of the two stencils.
+                    Real l1 = 0, matched = 0;
+                    for (int m = 0; m < MAX_STENCIL_SIZE && ia(i,j,0,3*m) >= 0; ++m) {
+                        const int s = (ia(i,j,0,3*m+1) - src_domain.smallEnd(1) + off[1]) * dims[0]
+                                    + (ia(i,j,0,3*m) - src_domain.smallEnd(0) + off[0]);
+                        Real ws = 0;
+                        for (Long k = start[a]; k < start[a + 1]; ++k) { if (link_src[k] == s) { ws += link_w[k]; } }
+                        l1 += std::abs(wa(i,j,0,m) - ws);
+                        matched += ws;
+                    }
+                    for (Long k = start[a]; k < start[a + 1]; ++k) { l1 += link_w[k]; }
+                    l1 -= matched;   // SCRIP weights on sources we do not use
+                    l1_sum += l1;
+                    const Long flat = Long(j - dst_domain.smallEnd(1)) * dst_domain.length(0)
+                                    + (i - dst_domain.smallEnd(0));
+                    if (l1 > l1_max || (l1 == l1_max && flat < l1_first)) { l1_max = l1; l1_first = flat; }
+                }
+            }
+        }
+        both.reduce();  ours_only.reduce();  scrip_only.reduce();
+        ParallelDescriptor::ReduceRealSum(l1_sum);
+        Real global_max = l1_max;
+        ParallelDescriptor::ReduceRealMax(global_max);
+        if (l1_max != global_max) { l1_first = std::numeric_limits<Long>::max(); }
+        ParallelDescriptor::ReduceLongMin(l1_first);
+
+        auto where = [&] (const OwnerMatchTally& t) {
+            if (t.count == 0) { return std::string{}; }
+            const IntVect e = t.example(dst_domain);
+            return " (e.g. " + std::string(dst_name) + " (" + std::to_string(e[0]) + "," +
+                   std::to_string(e[1]) + "); " + t.extent() + ")";
+        };
+        amrex::Print() << "[driver] SCRIP check " << label << " vs " << group << " ("
+                       << (method.empty() ? "map_method unknown" : method) << "): "
+                       << both.count << " cells covered by both, " << ours_only.count
+                       << " only by ours" << where(ours_only) << ", " << scrip_only.count
+                       << " only by SCRIP" << where(scrip_only) << ".\n";
+        if (both.count > 0) {
+            const Long nx = dst_domain.length(0);
+            amrex::Print() << "[driver] SCRIP check " << label << ": weight L1 over cells covered by both"
+                           << " mean " << l1_sum / Real(both.count) << " max " << global_max
+                           << " at " << dst_name << " (" << dst_domain.smallEnd(0) + l1_first % nx
+                           << "," << dst_domain.smallEnd(1) + l1_first / nx << ")"
+                           << " (0 = identical, 2 = disjoint stencils).\n";
+        }
+    };
+
+    const int f = static_cast<int>(WeightFamily::SCALAR_CENTERED);
+    compare(m_scrip_a2o_group, *m_weight_mf_by_family[f], *m_index_mf_by_family[f],
+            m_geom.Domain(), "A2O scalar/rho", "REMORA");
+    if (m_use_two_way_coupling && m_weight_o2a_mf) {
+        compare(m_scrip_o2a_group, *m_weight_o2a_mf, *m_index_o2a_mf,
+                m_geom_ocn.Domain(), "O2A SST", "ERF");
+    }
 }
 
 // Decide the frame, and refuse to guess. ERF reports lon/lat degrees

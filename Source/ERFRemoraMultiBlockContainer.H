@@ -246,6 +246,7 @@ private:
 
     void BuildAtmosToOceanWeights();
     void BuildOceanToAtmosWeights();
+    void CompareWeightsWithSCRIP();
 
     void SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land);
 
@@ -278,6 +279,10 @@ private:
     int m_plot_int_exchange = -1;
     std::string m_plot_file_exchange_o2a = "exchange_o2a";
     std::string m_plot_file_exchange_a2o = "exchange_a2o";
+    // Optional external SCRIP weights to compare ours against (driver.scrip_*).
+    std::string m_scrip_weights_file;
+    std::string m_scrip_a2o_group = "atm1_to_ocn1_weights.nc";
+    std::string m_scrip_o2a_group = "ocn1_to_atm1_weights.nc";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
     int m_driver_verbose = 0;

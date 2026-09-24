@@ -219,14 +219,16 @@ behind it.
 
 The solvers' own flags control their side of the exchange:
 
-- `erf.v = 2` — the ERF `Coupled SST apply` summary on every call. Below 2 it
-  prints on the first call and whenever the covered-cell count changes.
+- `erf.v = 2` — ERF's coupled-SST check (the `Coupled SST apply` summary and its
+  range warning) on every ERF step. Below 2 it runs once, on the first step: the
+  driver hands ERF the same SST on every substep of an exchange, and REMORA has
+  already checked it.
 - `remora.v = 1` — REMORA's `ApplyAtmosphericFluxes validation` block and its wet
   surface-temperature min/max on every exchange (below 1: the block once per run).
   This also turns on all other REMORA `v = 1` output.
 
-The two range warnings below print whatever the verbosity: the first time, and
-again only when a later exchange is worse.
+REMORA's surface-temperature range warning is checked every exchange whatever
+the verbosity, and repeats only when a later exchange is worse.
 
 ### What contract is running
 
@@ -386,6 +388,25 @@ CESM at a destination fraction of 0.001 and OASIS/CERFACS at 1/1000. Those two
 numbers have not been checked against either code's source; they are plausible
 and conventional, but treat them as unverified until someone reads the couplers
 directly.
+
+### Comparing with an external SCRIP weights file
+
+`driver.scrip_weights_file = <path>` compares our weights, once after they are
+built, with a SCRIP file such as the `scrip_coawst.nc` the reference COAWST run
+used. `driver.scrip_a2o_group` and `driver.scrip_o2a_group` name the groups
+inside a COAWST file (defaults `atm1_to_ocn1_weights.nc`,
+`ocn1_to_atm1_weights.nc`); a plain SCRIP file without groups is read as is.
+
+```
+[driver] SCRIP check A2O scalar/rho vs atm1_to_ocn1_weights.nc (Conservative remapping):
+         <n> cells covered by both, <a> only by ours (e.g. ...), <b> only by SCRIP (e.g. ...).
+[driver] SCRIP check A2O scalar/rho: weight L1 over cells covered by both mean <m> max <x> at ...
+```
+
+The weight L1 runs from 0 (identical) to 2 (disjoint stencils); the file's
+`map_method` is printed alongside. The SCRIP grids may include ROMS's boundary
+ring; the index offset is taken from the difference in grid dimensions. It reads
+the whole file on one rank, so leave it off for production runs.
 
 ### Coverage, atmosphere to ocean
 
@@ -628,15 +649,16 @@ actually carry ocean data, both counting NaN as out of range:
 WARNING: REMORA surface temperature outside [270.65, 313.15] K on <n> of <M> wet
 cells (<k> NaN; min/max ... K; e.g. REMORA (i,j) = ... K). Repeated only if it gets worse.
 WARNING: coupled SST at t=<t> s outside [260, 320] K on <n> of <M> covered cells
-(<k> NaN; min/max ... K; e.g. ERF (i,j) = ... K). Repeated only if it gets worse.
+(<k> NaN; min/max ... K; e.g. ERF (i,j) = ... K).
 ```
 
 The first is REMORA's top-level temperature (-2.5 to 40 C) on its wet cells,
-before the remap. The second is ERF's check on the cells the owner-match table
-calls coupled. In the driver path the ERF one can only fire after the REMORA one,
-because the coupled SST is a weighted mean of wet REMORA values; it is there for
-other couplers. Either warning repeats only when a later exchange has a new
-extreme or more NaN cells.
+before the remap, checked every exchange and repeated only when a later exchange
+has a new extreme or more NaN cells. The second is ERF's check on the cells the
+owner-match table calls coupled, run on the first step only unless `erf.v = 2`.
+In the driver path the ERF one can only fire after the REMORA one, because the
+coupled SST is a weighted mean of wet REMORA values; it is there for other
+couplers.
 
 REMORA's received fluxes are summarized over wet cells only, once per run
 (every exchange at `remora.v = 1`):

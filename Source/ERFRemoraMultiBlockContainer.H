@@ -92,7 +92,9 @@ public:
                                   const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
                                   const amrex::IntVect& max_grid_size,
                                   amrex::Real erf_dt,
-                                  int atm_substeps_per_ocean_step,
+                                  amrex::Real ocean_dt,
+                                  int atm_steps_per_exchange,
+                                  int ocean_steps_per_exchange,
                                   coupling::AtmosToOceanContract atm2ocn_contract,
                                   bool use_two_way_coupling);
     ~ERFRemoraMultiBlockContainer();
@@ -276,7 +278,9 @@ private:
     amrex::Real m_ocean_time_offset = 0.0;
     // Negative means "leave REMORA's stop_time alone"; see SetOceanFrameStopTime.
     amrex::Real m_ocean_frame_stop_time = -1.0;
-    int m_atm_substeps_per_ocean_step;
+    amrex::Real m_ocean_dt;
+    int m_atm_steps_per_exchange;
+    int m_ocean_steps_per_exchange;
     long long m_atm_tick = 0;
     int m_plot_int_exchange = -1;
     std::string m_plot_file_exchange_o2a = "exchange_o2a";
@@ -359,7 +363,7 @@ private:
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
     // Valid-region-only trapezoidal sums. They are reset, filled, and drained
-    // within one ocean macro-step and are never checkpoint state.
+    // within one exchange interval and are never checkpoint state.
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_accumulator_storage;
     amrex::Real m_a2o_accum_weight = 0.0;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;

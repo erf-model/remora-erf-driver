@@ -1,5 +1,6 @@
 #include "ERFRemoraMultiBlockContainer.H"
 #include "CoupledRestartUtils.H"
+#include "CoupledCadence.H"
 #include "StandaloneSolverRuns.H"
 
 #include <AMReX.H>
@@ -93,7 +94,8 @@ BuildRestartState (const erf_remora::restart::CheckpointHeaderMetadata& erf_meta
                    const erf_remora::restart::CheckpointHeaderMetadata& rem_meta,
                    amrex::Real erf_dt,
                    amrex::Real ocean_macro_dt,
-                   amrex::Real ocean_time_offset)
+                   amrex::Real ocean_time_offset,
+                   amrex::Real exchange_interval)
 {
     RequireCheckpointSelfConsistency(erf_meta);
     RequireCheckpointSelfConsistency(rem_meta, ocean_time_offset);
@@ -109,6 +111,9 @@ BuildRestartState (const erf_remora::restart::CheckpointHeaderMetadata& erf_meta
         RequireIntegralTick("ERF", erf_meta.time, erf_dt);
     const long long restored_ocean_tick =
         RequireIntegralTick("REMORA", rem_elapsed_time, ocean_macro_dt);
+
+    erf_remora::CoupledCadence::integral_steps(
+        erf_meta.time, exchange_interval, "Coupled restart exchange boundary");
 
     WarnIfDtChanged("ERF", erf_meta.dt, erf_dt);
     WarnIfDtChanged("REMORA", rem_meta.dt, ocean_macro_dt);
@@ -144,7 +149,7 @@ main (int argc, char* argv[])
     }
 #endif
 
-    {
+    try {
         amrex::ParmParse pp_amr("amr");
         if (!pp_amr.contains("refine_grid_layout_x")) {
             pp_amr.add("refine_grid_layout_x", 1);
@@ -231,40 +236,14 @@ main (int argc, char* argv[])
         pp_erf.get("fixed_dt", erf_dt);
         pp_rem.get("fixed_dt", ocean_macro_dt);
 
-        // Both dts divide or scale the cadence arithmetic below, so reject
-        // non-positive values before dividing rather than letting a non-finite
-        // quotient reach std::llround.
-        if (erf_dt <= amrex::Real(0.0)) {
-            amrex::Abort("erf.fixed_dt must be positive; got " + std::to_string(erf_dt));
-        }
-        if (ocean_macro_dt <= amrex::Real(0.0)) {
-            amrex::Abort("remora.fixed_dt must be positive; got " + std::to_string(ocean_macro_dt));
-        }
-
-        // Round the ratio and validate within tolerance rather than truncating and
-        // testing exact equality: decimal dt pairs with mathematically integral
-        // ratios (e.g. 0.1 and 0.3) are not exactly representable in binary, and
-        // both the truncation and the multiply-back can land off by 1 ulp.
-        const long long substep_ratio = std::llround(ocean_macro_dt / erf_dt);
-        int atm_substeps_per_ocean_step = static_cast<int>(substep_ratio);
-        if (substep_ratio < 1 ||
-            !NearlyEqual(static_cast<amrex::Real>(substep_ratio) * erf_dt, ocean_macro_dt)) {
-            amrex::Print() << "ERF    dt " << erf_dt << std::endl;
-            amrex::Print() << "REMORA dt " << ocean_macro_dt << std::endl;
-            amrex::Abort("Ocean dt is not a multiple of atmosphere dt");
-        }
+        amrex::Real exchange_interval = ocean_macro_dt;
+        pp_driver.query("exchange_interval", exchange_interval);
+        const auto cadence = erf_remora::CoupledCadence::make(
+            erf_dt, ocean_macro_dt, exchange_interval);
 
         amrex::Real stop_time = -1.0;
         const bool has_stop_time = amrex::ParmParse().query("stop_time", stop_time);
-        // Round when stop_time sits (within tolerance) on a macro-step boundary;
-        // otherwise keep truncating to the previous boundary, since stop_time is
-        // legitimately allowed to fall between boundaries.
-        const amrex::Real stop_time_ratio = stop_time / ocean_macro_dt;
-        const long long stop_time_ratio_rounded = std::llround(stop_time_ratio);
-        const int stop_time_macro_steps =
-            NearlyEqual(static_cast<amrex::Real>(stop_time_ratio_rounded) * ocean_macro_dt, stop_time)
-                ? static_cast<int>(stop_time_ratio_rounded)
-                : static_cast<int>(stop_time_ratio);
+        const int stop_time_macro_steps = has_stop_time ? cadence.ocean_steps_before(stop_time) : -1;
         // REMORA advances on the absolute ocean clock once driver.ocean_time_offset
         // is applied, but it reads the unprefixed stop_time, which the deck and the
         // macro-step plan above express as elapsed-from-zero. Compute the ocean-frame
@@ -309,7 +288,7 @@ main (int argc, char* argv[])
                 erf_remora::restart::ReadCheckpointHeaderMetadata(
                     remora_restart_path, erf_remora::restart::SolverKind::REMORA);
             restart_state = BuildRestartState(erf_meta, rem_meta, erf_dt,
-                                              ocean_macro_dt, ocean_time_offset);
+                                              ocean_macro_dt, ocean_time_offset, exchange_interval);
         }
 
         if (pp_driver.contains("coupled_one_step")) {
@@ -349,7 +328,7 @@ main (int argc, char* argv[])
                 ocean_macro_dt * static_cast<amrex::Real>(stop_time_macro_steps);
             if (stop_time_macro_steps >= 0 &&
                 stop_time > clipped_stop_time) {
-                amrex::Print() << "WARNING: coupled driver only stops on ocean macro-step boundaries;"
+                amrex::Print() << "WARNING: coupled driver only stops on exchange boundaries;"
                                << " stop_time=" << stop_time
                                << " is being clipped to " << clipped_stop_time
                                << " for driver-side termination.\n";
@@ -371,12 +350,17 @@ main (int argc, char* argv[])
             // Cold-start path keeps the original max_step/stop_time logic above.
         }
 
+        cadence.require_boundary(ocean_steps);
+
         const amrex::Real expected_run_time =
             ocean_macro_dt * static_cast<amrex::Real>(ocean_steps);
         amrex::Print() << "Coupled run plan:"
                        << " expected_run_time=" << expected_run_time
                        << " erf_dt=" << erf_dt
-                       << " atm_substeps_per_ocean_step=" << atm_substeps_per_ocean_step
+                       << " ocean_dt=" << ocean_macro_dt
+                       << " exchange_interval=" << exchange_interval
+                       << " atm_steps_per_exchange=" << cadence.atmosphere_steps
+                       << " ocean_steps_per_exchange=" << cadence.ocean_steps
                        << " ocean_steps=" << ocean_steps
                        << " driver_max_grid_size=" << driver_max_grid_size;
         if (restart_state.active) {
@@ -516,7 +500,8 @@ main (int argc, char* argv[])
         erf_remora::ERFRemoraMultiBlockContainer container(
             atm_rb, n_cell_atm, ocn_rb, n_cell_ocn,
             max_level, coord, ref_ratio, is_periodic,
-            driver_max_grid_size, erf_dt, atm_substeps_per_ocean_step,
+            driver_max_grid_size, erf_dt, ocean_macro_dt,
+            cadence.atmosphere_steps, cadence.ocean_steps,
             atm2ocn_contract, use_two_way_coupling);
         container.SetOceanFrameStopTime(ocean_frame_stop_time);
         container.InitializeSolvers();
@@ -535,6 +520,8 @@ main (int argc, char* argv[])
         amrex::ParmParse().remove("amr.iterate_grids");
 
         container.AdvanceBlocks(ocean_steps);
+    } catch (const std::exception& error) {
+        amrex::Abort(error.what());
     }
     amrex::Print() << "erf-remora-driver run completed\n";
 

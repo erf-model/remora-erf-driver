@@ -530,7 +530,9 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
     const amrex::IntVect& max_grid_size,
     amrex::Real erf_dt,
-    int atm_substeps_per_ocean_step,
+    amrex::Real ocean_dt,
+    int atm_steps_per_exchange,
+    int ocean_steps_per_exchange,
     coupling::AtmosToOceanContract atm2ocn_contract,
     bool use_two_way_coupling)
     : m_atm_rb(atm_rb), m_atm_n_cell(n_cell_atm),
@@ -538,7 +540,9 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
       m_max_level(max_level), m_coord(coord),
       m_ref_ratio(ref_ratio), m_is_periodic(is_periodic),
       m_erf_dt(erf_dt),
-      m_atm_substeps_per_ocean_step(atm_substeps_per_ocean_step),
+      m_ocean_dt(ocean_dt),
+      m_atm_steps_per_exchange(atm_steps_per_exchange),
+      m_ocean_steps_per_exchange(ocean_steps_per_exchange),
       m_atmos_to_ocean_contract(atm2ocn_contract),
       m_use_two_way_coupling(use_two_way_coupling)
 {
@@ -874,7 +878,7 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
     // on the flags. A flag set for a lane character absent from the view averages
     // nothing, and inspecting the flags alone let exactly that case suppress this
     // warning while reporting ENABLED.
-    if (m_atm_substeps_per_ocean_step > 1 && !AtmosToOceanAveragingActive()) {
+    if (m_atm_steps_per_exchange > 1 && !AtmosToOceanAveragingActive()) {
         amrex::Print()
             << "[driver] WARNING: atmosphere->ocean forcing uses the instantaneous "
                "interval-end sample. Enable driver.time_average_atm2ocn_state=1 and/or "
@@ -3846,8 +3850,10 @@ ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename
        << "remap frame        : " << (m_remap_spherical ? "spherical" : "cartesian") << "\n"
        << "donor fill mode    : "
        << (m_remap_donor_fill_mode == DonorFillMode::Coawst ? "coawst" : "withhold") << "\n"
-       << "atm substeps/ocean : " << m_atm_substeps_per_ocean_step
-       << "  (erf dt=" << m_erf_dt << ")\n\n";
+       << "atm steps/exchange : " << m_atm_steps_per_exchange
+       << "  (erf dt=" << m_erf_dt << ")\n"
+       << "ocean steps/exchange : " << m_ocean_steps_per_exchange
+       << "  (ocean dt=" << m_ocean_dt << ")\n\n";
 
     if (ocean_to_atmos) {
         os << "--- lanes ---\n"
@@ -3913,8 +3919,10 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
     }
 
     // Verify subcycling ratio is strictly positive
-    if (m_atm_substeps_per_ocean_step <= 0) {
-        amrex::Abort("Invalid atmosphere subcycling ratio: must be > 0.");
+    if (m_atm_steps_per_exchange <= 0 || m_ocean_steps_per_exchange <= 0 ||
+        ocean_steps < 0 || ocean_steps % m_ocean_steps_per_exchange != 0 ||
+        m_atm_tick % m_atm_steps_per_exchange != 0) {
+        amrex::Abort("Invalid exchange schedule or restart boundary.");
     }
 
     AdvanceBlocksWithCallbacks(
@@ -4290,28 +4298,29 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
     //   dt to O(1-10 s).
     // - REMORA advances Boussinesq/split-explicit ocean dynamics with a much larger
     //   macro-step O(10^2-10^3 s).
-    // We therefore hold one ocean macro-state while subcycling atmosphere updates.
-    const amrex::Real dt_ocn_request = m_erf_dt * static_cast<amrex::Real>(m_atm_substeps_per_ocean_step);
+    // Hold interval-start SST while advancing the atmosphere, then hold its
+    // interval-mean flux throughout the ocean substeps.
+    const amrex::Real exchange_interval = m_erf_dt * static_cast<amrex::Real>(m_atm_steps_per_exchange);
     const long long starting_atm_tick = m_atm_tick;
     const long long expected_atm_ticks = starting_atm_tick +
-                                         static_cast<long long>(ocean_steps) *
-                                         static_cast<long long>(m_atm_substeps_per_ocean_step);
+                                         static_cast<long long>(ocean_steps / m_ocean_steps_per_exchange) *
+                                         static_cast<long long>(m_atm_steps_per_exchange);
     const amrex::Real abs_tol = 1.0e-12;
     const amrex::Real rel_tol = 1.0e-8;
 
     amrex::Print() << "Coupled cadence plan:"
                        << " ocean_steps=" << ocean_steps
                        << " starting_atm_tick=" << starting_atm_tick
-                       << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
+                       << " atm_steps_per_exchange=" << m_atm_steps_per_exchange
                        << " target_atm_tick=" << expected_atm_ticks
-                       << " expected_run_time=" << (dt_ocn_request * static_cast<amrex::Real>(ocean_steps))
+                       << " expected_run_time=" << (m_ocean_dt * static_cast<amrex::Real>(ocean_steps))
                        << std::endl;
 
     auto enforce_dt = [&] (const char* solver_name, amrex::Real dt_request, amrex::Real dt_used,
                            int ocean_step, int substep) {
         const amrex::Real err = amrex::Math::abs(dt_used - dt_request);
         const amrex::Real tol = amrex::max(abs_tol, rel_tol * amrex::Math::abs(dt_request));
-        if (err > tol) {
+        if (!std::isfinite(dt_used) || err > tol) {
             amrex::Print() << "Coupled cadence mismatch before abort:"
                            << " solver=" << solver_name
                            << " ocean_step=" << ocean_step
@@ -4321,8 +4330,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                            << " abs_err=" << err
                            << " tol=" << tol
                            << " m_erf_dt=" << m_erf_dt
-                           << " atm_substeps_per_ocean_step=" << m_atm_substeps_per_ocean_step
-                           << " expected_ocean_macro_dt=" << dt_ocn_request
+                           << " atm_steps_per_exchange=" << m_atm_steps_per_exchange
+                           << " expected_ocean_macro_dt=" << exchange_interval
                            << std::endl;
             amrex::Abort(std::string("Coupled cadence drift in ") + solver_name +
                          " at ocean_step=" + std::to_string(ocean_step) +
@@ -4336,7 +4345,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 
     SelectAtmosToOceanActiveView();
     const bool averaging_active = AtmosToOceanAveragingActive();
-    for (int ocean_step = 0; ocean_step < ocean_steps; ++ocean_step) {
+    for (int ocean_step = 0; ocean_step < ocean_steps; ocean_step += m_ocean_steps_per_exchange) {
         bool stop_coupling = false;
         if (m_atm_tick >= expected_atm_ticks) {
             amrex::Print() << "Reached expected coupled end time before ocean_step "
@@ -4346,7 +4355,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         }
         const amrex::Real ocean_time = m_ocean_time_offset + m_atm_tick * m_erf_dt;
         const long long global_ocean_step =
-            m_atm_tick / static_cast<long long>(m_atm_substeps_per_ocean_step);
+            (m_atm_tick / m_atm_steps_per_exchange) * m_ocean_steps_per_exchange;
         const bool use_state_contract =
             (ActiveAtmosToOceanContract() == coupling::AtmosToOceanContract::StatePassing);
         DriverPrintLine(
@@ -4384,7 +4393,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         // the ordinary trapezoid runs untouched.
         const bool cold_start_extrapolate = (global_ocean_step == 0);
 
-        for (int substep = 0; substep < m_atm_substeps_per_ocean_step; ++substep) {
+        for (int substep = 0; substep < m_atm_steps_per_exchange; ++substep) {
             if (m_atm_tick >= expected_atm_ticks) {
                 amrex::Print() << "Reached expected coupled end time before ERF advance at ocean_step="
                                     << ocean_step << " substep=" << substep
@@ -4430,7 +4439,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 pack_atmos_states(m_atmos_to_ocean_active,
                                   substep_end_time, global_ocean_step);
                 amrex::Real sample_weight =
-                    (substep == m_atm_substeps_per_ocean_step - 1)
+                    (substep == m_atm_steps_per_exchange - 1)
                         ? amrex::Real(0.5) : amrex::Real(1.0);
                 // Cold-start reconstruction of the left endpoint skipped above.
                 // Linear extrapolation f(t) ~= 2*f1 - f2 is exact for linear
@@ -4445,7 +4454,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 // entirely; DrainAtmosToOceanAccumulators divides by the total
                 // accumulated weight, so that interval degrades cleanly to the
                 // single sample f1 rather than being mis-normalized.
-                if (cold_start_extrapolate && m_atm_substeps_per_ocean_step >= 2) {
+                if (cold_start_extrapolate && m_atm_steps_per_exchange >= 2) {
                     if (substep == 0) {
                         sample_weight += amrex::Real(1.0);
                     } else if (substep == 1) {
@@ -4463,8 +4472,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
         // An interval mean is stamped at its midpoint. With averaging disabled,
         // preserve commit 1's interval-end sample and label exactly.
         const amrex::Real a2o_sample_time =
-            averaging_active ? ocean_time + amrex::Real(0.5) * dt_ocn_request
-                             : ocean_time + dt_ocn_request;
+            averaging_active ? ocean_time + amrex::Real(0.5) * exchange_interval
+                             : ocean_time + exchange_interval;
         if (averaging_active) {
             DriverPrintLine(
                 m_driver_verbose,
@@ -4484,7 +4493,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
             (global_ocean_step % static_cast<long long>(m_plot_int_exchange)) == 0) {
             // O2A was packed at ocean_time, A2O at a2o_sample_time; stamp each
             // with the instant it actually represents.
-            WriteExchangePlotfiles(ocean_time, a2o_sample_time, dt_ocn_request, global_ocean_step);
+            WriteExchangePlotfiles(ocean_time, a2o_sample_time, exchange_interval, global_ocean_step);
         }
         FillAtmosToOceanGhosts();
         DriverPrintLine(
@@ -4494,22 +4503,23 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 " to REMORA at time=" + std::to_string(a2o_sample_time));
         // Masked view: lanes ERF cannot fill are nulled so REMORA keeps its own
         // forcing for them (see SelectAtmosToOceanActiveView).
-        apply_atmos_states(m_atmos_to_ocean_apply_view, a2o_sample_time, global_ocean_step);
-
-        const amrex::Real ocn_dt_used = REMORAEvolveOneStep(m_remora, ocean_time, dt_ocn_request);
-        if (ocn_dt_used == amrex::Real(0.0)) {
-            amrex::Print() << "REMORA returned dt=0 before the driver completed the planned"
-                                << " ocean macro-step schedule."
-                                << " ocean_step=" << ocean_step
-                                << " atm_tick=" << m_atm_tick
-                                << " expected_atm_ticks=" << expected_atm_ticks
-                                << std::endl;
-            amrex::Abort("REMORA terminated before the driver reached a valid coupled macro-step boundary.");
+        for (int ocn_substep = 0; ocn_substep < m_ocean_steps_per_exchange; ++ocn_substep) {
+            const amrex::Real step_time = ocean_time + ocn_substep * m_ocean_dt;
+            // Reapply the same interval-mean cache before every ocean advance;
+            // REMORA may refresh forcing arrays inside an individual timestep.
+            apply_atmos_states(m_atmos_to_ocean_apply_view, a2o_sample_time,
+                               global_ocean_step + ocn_substep);
+            const amrex::Real used = REMORAEvolveOneStep(m_remora, step_time, m_ocean_dt);
+            if (!std::isfinite(used) || used <= amrex::Real(0.0)) {
+                amrex::Abort("REMORA terminated before completing the exchange interval.");
+            }
+            enforce_dt("REMORA", m_ocean_dt, used, ocean_step + ocn_substep, ocn_substep);
         }
-        enforce_dt("REMORA", dt_ocn_request, ocn_dt_used, ocean_step, -1);
-
-        amrex::Print() << "Completed ocean step " << ocean_step
-                           << " at atmosphere tick " << m_atm_tick << "\n";
+        amrex::Print() << "Completed exchange " << (m_atm_tick / m_atm_steps_per_exchange)
+                       << " elapsed_time=" << m_atm_tick * m_erf_dt
+                       << " atmosphere_tick=" << m_atm_tick
+                       << " completed_ocean_steps=" << global_ocean_step + m_ocean_steps_per_exchange
+                       << "\n";
 
         if (m_use_two_way_coupling) {
             PrintDiagnostics("Ocean->atmos cache", m_ocean_to_atmos,

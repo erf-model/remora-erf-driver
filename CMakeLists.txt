@@ -68,6 +68,18 @@ set(AMReX_TINY_PROFILE ON CACHE BOOL "" FORCE)
 # This build owns AMReX, so its backend follows ours. Pick the GPU with
 # CMAKE_CUDA_ARCHITECTURES (80 for Perlmutter's A100s).
 set(AMReX_GPU_BACKEND ${ERF_REMORA_GPU_BACKEND} CACHE STRING "" FORCE)
+set(_erf_remora_cuda OFF)
+if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA")
+  set(_erf_remora_cuda ON)
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+endif()
+set(ERF_ENABLE_HIP OFF CACHE BOOL "" FORCE)
+set(ERF_ENABLE_SYCL OFF CACHE BOOL "" FORCE)
+set(Kokkos_ENABLE_CUDA ${_erf_remora_cuda} CACHE BOOL "" FORCE)
+set(Kokkos_ENABLE_CUDA_LAMBDA ${_erf_remora_cuda} CACHE BOOL "" FORCE)
+set(Kokkos_ENABLE_CUDA_RELOCATABLE_DEVICE_CODE ${_erf_remora_cuda} CACHE BOOL "" FORCE)
+message(STATUS "Coupled GPU backend: ${ERF_REMORA_GPU_BACKEND}; precision: DOUBLE")
 
 option(ERF_ENABLE_RRTMGP "Enable RTE-RRTMGP Radiation" ON)
 option(ERF_ENABLE_NETCDF "Enable NETCDF" ON)
@@ -92,11 +104,7 @@ set(ERF_PRECISION DOUBLE CACHE STRING "" FORCE)
 set(ERF_BUILD_LIBRARY_ONLY ON CACHE BOOL "" FORCE)
 set(ERF_ENABLE_MULTIBLOCK ON CACHE BOOL "" FORCE)
 set(ERF_ENABLE_TINY_PROFILE ON CACHE BOOL "" FORCE)
-if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA")
-  set(ERF_ENABLE_CUDA ON CACHE BOOL "" FORCE)
-else()
-  set(ERF_ENABLE_CUDA OFF CACHE BOOL "" FORCE)
-endif()
+set(ERF_ENABLE_CUDA ${_erf_remora_cuda} CACHE BOOL "" FORCE)
 
 set(REMORA_DIM 3 CACHE STRING "" FORCE)
 set(REMORA_USE_INTERNAL_AMREX OFF CACHE BOOL "" FORCE)
@@ -201,7 +209,7 @@ target_link_libraries(
 )
 
 # The driver's own sources launch AMReX device lambdas, so they compile as CUDA too.
-if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA")
+if(_erf_remora_cuda)
   setup_target_for_cuda_compilation(erf-remora-driver)
 endif()
 
@@ -218,6 +226,10 @@ install(
 
 if(ERF_REMORA_ENABLE_TESTS)
   enable_testing()
+  add_executable(test_coupled_cadence tests/test_coupled_cadence.cpp)
+  target_include_directories(test_coupled_cadence PRIVATE Source)
+  add_test(NAME coupled_cadence COMMAND test_coupled_cadence)
+  set_tests_properties(coupled_cadence PROPERTIES LABELS "cadence")
 
   function(erf_remora_add_restart_test _name _input _work_subdir)
     set(options)
@@ -429,6 +441,31 @@ if(ERF_REMORA_ENABLE_TESTS)
   # has_diff on its own, so the deck's erf.molec_diff_type=None stands.
 
   if(FCOMPARE_EXE)
+    # Non-integral ocean/atmosphere ratio, with checkpoints at exchange boundaries.
+    foreach(_exchange 30 60)
+      math(EXPR _ocean_steps "${_exchange} * 2 / 3")
+      math(EXPR _final_ocean_steps "${_ocean_steps} * 2")
+      math(EXPR _final_atm_steps "${_exchange} * 2")
+      if(_final_atm_steps LESS 100)
+        set(_atm_compare_suffix "000${_final_atm_steps}")
+      else()
+        set(_atm_compare_suffix "00${_final_atm_steps}")
+      endif()
+      erf_remora_add_restart_test(
+        reproducer_restart_independent_exchange_${_exchange}
+        Exec/Upwelling/inputs_twoway restart_exchange_${_exchange}
+        ERF_RESTART_SUFFIX 000${_exchange}
+        REMORA_RESTART_SUFFIX 000${_ocean_steps}
+        ERF_COMPARE_SUFFIX ${_atm_compare_suffix}
+        REMORA_COMPARE_SUFFIX 000${_final_ocean_steps}
+        EXCHANGE_COMPARE_SUFFIX 000${_ocean_steps}
+        ERF_PLOT_INT ${_exchange} ERF_CHECK_INT ${_exchange}
+        REMORA_PLOT_INT ${_ocean_steps} REMORA_CHECK_INT ${_ocean_steps}
+        EXCHANGE_PLOT_INT ${_ocean_steps}
+        RUNTIME_ARGS "driver.atm2ocn_mode=flux" "driver.time_average_atm2ocn_flux=1"
+          "erf.fixed_dt=1" "remora.fixed_dt=1.5" "remora.ndtfast=3"
+          "driver.exchange_interval=${_exchange}" "max_step=${_final_ocean_steps}")
+    endforeach()
     set(_erf_remora_upwelling_cases
       "oneway|Exec/Upwelling/inputs_oneway"
       "twoway|Exec/Upwelling/inputs_twoway")

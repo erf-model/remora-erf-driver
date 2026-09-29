@@ -1647,7 +1647,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
 }
 
 // Decide the frame, and refuse to guess. ERF reports lon/lat degrees
-// (XLONG_U/XLAT_V) while REMORA's x_psi/y_psi are meters in a projection the
+// (XLONG/XLAT) while REMORA's x_psi/y_psi are meters in a projection the
 // grid file does not record, so a half-available pair cannot be reconciled:
 // clipping degrees against meters yields zero overlap for every destination
 // cell, which normalizes to all-zero weights and a silently unforced ocean.
@@ -1713,9 +1713,11 @@ ERFRemoraMultiBlockContainer::ResolveRemapFrame()
                    << " (requested " << m_remap_frame_request << ")\n";
     if (m_remap_verbose >= 1) {
         if (m_remap_spherical) {
-            amrex::Print() << "[driver] remap corner ranges: "
-                           << describe("remora(lon,lat)", remora_lon, remora_lat) << " "
-                           << describe("erf(lon,lat)", erf_lon, erf_lat) << "\n";
+            // ERF reports cell centres; its corner mesh, built from them, reaches
+            // half a cell further on each side.
+            amrex::Print() << "[driver] remap lon/lat ranges: "
+                           << describe("remora corners(lon,lat)", remora_lon, remora_lat) << " "
+                           << describe("erf centers(lon,lat)", erf_lon, erf_lat) << "\n";
         } else {
             amrex::Print() << "[driver] remap Cartesian extents: remora=["
                            << m_ocn_rb.lo(0) << "," << m_ocn_rb.hi(0) << "]x["
@@ -1816,16 +1818,18 @@ ERFRemoraMultiBlockContainer::ResolveDonorFillMode()
 
 // ERF-side geometry, built entirely on the ERF layout.
 //
-// ERF stores lon_m from XLONG_U (longitude on the cell's west edge, at the
-// cell's mid-latitude) and lat_m from XLAT_V (latitude on the south edge, at the
-// mid-longitude). Using those directly as corners is not watertight: cell
-// (i,j)'s NE corner would be (lon_m(i+1,j), lat_m(i,j+1)) while cell (i+1,j+1)'s
-// SW corner is (lon_m(i+1,j+1), lat_m(i+1,j+1)), and under Lambert rotation
-// those differ, leaving gaps and overlaps in a mesh that a conservative remap
-// assumes tiles exactly. One staggered average per direction moves each field to
-// the node, so every node is computed once and shared by all four adjacent
-// cells. This is the same centers-to-corners step as SCRIP's create_psimesh
-// (COAWST Lib/SCRIP_COAWST/read_wrf.f), adapted to ERF's edge-staggered storage.
+// ERF reports lon/lat at cell centers (WRF's XLONG/XLAT or metgrid's
+// XLONG_M/XLAT_M), so every corner has to be derived. Each node is the average
+// of the four cells around it, computed once and shared by all four, so the mesh
+// tiles exactly as a conservative remap assumes. This is SCRIP's create_psimesh
+// (COAWST Lib/SCRIP_COAWST/read_wrf.f). ERF's ghost cells at the domain boundary
+// are clamped copies of the edge cell, and averaging with those would put the
+// outer ring of nodes on the edge-cell centers, half a cell inward. So the
+// centers are first extended one ring by linear extrapolation, which is SCRIP's
+// create_extra_rho_grid, before averaging.
+//
+// Not handled, as before: a grid whose cells straddle a longitude wrap. The
+// average would be wrong there, and so would the clipping downstream.
 void
 ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
 {
@@ -1839,7 +1843,7 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
     const iMultiFab* erf_is_land = nullptr;
     ERFGetLandMask(m_erf, &erf_is_land);
 
-    // Reconcile longitude conventions. ERF carries WRF's XLONG_U, which is
+    // Reconcile longitude conventions. ERF carries WRF's XLONG, which is
     // signed (-180..180); a ROMS grid file may store lon_psi either signed or as
     // 0..360, and the two never overlap when they disagree - every weight would
     // come out zero. Pick the single 360-degree shift for the ERF longitudes that
@@ -1884,18 +1888,28 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
     m_erf_node_coords->setVal(0.0);
 
     const Box node_domain = erf_node_ba.minimalBox();
+    const Box cell_domain = erf_cell_ba.minimalBox();
+
+    // Cell centers with one ghost ring: interior ghosts from neighbors, domain
+    // ghosts extrapolated (ExtendCornerMeshOneRing is index-generic).
+    MultiFab centers(erf_cell_ba, erf_dm, 2, IntVect(1,1,0));
+    MultiFab::Copy(centers, *erf_lon, 0, 0, 1, 0);
+    MultiFab::Copy(centers, *erf_lat, 0, 1, 1, 0);
+    centers.FillBoundary();
+    ExtendCornerMeshOneRing(centers, cell_domain);
 
     for (MFIter mfi(*m_erf_node_coords); mfi.isValid(); ++mfi) {
         const Box nbx = mfi.validbox();
         auto node = m_erf_node_coords->array(mfi);
-        auto const& lon = erf_lon->const_array(mfi);
-        auto const& lat = erf_lat->const_array(mfi);
+        auto const& cc = centers.const_array(mfi);
 
         for (int j = nbx.smallEnd(1); j <= nbx.bigEnd(1); ++j) {
             for (int i = nbx.smallEnd(0); i <= nbx.bigEnd(0); ++i) {
-                // lon_m is already nodal in i and centered in j; lat_m the reverse.
-                node(i,j,0,0) = Real(0.5) * (lon(i,j-1,0) + lon(i,j,0)) + lon_shift;
-                node(i,j,0,1) = Real(0.5) * (lat(i-1,j,0) + lat(i,j,0));
+                for (int c = 0; c < 2; ++c) {
+                    node(i,j,0,c) = Real(0.25) * (cc(i-1,j-1,0,c) + cc(i,j-1,0,c) +
+                                                  cc(i-1,j  ,0,c) + cc(i,j  ,0,c));
+                }
+                node(i,j,0,0) += lon_shift;
             }
         }
     }
@@ -1927,31 +1941,36 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
     }
 
     if (m_remap_verbose >= 1) {
-        // The averaged mesh is watertight by construction (one value per shared
-        // node), so measure instead how far it moved the corner relative to
-        // using the raw edge-staggered arrays as corners. That displacement is
-        // exactly the gap the naive construction would have left between
-        // neighboring source cells, and it is the number to watch if the corner
-        // source ever changes.
-        Real max_shift = 0.0;
+        // The mesh is watertight by construction, so measure whether it sits
+        // where the cells are: how far each cell's corner mean lies from the
+        // cell center ERF reported. On a smooth grid that is a small curvature
+        // term; a mesh misplaced by a staggering mistake shows up here as a
+        // sizable fraction of a cell.
+        Real max_offset = 0.0;
         for (MFIter mfi(*m_erf_node_coords); mfi.isValid(); ++mfi) {
-            const Box nbx = mfi.validbox() & node_domain;
+            // The node MultiFab's validbox is nodal; iterate its cells.
+            const Box bx = amrex::enclosedCells(mfi.validbox()) & cell_domain;
             auto const& node = m_erf_node_coords->const_array(mfi);
             auto const& lon  = erf_lon->const_array(mfi);
             auto const& lat  = erf_lat->const_array(mfi);
-            for (int j = nbx.smallEnd(1); j <= nbx.bigEnd(1); ++j) {
-                for (int i = nbx.smallEnd(0); i <= nbx.bigEnd(0); ++i) {
-                    // Undo lon_shift so this measures the corner displacement, not
-                    // the convention change.
-                    const Real dx = (node(i,j,0,0) - lon_shift) - lon(i,j,0);
-                    const Real dy = node(i,j,0,1) - lat(i,j,0);
-                    max_shift = std::max(max_shift, std::sqrt(dx*dx + dy*dy));
+            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                    Real mean[2];
+                    for (int c = 0; c < 2; ++c) {
+                        mean[c] = Real(0.25) * (node(i,j,0,c) + node(i+1,j,0,c) +
+                                                node(i,j+1,0,c) + node(i+1,j+1,0,c));
+                    }
+                    // Undo lon_shift so this measures placement, not the
+                    // convention change.
+                    const Real dx = (mean[0] - lon_shift) - lon(i,j,0);
+                    const Real dy = mean[1] - lat(i,j,0);
+                    max_offset = std::max(max_offset, std::sqrt(dx*dx + dy*dy));
                 }
             }
         }
-        ParallelDescriptor::ReduceRealMax(max_shift);
+        ParallelDescriptor::ReduceRealMax(max_offset);
         amrex::Print() << "[driver] remap ERF corner mesh: nodes=" << node_domain
-                       << " max corner shift vs raw edge arrays=" << max_shift << " deg"
+                       << " max corner-mean offset from cell centers=" << max_offset << " deg"
                        << " ring_extension=" << (m_remap_extend_corner_ring ? "on" : "off") << "\n";
     }
 }

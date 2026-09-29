@@ -267,12 +267,14 @@ Under `remap_v = 1` the frame is followed by the geometry it derived — corner
 ranges in the spherical case, `remap Cartesian extents` otherwise, and:
 
 ```
-[driver] remap ERF corner mesh: nodes=... max corner shift vs raw edge arrays=... deg
+[driver] remap ERF corner mesh: nodes=... max corner-mean offset from cell centers=... deg
 ```
 
-`max corner shift` is how far the reconstructed staggered corners moved relative
-to the raw `XLONG_U`/`XLAT_V` arrays. Small is expected. Large means the corner
-reconstruction disagrees with the file's own staggered coordinates.
+The corners are averaged from ERF's cell-centered `XLONG`/`XLAT`. The
+`corner-mean offset` is how far each cell's four corners, averaged, land from
+that cell's reported center. Small is expected (a curvature term). A sizable
+fraction of a cell means the mesh is misplaced, e.g. a staggering mismatch
+between ERF and the driver.
 
 Longitude convention is reconciled automatically:
 

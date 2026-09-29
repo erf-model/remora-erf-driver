@@ -168,6 +168,11 @@ main (int argc, char* argv[])
         int default_n_proper = 2;
         pp_amr.queryAdd("n_proper", default_n_proper);
 
+        // ERF's add_par default: never split grids in z. ERF rejects implicit
+        // substepping (its default) without it, and amrex's own default is -1.
+        int default_no_box_split_dir = 2;
+        pp_amr.queryAdd("no_box_split_dir", default_no_box_split_dir);
+
         // The driver owns the combined ParmParse environment, so drop
         // the prefixed alias; the canonical max_step/stop_time keys remain.
         // Capture remora.stop_time before removing it: under a nonzero

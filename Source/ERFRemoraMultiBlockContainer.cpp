@@ -1666,7 +1666,7 @@ ERFRemoraMultiBlockContainer::ResolveRemapFrame()
         REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon, &remora_lat);
     }
     if (m_erf != nullptr) {
-        ERFGetOceanToAtmosCornerCoordinates(m_erf, &erf_lon, &erf_lat);
+        ERFGetOceanToAtmosCellCenterLonLat(m_erf, &erf_lon, &erf_lat);
     }
 
     const bool remora_has_lonlat = (remora_lon != nullptr && remora_lat != nullptr);
@@ -1837,7 +1837,7 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
 
     const MultiFab* erf_lon = nullptr;
     const MultiFab* erf_lat = nullptr;
-    ERFGetOceanToAtmosCornerCoordinates(m_erf, &erf_lon, &erf_lat);
+    ERFGetOceanToAtmosCellCenterLonLat(m_erf, &erf_lon, &erf_lat);
     AMREX_ALWAYS_ASSERT(erf_lon != nullptr && erf_lat != nullptr);
 
     const iMultiFab* erf_is_land = nullptr;

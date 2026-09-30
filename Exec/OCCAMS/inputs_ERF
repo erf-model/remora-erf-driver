@@ -24,6 +24,11 @@ erf.real_width          = 5
 erf.real_set_width      = 1
 erf.real_extrap_w       = true
 erf.rebalance_wrf_input = true
+# Keep WRF's level heights instead of rebuilding a 20 m-stretched grid, which is 3x
+# finer aloft and lets desert thermals hit the vertical CFL limit by t=640 s. The
+# erfbdy cache depends on the levels: regenerate it when this changes. Rationale in
+# translation_map.tsv (e_vert) and Exec/README.md.
+erf.avg_grid_faces_to_nodes = true
 erf.nc_init_file_0      = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfinput_d01"
 erf.nc_bdy_file         = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrfbdy_d01"
 erf.nc_low_file         = "/pscratch/sd/k/kehinson/oracle/OCCAMS_for_Seahorce/base_drag_202108/wrflowinp_d01"
@@ -38,6 +43,10 @@ erf.moisture_model    = "Kessler"
 # immediately. "YSUNew" is the full port -- same scheme family, no stability or
 # zref restriction -- so it is the faithful translation here.
 erf.pbl_type          = "YSUNew"
+# Implicit vertical diffusion in all three RK stages, as WRF's YSU is. The default
+# 1 1 0 leaves the third stage explicit, which blows up over the steepest terrain.
+# Rationale in translation_map.tsv (bl_pbl_physics) and Exec/README.md.
+erf.vert_implicit_fac = 1 1 1
 erf.molec_diff_type   = "None"
 erf.les_type          = "None"
 erf.use_gravity       = true
@@ -126,4 +135,6 @@ erf.check_int  = 8640
 
 erf.plot_file_1 = occams_erf_plt
 erf.plot_int_1  = 360
-erf.plot_vars_1 = density x_velocity y_velocity z_velocity pressure temp theta qv qc qr pres_hse z_phys
+# ERF silently drops plot names it does not know; Kessler rain is "qrain", eddy
+# viscosity is "nut". Check the first plotfile with fvarnames.
+erf.plot_vars_1 = density x_velocity y_velocity z_velocity pressure temp theta qv qc qrain nut pres_hse z_phys

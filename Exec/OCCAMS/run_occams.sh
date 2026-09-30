@@ -31,20 +31,20 @@ LOGDIR="${LOGDIR:-.}"
 
 # Overrides applied to the production cases only.
 #
-# FPE trapping is disabled because the coupled OCCAMS case currently raises
-# invalid operations during startup. This is a workaround, not a setting to
-# keep: if the run is clean, drop it and let the trap catch real problems.
-# Note the parameter is amrex.fpe_trap_invalid -- amrex.trap_fpe_invalid is not
-# a real AMReX parameter and is silently ignored.
+# This used to be (amrex.fpe_trap_invalid=0 remora.fixed_dt=10). Both hid problems
+# rather than working around them: startup no longer raises invalid operations,
+# and the 10 s ocean step cut every "production" run to a single ERF step, so
+# neither the atmosphere blowup at ERF step 10 nor the ocean barotropic
+# instability at the real 300 s step was ever reached. The decks now run at their
+# own cadence -- 30 ERF steps and one 300 s ocean step per max_step -- so nothing
+# is overridden here. Pass overrides through EXTRA_ARGS, for example
+# EXTRA_ARGS="max_step=6" for 30 minutes of simulation.
 #
-# The fixed ocean timestep keeps the production cases comparable.
-#
-# These are NOT applied to inputs_OCCAMS_smoke. AMReX reads the inputs file
-# first and then the command line (ppinit in AMReX_ParmParse.cpp), so command
-# line entries win -- and the smoke deck deliberately sets
-# amrex.fpe_trap_invalid = 1 and remora.fixed_dt = 20.0 to trap FPEs and to get
-# two ERF steps per ocean step. Overriding either one defeats the deck.
-CASE_ARGS=(amrex.fpe_trap_invalid=0 remora.fixed_dt=10)
+# AMReX reads the inputs file first and then the command line (ppinit in
+# AMReX_ParmParse.cpp), so command line entries win. Note the parameter is
+# amrex.fpe_trap_invalid -- amrex.trap_fpe_invalid is not a real AMReX parameter
+# and is silently ignored.
+CASE_ARGS=()
 
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -64,6 +64,19 @@ fi
 echo "driver: ${DRIVER}"
 echo "built : $(date -r "${DRIVER}" '+%Y-%m-%d %H:%M:%S')"
 echo
+
+# erfbdy is a CACHE of the wrfbdy boundary data, converted to ERF's levels by the
+# ERF build that first ran here. ERF reuses any existing erfbdy/Header without
+# checking who wrote it. A cache written by an older ERF is silently wrong: one
+# written before ERF f0ac0b388 carries a height-interpolation bug and blasts all
+# four lateral edges on the first step. Regenerate (move the
+# directory aside) after any ERF submodule update; the next run rewrites it from
+# wrfbdy in a few minutes.
+if [[ -f erfbdy/Header && erfbdy/Header -ot "${DRIVER}" ]]; then
+    echo "WARNING: erfbdy/Header ($(date -r erfbdy/Header '+%Y-%m-%d %H:%M')) predates the driver binary." >&2
+    echo "         If ERF changed since it was written, move erfbdy aside so it is regenerated." >&2
+    echo
+fi
 
 if ! command -v srun >/dev/null 2>&1; then
     echo "error: srun not found; are you in an allocation?" >&2

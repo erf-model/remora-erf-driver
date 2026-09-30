@@ -220,6 +220,13 @@ construction and one full exchange, with FPE trapping left on. It is not long
 enough to expose dynamical instability, so it guards startup and coupling, not
 the solution. Run `oneway` for that.
 
+After a pull that moves the ERF submodule, also move `Exec/OCCAMS/erfbdy` aside.
+It is a cache of the WRF boundary data converted by whichever ERF ran first, ERF
+reloads it without checking its provenance, and a stale one is silently wrong.
+The next run regenerates it from `wrfbdy_d01` in a few minutes; `run_occams.sh`
+warns when the cache is older than the driver binary. `Exec/README.md` has the
+details.
+
 See `Exec/OCCAMS/run_occams.sh` for per-case runs and rank overrides, and
 `Exec/README.md` for how to read the coupling diagnostics it prints.
 

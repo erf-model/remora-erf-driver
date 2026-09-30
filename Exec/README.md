@@ -159,6 +159,39 @@ Grids are non-conformal by design — ERF is `637 x 754`, REMORA is `563 x 751`
 over the same extent — so partial coverage is expected and the coverage
 diagnostics below carry real information.
 
+Boundary cache: on its first run ERF converts `wrfbdy_d01` to its own levels and
+writes the result to `Exec/OCCAMS/erfbdy/`, then every later run loads that
+directory instead of the NetCDF file. Nothing records which ERF wrote it, and
+the only consistency check is the variable count. A cache written by an older
+ERF is loaded silently and can be wrong — one written before ERF `f0ac0b388`
+carries a height-interpolation bug and blasts all four lateral edges within the
+first step. After any ERF submodule update, move
+`erfbdy` aside; the next run regenerates it in a few minutes. The log line that
+tells you which happened is `Loading boundary data from erfbdy file` (cache) versus
+`Initialized erfbdy file` (fresh conversion). `run_occams.sh` warns when the cache
+predates the driver binary.
+
+Cadence and stability: `max_step` counts ocean steps. With the deck's
+`remora.fixed_dt = 300` and `erf.fixed_dt = 10`, one `max_step` is thirty ERF
+steps and one ocean step, about ten minutes on sixteen ranks. Three settings that
+differ from ERF's and REMORA's defaults are load-bearing and are explained in
+`translation_map.tsv`:
+
+- `erf.vert_implicit_fac = 1 1 1` in `inputs_ERF` makes the PBL vertical
+  diffusion implicit in every RK stage, as WRF's YSU is. With the default the
+  third stage is explicit and a two-cell vertical mode grows over the steepest
+  terrain and kills ERF step 10.
+- `erf.avg_grid_faces_to_nodes = true` in `inputs_ERF` keeps WRF's vertical
+  levels. ERF's default rebuilds a grid from the 20 m surface layer that is about
+  three times finer than WRF's between 500 m and 2 km, and resolved afternoon
+  thermals over the Nevada desert then reach the vertical CFL limit at ERF step
+  64. The boundary cache depends on the levels, so move `erfbdy` aside whenever
+  this flag changes.
+- `remora.ndtfast = 300` in each coupled deck keeps the barotropic step at the
+  1 s the ROMS `ocean.in` used. Inheriting the base deck's 15 with a 300 s step
+  makes it 20 s and the ocean's first step fails. Any deck that changes
+  `remora.fixed_dt` must scale `remora.ndtfast` with it.
+
 ---
 
 ## Reading driver output

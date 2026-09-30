@@ -33,9 +33,10 @@ void InitERFSolver(void* erf_handle);
 void ERFGetOceanToAtmosSurfaceLayout(void* erf_handle,
                                      amrex::BoxArray& ba,
                                      amrex::DistributionMapping& dm);
-void ERFGetOceanToAtmosCornerCoordinates(void* erf_handle,
-                                         const amrex::MultiFab** x_corner,
-                                         const amrex::MultiFab** y_corner);
+// Level-0 lon/lat at ERF mass points (cell centers, not corners).
+void ERFGetOceanToAtmosCellCenterLonLat(void* erf_handle,
+                                        const amrex::MultiFab** lon_cc,
+                                        const amrex::MultiFab** lat_cc);
 // Land mask (1 = land, 0 = water) at ERF level-0, cell-centered on the rho grid.
 void ERFGetLandMask(void* erf_handle, const amrex::iMultiFab** is_land);
 // Which atmos->ocean lanes ERF's pack actually writes, as 0/1 in active-view

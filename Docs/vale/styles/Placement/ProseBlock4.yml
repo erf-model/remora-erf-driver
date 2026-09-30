@@ -1,0 +1,8 @@
+# Four or more consecutive plain // comment lines: prose has outgrown a comment.
+extends: existence
+message: "Comment block of 4+ prose lines -- move this to a docs page and leave a \\see reference."
+level: error
+scope: raw
+nonword: true
+tokens:
+  - '(?m)^[ \t]*//[^!/\n].*(\n[ \t]*//[^!/\n].*){3,}'

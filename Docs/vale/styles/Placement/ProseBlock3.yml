@@ -1,0 +1,12 @@
+# Three or more plain comment lines, excluding the two sanctioned shapes:
+# a block carrying a \see reference, and a decorated rule line.
+#
+# BlockIgnores cannot express this: it operates on the markup layer, and Vale
+# extracts C++ comments before that, so it has no effect on code files
+# (verified by A/B -- identical counts with and without). A script rule sees
+# the raw scope and can inspect block structure, so the exemption lives there.
+extends: script
+message: "Three prose comment lines with no \\see reference -- move this to a docs page, or add one."
+level: warning
+scope: raw
+script: block3.tengo

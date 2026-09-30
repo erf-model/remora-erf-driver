@@ -1,0 +1,12 @@
+# ASCII rules inside comments: someone is building a document in a comment.
+#
+# The run must be matched anywhere in the line, not anchored after the
+# delimiter -- real table separators start with a short column
+# (`//   ---  ------  ----...`), so an anchored {5,} misses them.
+extends: existence
+message: "Markup rule inside a comment -- documents belong in Docs/, not a comment block."
+level: warning
+scope: raw
+nonword: true
+tokens:
+  - '(?m)^[ \t]*(//|\*).*[-=+]{5,}'

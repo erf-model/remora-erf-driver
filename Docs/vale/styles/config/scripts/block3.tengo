@@ -1,0 +1,53 @@
+text := import("text")
+
+// Three-or-more-line plain comment blocks that carry neither a \see reference
+// nor a decorated rule line. Those two are the sanctioned three-line shapes;
+// four or more lines is handled by ProseBlock4 regardless.
+matches := []
+
+lines := text.split(scope, "\n")
+run := []
+start := 0
+offset := 0
+
+is_comment := func(s) {
+  t := text.trim_space(s)
+  return len(t) > 2 && t[0] == '/' && t[1] == '/' && t[2] != '!' && t[2] != '/'
+}
+
+exempt := func(block) {
+  for l in block {
+    if text.contains(l, "\\see") { return true }
+    t := text.trim_space(l)
+    if len(t) > 6 {
+      body := text.trim_space(text.trim_prefix(t, "//"))
+      if len(body) > 3 {
+        c := body[0]
+        if c == '-' || c == '=' || c == '*' || c == '+' || c == '_' || c == '#' {
+          same := true
+          for i := 0; i < 4; i++ { if body[i] != c { same = false } }
+          if same { return true }
+        }
+      }
+    }
+  }
+  return false
+}
+
+flush := func() {
+  if len(run) >= 3 && !exempt(run) {
+    matches = append(matches, {begin: start, end: start + len(text.join(run, "\n"))})
+  }
+}
+
+for line in lines {
+  if is_comment(line) {
+    if len(run) == 0 { start = offset }
+    run = append(run, line)
+  } else {
+    flush()
+    run = []
+  }
+  offset += len(line) + 1
+}
+flush()

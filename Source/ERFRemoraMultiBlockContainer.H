@@ -132,6 +132,11 @@ public:
     const amrex::MultiFab* GetO2AWeightMultiFab() const { return m_weight_o2a_mf.get(); }
     const amrex::iMultiFab* GetO2AIndexMultiFab() const { return m_index_o2a_mf.get(); }
 
+    // Public only because they launch device lambdas, which nvcc refuses inside
+    // private or protected member functions. Not part of the driver's interface.
+    void BuildOceanToAtmosWeights();
+    void SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land);
+
 private:
     using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&,
                                               amrex::Real, long long)>;
@@ -245,10 +250,7 @@ private:
     void BuildREMORAStagingPlan();
 
     void BuildAtmosToOceanWeights();
-    void BuildOceanToAtmosWeights();
     void CompareWeightsWithSCRIP();
-
-    void SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land);
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;

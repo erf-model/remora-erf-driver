@@ -11,6 +11,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ERF_REMORA_ENABLE_MPI "Enable MPI across AMReX/ERF/REMORA" ON)
 option(ERF_REMORA_ENABLE_OPENMP "Enable OpenMP across AMReX/ERF/REMORA" OFF)
 option(ERF_REMORA_ENABLE_TESTS "Enable top-level tests" OFF)
+set(ERF_REMORA_GPU_BACKEND NONE CACHE STRING "GPU backend for AMReX, ERF, REMORA and the driver")
+set_property(CACHE ERF_REMORA_GPU_BACKEND PROPERTY STRINGS NONE CUDA)
+if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA")
+  enable_language(CUDA)
+elseif(NOT ERF_REMORA_GPU_BACKEND STREQUAL "NONE")
+  message(FATAL_ERROR "ERF_REMORA_GPU_BACKEND=${ERF_REMORA_GPU_BACKEND}: only NONE and CUDA are wired up")
+endif()
 set(_erf_remora_enable_fcompare_default OFF)
 if(ERF_REMORA_ENABLE_TESTS)
   set(_erf_remora_enable_fcompare_default ON)
@@ -58,7 +65,9 @@ set(AMReX_FPE OFF CACHE BOOL "" FORCE)
 # ERF/REMORA_ENABLE_TINY_PROFILE below only reach AMReX when they build it
 # themselves; this build owns AMReX, so it has to be set here.
 set(AMReX_TINY_PROFILE ON CACHE BOOL "" FORCE)
-set(AMReX_GPU_BACKEND NONE CACHE STRING "" FORCE)
+# This build owns AMReX, so its backend follows ours. Pick the GPU with
+# CMAKE_CUDA_ARCHITECTURES (80 for Perlmutter's A100s).
+set(AMReX_GPU_BACKEND ${ERF_REMORA_GPU_BACKEND} CACHE STRING "" FORCE)
 
 option(ERF_ENABLE_RRTMGP "Enable RTE-RRTMGP Radiation" ON)
 option(ERF_ENABLE_NETCDF "Enable NETCDF" ON)
@@ -83,6 +92,11 @@ set(ERF_PRECISION DOUBLE CACHE STRING "" FORCE)
 set(ERF_BUILD_LIBRARY_ONLY ON CACHE BOOL "" FORCE)
 set(ERF_ENABLE_MULTIBLOCK ON CACHE BOOL "" FORCE)
 set(ERF_ENABLE_TINY_PROFILE ON CACHE BOOL "" FORCE)
+if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA")
+  set(ERF_ENABLE_CUDA ON CACHE BOOL "" FORCE)
+else()
+  set(ERF_ENABLE_CUDA OFF CACHE BOOL "" FORCE)
+endif()
 
 set(REMORA_DIM 3 CACHE STRING "" FORCE)
 set(REMORA_USE_INTERNAL_AMREX OFF CACHE BOOL "" FORCE)
@@ -95,11 +109,20 @@ set(REMORA_PRECISION DOUBLE CACHE STRING "" FORCE)
 set(REMORA_BUILD_EXECUTABLES OFF CACHE BOOL "" FORCE)
 set(REMORA_BUILD_LIBRARY_ONLY ON CACHE BOOL "" FORCE)
 set(REMORA_ENABLE_TINY_PROFILE ON CACHE BOOL "" FORCE)
+set(REMORA_ENABLE_CUDA ${ERF_ENABLE_CUDA} CACHE BOOL "" FORCE)
 set(REMORA_ENABLE_PNETCDF ${REMORA_ENABLE_PNETCDF} CACHE BOOL "" FORCE)
 
 option(ERF_ENABLE_PNETCDF "Enable PNETCDF" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/Submodules/ERF/CMake")
+# ERF's CrayDetection.cmake sets AMReX_CUDA_ARCH on Cray, and SetERFCompileFlags.cmake
+# then calls set_cuda_architectures, which AMReX removed (AMReX #4773). Until ERF
+# drops that call, supply it: it only turns AMReX_CUDA_ARCH (8.0) into 80.
+if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA" AND NOT COMMAND set_cuda_architectures)
+  macro(set_cuda_architectures _var)
+    string(REPLACE "." "" AMREX_CUDA_ARCHS "${${_var}}")
+  endmacro()
+endif()
 add_subdirectory(Submodules/ERF erf-build)
 add_subdirectory(Submodules/REMORA remora-build)
 
@@ -176,6 +199,11 @@ target_link_libraries(
     erf_api
     remora_api
 )
+
+# The driver's own sources launch AMReX device lambdas, so they compile as CUDA too.
+if(ERF_REMORA_GPU_BACKEND STREQUAL "CUDA")
+  setup_target_for_cuda_compilation(erf-remora-driver)
+endif()
 
 if(TARGET Kokkos::kokkos)
   target_link_libraries(erf-remora-driver PRIVATE Kokkos::kokkos)

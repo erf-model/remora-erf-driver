@@ -386,9 +386,10 @@ FILE = inputs_ERF
 driver.coupling_direction = two_way
 driver.atm2ocn_mode       = state
 
-# Coupling cadence is derived, not declared: the driver computes
-# atm_substeps_per_ocean_step = remora.fixed_dt / erf.fixed_dt and aborts
-# unless that ratio rounds to an integer within tolerance.
+# Coupling cadence: the solvers exchange every driver.exchange_interval
+# seconds (default remora.fixed_dt). The driver aborts unless the interval is
+# an integer multiple of both erf.fixed_dt and remora.fixed_dt, and unless
+# max_step (in ocean steps) ends on an exchange boundary.
 erf.fixed_dt    = 3.0
 remora.fixed_dt = 300.0
 
@@ -402,14 +403,15 @@ remora.n_cell = 50 20 40
 driver.remap_frame       = auto     # auto | spherical | cartesian
 driver.remap_v           = 1        # remap geometry and coverage detail
 driver.v                 = 0        # driver lifecycle detail
-driver.plot_int_exchange = -1       # exchange-field plotfiles
+driver.plot_int_exchange = -1       # exchange-field plotfiles, in ocean steps;
+                                    # checked once per exchange
 
 # What a wet ocean cell with no atmosphere source cell receives.
 # Spherical frame only; inert in the cartesian frame.
 driver.remap_donor_fill  = withhold # withhold | coawst
 driver.remap_donor_max_diagonals = 3.0   # coawst acceptance radius, coawst only
-driver.time_average_atm2ocn_state = 0 # mean state-character lanes over each ocean step
-driver.time_average_atm2ocn_flux  = 0 # mean flux-character lanes over each ocean step
+driver.time_average_atm2ocn_state = 0 # mean state-character lanes over each exchange
+driver.time_average_atm2ocn_flux  = 0 # mean flux-character lanes over each exchange
 ```
 
 `driver.remap_donor_fill` decides what happens to a wet REMORA cell that no ERF
@@ -443,7 +445,7 @@ interval-end forcing. The state control covers `Uwind`, `Vwind`, `Patm`,
 independent of `driver.atm2ocn_mode`, so the shared `rain` and radiation lanes
 always follow the flux control. When enabled, the driver uses a trapezoidal
 mean, labels it at the interval midpoint, and resets and drains its accumulator
-inside the macro-step rather than checkpointing it.
+inside the exchange interval rather than checkpointing it.
 
 Retired keys, for anyone reading an old deck: `driver.synthetic_only`,
 `driver.dt_atm`, `driver.atm_substeps_per_ocean_step`, `driver.ocean_steps`,

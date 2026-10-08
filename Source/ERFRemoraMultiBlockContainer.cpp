@@ -3852,7 +3852,7 @@ ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename
        << (m_remap_donor_fill_mode == DonorFillMode::Coawst ? "coawst" : "withhold") << "\n"
        << "atm steps/exchange : " << m_atm_steps_per_exchange
        << "  (erf dt=" << m_erf_dt << ")\n"
-       << "ocean steps/exchange : " << m_ocean_steps_per_exchange
+       << "ocn steps/exchange : " << m_ocean_steps_per_exchange
        << "  (ocean dt=" << m_ocean_dt << ")\n\n";
 
     if (ocean_to_atmos) {
@@ -3922,7 +3922,10 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
     if (m_atm_steps_per_exchange <= 0 || m_ocean_steps_per_exchange <= 0 ||
         ocean_steps < 0 || ocean_steps % m_ocean_steps_per_exchange != 0 ||
         m_atm_tick % m_atm_steps_per_exchange != 0) {
-        amrex::Abort("Invalid exchange schedule or restart boundary.");
+        amrex::Abort("Invalid exchange schedule or restart boundary: ocean_steps=" +
+                     std::to_string(ocean_steps) + " atm_tick=" + std::to_string(m_atm_tick) +
+                     " atm_steps_per_exchange=" + std::to_string(m_atm_steps_per_exchange) +
+                     " ocean_steps_per_exchange=" + std::to_string(m_ocean_steps_per_exchange));
     }
 
     AdvanceBlocksWithCallbacks(

@@ -297,7 +297,7 @@ Lane character, not `driver.atm2ocn_mode`, selects the control. In particular,
 appear in the state contract. The controls can be enabled separately or
 together. Non-averaged lanes retain the interval-end sample, and averaged
 exchange plotfiles are stamped at the interval midpoint. The accumulator is
-reset and consumed within one ocean macro-step; it is not checkpoint state.
+reset and consumed within one exchange interval; it is not checkpoint state.
 
 ### Which geometry the remap chose
 

@@ -1776,10 +1776,18 @@ ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
             ok(nc_open(m_scrip_weights_file.c_str(), NC_NOWRITE, &file), "open");
             // COAWST files hold one group per direction; a plain SCRIP file has none.
             if (nc_inq_grp_ncid(file, group.c_str(), &grp) != NC_NOERR) { grp = file; }
-            ok(nc_inq_varid(grp, "src_grid_dims", &id), "src_grid_dims");
-            ok(nc_get_var_int(grp, id, dims), "src_grid_dims");
-            ok(nc_inq_varid(grp, "dst_grid_dims", &id), "dst_grid_dims");
-            ok(nc_get_var_int(grp, id, dims + 2), "dst_grid_dims");
+            // Only a 2-D logically rectangular grid has (nx, ny); any other rank
+            // leaves zeros, which the size check below reports as skipped.
+            auto get_dims = [&] (const char* name, int* out) {
+                int dimid = 0;
+                size_t rank = 0;
+                ok(nc_inq_varid(grp, name, &id), name);
+                ok(nc_inq_vardimid(grp, id, &dimid), name);
+                ok(nc_inq_dimlen(grp, dimid, &rank), name);
+                if (rank == 2) { ok(nc_get_var_int(grp, id, out), name); }
+            };
+            get_dims("src_grid_dims", dims);
+            get_dims("dst_grid_dims", dims + 2);
             ok(nc_inq_dimid(grp, "num_links", &id), "num_links");
             ok(nc_inq_dimlen(grp, id, &len), "num_links");
             if (nc_inq_dimid(grp, "num_wgts", &nw_dim) == NC_NOERR) { nc_inq_dimlen(grp, nw_dim, &nw); }
@@ -1820,6 +1828,13 @@ ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
         // Links grouped by destination: links of 0-based dst address a are
         // [start[a], start[a+1]). Weights > 0 only.
         const Long ndst = Long(dims[2]) * dims[3];
+        const Long nsrc = Long(dims[0]) * dims[1];
+        for (Long l = 0; l < nlinks; ++l) {
+            if (src_addr[l] < 1 || src_addr[l] > nsrc || dst_addr[l] < 1 || dst_addr[l] > ndst) {
+                amrex::Abort("driver.scrip_weights_file " + m_scrip_weights_file + ": " + group +
+                             " link " + std::to_string(l) + " addresses a cell outside its grid_dims.");
+            }
+        }
         Vector<Long> start(ndst + 1, 0);
         for (Long l = 0; l < nlinks; ++l) { if (w[l] > 0) { ++start[dst_addr[l]]; } }   // 1-based
         for (Long a = 0; a < ndst; ++a) { start[a + 1] += start[a]; }

@@ -6,7 +6,7 @@
 # translation_map.tsv (columns transform_or_assumption, mismatch_tier, run_evidence)
 # and Exec/README.md, not here.
 #
-# Prerequisites (data only, see scratch/maximal_1day_run_manifest.md):
+# Prerequisites (data only):
 #   pnetcdf_compat/OCCAMS_clm_v7_merc_202108_64bit.nc   CDF-5 copy of the climatology
 #   pnetcdf_compat/oneyear_nudge_64bit.nc               CDF-5 copy of the nudge coefficients
 #   pnetcdf_compat/oneyear_forcings_qair.nc             forcing file with Qair renamed qair
@@ -18,6 +18,9 @@ FILE = inputs_ERF
 
 # ---------------------------------------------------------------- run control
 amrex.fpe_trap_invalid    = 1
+# CUDA builds: the driver builds remap weights in host loops over MultiFab data,
+# so the default arena must be managed memory. CPU builds ignore this.
+amrex.the_arena_is_managed = 1
 fabarray.mfiter_tile_size = 1024 1024 1024
 
 start_datetime = "2021-08-01 00:00:00"
@@ -61,8 +64,8 @@ erf.rrtmgp_cloud_optics_lw = rrtmgp-cloud-optics-coeffs-lw.nc
 # aerosol-aware; Morrison is the double-moment scheme with a WRFInput track record  [44]
 erf.moisture_model = "Morrison"
 
-# Land surface: WRF Noah-MP. This build has ERF_ENABLE_NOAHMP=OFF, so None is
-# explicit here and land temperature comes from wrflowinp TSK                    [53,260]
+# Land surface: WRF Noah-MP. The build compiles Noah-MP in, but its inputs are not
+# wired yet, so None is explicit here and land temperature comes from wrflowinp TSK [53,260]
 erf.land_surface_model = "None"
 
 # Boundary layer and surface layer                                               [168,169]

@@ -27,7 +27,7 @@ Run:
 
 ```bash
 cd Exec/Upwelling
-../../build/erf-remora-driver inputs_oneway
+../../build_cpu_noahmp/erf-remora-driver inputs_oneway
 ```
 
 Pulls in `inputs_ERF` and `inputs_REMORA` from the same directory. Needs no
@@ -46,7 +46,7 @@ Run:
 
 ```bash
 cd Exec/Upwelling
-../../build/erf-remora-driver inputs_twoway
+../../build_cpu_noahmp/erf-remora-driver inputs_twoway
 ```
 
 What to verify:
@@ -71,7 +71,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_oneway
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_oneway
 ```
 
 ---
@@ -87,7 +87,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_state
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_state
 ```
 
 ---
@@ -103,7 +103,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build/erf-remora-driver inputs_OCCAMS_flux
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_flux
 ```
 
 ### `OCCAMS/inputs_OCCAMS_smoke`
@@ -120,7 +120,7 @@ Run:
 
 ```bash
 cd Exec/OCCAMS
-srun -N 1 -n 16 ../../build_ncutil/erf-remora-driver inputs_OCCAMS_smoke
+srun -N 1 -n 16 ../../build_cpu_noahmp/erf-remora-driver inputs_OCCAMS_smoke
 ```
 
 Unlike the production decks it sets `amrex.fpe_trap_invalid = 1`, so floating
@@ -217,6 +217,19 @@ warnings: opting out of the default is never silent, whatever `remap_v` says.
 Raise `remap_v` when a coverage number looks wrong and you need the geometry
 behind it.
 
+The solvers' own flags control their side of the exchange:
+
+- `erf.v = 2` — ERF's coupled-SST check (the `Coupled SST apply` summary and its
+  range warning) on every ERF step. Below 2 it runs once, on the first step: the
+  driver hands ERF the same SST on every substep of an exchange, and REMORA has
+  already checked it.
+- `remora.v = 1` — REMORA's `ApplyAtmosphericFluxes validation` block and its wet
+  surface-temperature min/max on every exchange (below 1: the block once per run).
+  This also turns on all other REMORA `v = 1` output.
+
+REMORA's surface-temperature range warning is checked every exchange whatever
+the verbosity, and repeats only when a later exchange is worse.
+
 ### What contract is running
 
 ```
@@ -284,7 +297,7 @@ Lane character, not `driver.atm2ocn_mode`, selects the control. In particular,
 appear in the state contract. The controls can be enabled separately or
 together. Non-averaged lanes retain the interval-end sample, and averaged
 exchange plotfiles are stamped at the interval midpoint. The accumulator is
-reset and consumed within one ocean macro-step; it is not checkpoint state.
+reset and consumed within one exchange interval; it is not checkpoint state.
 
 ### Which geometry the remap chose
 
@@ -329,22 +342,39 @@ coverage count below will be zero.
 ### Coverage, ocean to atmosphere
 
 ```
-[driver] O2A coverage: uncovered <A> outside ocean footprint, <B> source-masked,
-                       <C> below coverage threshold (0.001)
+[driver] O2A SST owner match over <N> ERF surface cells (lon/lat in REMORA's convention):
+[driver]   ERF water, wet ocean donor     <n>  coupled SST
+[driver]   ERF water, outside ocean grid  <n>  keeps ERF SST (e.g. ERF (i,j) lon .. lat ..; i[..] j[..])
+[driver]   ERF water, REMORA dry          <n>  keeps ERF SST; mask disagreement (e.g. ...)
+[driver]   ERF water, thin wet overlap    <n>  keeps ERF SST; wet fraction < remap_min_coverage_frac=0.001
+[driver]   ERF land, REMORA wet           <n>  SST dropped; mask disagreement (e.g. ...)
+[driver]   ERF land, no/thin wet ocean    <n>  masks agree
+[driver]   zero-area ERF cell             <n>  skipped; degenerate corner mesh
 ```
 
-Three distinct reasons an ERF cell gets no ocean SST, and they mean different
-things:
+Every ERF surface cell is in exactly one row, by whether ERF calls it land and
+what REMORA has under it. Only the first row takes the coupled SST; the rows
+must add up to `<N>`, and a warning says so if they do not. Each disagreement
+row names one example cell (the lowest (i,j), so the same cell at any rank
+count, which is why it tends to sit on the south edge) and the i/j box of the
+whole row: a narrow box along the coast is a real coastline, a long straight
+band is a misalignment.
 
-| Bucket | Meaning | Normal on OCCAMS | If it is large |
-|---|---|---|---|
-| `outside ocean footprint` | No REMORA cell overlaps this ERF cell at all. | **Large.** Roughly the atmosphere area not over the ocean nest. | Expected; not a signal. |
-| `source-masked` | REMORA cells overlap, but all are dry in REMORA's mask. | **Thin, coastline-shaped.** | Grids misaligned — the ocean land mask is landing in the wrong place. This is the number that catches a bad spherical corner reconstruction. |
-| `below coverage threshold` | Real overlap, too little of it. | **Near zero.** Slivers at the nest edge. | The two grids are offset by a fraction of a cell. |
+| Row | Normal on OCCAMS (flux deck) | If it is large |
+|---|---|---|
+| `ERF water, wet ocean donor` | 217,989 | — |
+| `ERF water, outside ocean grid` | 2,925. The atmosphere reaches past the ocean nest. | Expected; not a signal. |
+| `ERF water, REMORA dry` | 2,058, coastline-shaped. | Grids misaligned: the ocean land mask is landing in the wrong place. This is the row that catches a bad corner reconstruction. |
+| `ERF water, thin wet overlap` | 0. Slivers at the nest edge. | The grids are offset by a fraction of a cell. |
+| `ERF land, REMORA wet` | 1,187, coastline-shaped. | The other direction of misalignment. |
+| `ERF land, no/thin wet ocean` | 256,139 | — |
+| `zero-area ERF cell` | 0 | The ERF corner mesh is broken at those cells. |
 
-Uncovered cells are not a hole: ERF keeps its own `wrflowinp` SST there. That is
-the withholding contract, and it is why the count being large is informative
-rather than fatal.
+Water cells without a donor are not a hole: ERF keeps its own `wrflowinp` SST
+there. That is the withholding contract. `ERF land, REMORA wet` cells keep their
+remap stencil (REMORA's pack zeroes ERF land anyway) but are not flagged as
+coupled, which is why the `remap coverage (O2A SST stencils ...)` line just above
+reports fewer uncovered cells than the table's not-coupled rows add up to.
 
 The threshold is `driver.remap_min_coverage_frac`, default `0.001`. A sliver
 overlap is worse than no overlap: normalization would turn 1e-6 of coverage into
@@ -359,6 +389,25 @@ numbers have not been checked against either code's source; they are plausible
 and conventional, but treat them as unverified until someone reads the couplers
 directly.
 
+### Comparing with an external SCRIP weights file
+
+`driver.scrip_weights_file = <path>` compares our weights, once after they are
+built, with a SCRIP file such as the `scrip_coawst.nc` the reference COAWST run
+used. `driver.scrip_a2o_group` and `driver.scrip_o2a_group` name the groups
+inside a COAWST file (defaults `atm1_to_ocn1_weights.nc`,
+`ocn1_to_atm1_weights.nc`); a plain SCRIP file without groups is read as is.
+
+```
+[driver] SCRIP check A2O scalar/rho vs atm1_to_ocn1_weights.nc (Conservative remapping):
+         <n> cells covered by both, <a> only by ours (e.g. ...), <b> only by SCRIP (e.g. ...).
+[driver] SCRIP check A2O scalar/rho: weight L1 over cells covered by both mean <m> max <x> at ...
+```
+
+The weight L1 runs from 0 (identical) to 2 (disjoint stencils); the file's
+`map_method` is printed alongside. The SCRIP grids may include ROMS's boundary
+ring; the index offset is taken from the difference in grid dimensions. It reads
+the whole file on one rank, so leave it off for production runs.
+
 ### Coverage, atmosphere to ocean
 
 Reported once per weight family — `A2O scalar/rho`, `A2O tau_x/u-face`,
@@ -366,10 +415,14 @@ Reported once per weight family — `A2O scalar/rho`, `A2O tau_x/u-face`,
 destination stagger and each can be uncovered differently.
 
 ```
-[driver] WARNING remap (<label>): <N> of <M> REMORA wet cells have no ERF source
-overlap. ApplyConservativeRemap in Submodules/ERF/Source/Coupling/ERF_to_REMORA.cpp
-branches on the -1 index sentinel and assigns a per-lane fallback: ...
+[driver] WARNING remap (<label>): <N> of <M> REMORA wet cells (e.g. REMORA (i,j);
+i[..] j[..]) have no ERF water source overlap. ApplyConservativeRemap in
+Submodules/ERF/Source/Coupling/ERF_to_REMORA.cpp branches on the -1 index sentinel
+and assigns a per-lane fallback: ...
 ```
+
+The example and box are in the family's own index space, so face indices for the
+two tau families. On OCCAMS (flux deck) `N` is 168 rho, 182 u-face, 207 v-face.
 
 Do not read that as "these cells fall back to a standard atmosphere". Two lanes
 get a standard-atmosphere value. Every other lane gets zero, or nothing:
@@ -479,8 +532,9 @@ Donor-filled cells are reported as their own category and are never counted as
 covered:
 
 ```
-[driver] WARNING remap (<label>): <D> of <M> REMORA wet cells have no ERF source
-cell of their own and were donor-filled from the nearest non-land ERF cell
+[driver] WARNING remap (<label>): <D> of <M> REMORA wet cells (e.g. REMORA (i,j);
+i[..] j[..]) have no ERF source cell of their own and were donor-filled from the
+nearest non-land ERF cell
 (driver.remap_donor_fill=coawst). ...
 ```
 
@@ -587,6 +641,34 @@ The non-warning form under `remap_v = 1` is the one to check proactively:
 ```
 
 If `<M>` is near `<K>`, the next grid change will overflow.
+
+Two range checks on the exchanged surface temperature, both over cells that
+actually carry ocean data, both counting NaN as out of range:
+
+```
+WARNING: REMORA surface temperature outside [270.65, 313.15] K on <n> of <M> wet
+cells (<k> NaN; min/max ... K; e.g. REMORA (i,j) = ... K). Repeated only if it gets worse.
+WARNING: coupled SST at t=<t> s outside [260, 320] K on <n> of <M> covered cells
+(<k> NaN; min/max ... K; e.g. ERF (i,j) = ... K).
+```
+
+The first is REMORA's top-level temperature (-2.5 to 40 C) on its wet cells,
+before the remap, checked every exchange and repeated only when a later exchange
+has a new extreme or more NaN cells. The second is ERF's check on the cells the
+owner-match table calls coupled, run on the first step only unless `erf.v = 2`.
+In the driver path the ERF one can only fire after the REMORA one, because the
+coupled SST is a weighted mean of wet REMORA values; it is there for other
+couplers.
+
+REMORA's received fluxes are summarized over wet cells only, once per run
+(every exchange at `remora.v = 1`):
+
+```
+REMORA ApplyAtmosphericFluxes validation (wet cells only; srflx W/m2, others kinematic):
+```
+
+`srflx` is stored in W/m2 and converted where it enters `stflux`; the others are
+kinematic as REMORA stores them.
 
 ### Parallel layout
 

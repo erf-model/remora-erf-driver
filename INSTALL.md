@@ -165,10 +165,12 @@ PNetCDF reads of the `pnetcdf_compat` files will not link.
 Configure:
 
 ```bash
-cmake -S . -B build_ncutil \
+cmake -S . -B build_cpu_noahmp \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=cc \
-  -DCMAKE_CXX_COMPILER=CC
+  -DCMAKE_CXX_COMPILER=CC \
+  -DCMAKE_Fortran_COMPILER=ftn \
+  -DERF_ENABLE_NOAHMP=ON
 ```
 
 That is deliberately short. Everything else the coupled OCCAMS build needs is
@@ -183,7 +185,7 @@ already a default or is forced by this repository's own `CMakeLists.txt`:
 Build:
 
 ```bash
-cmake --build build_ncutil -j12
+cmake --build build_cpu_noahmp -j16
 ```
 
 Build once, and let a failure stop you. `cmake --build` leaves the previous
@@ -193,12 +195,30 @@ for diagnostics that only the new code emits.
 
 Notes on this configuration:
 
-- `ERF_ENABLE_RRTMGP` is ON. The OCCAMS decks enable no radiation, so it is
-  compiled but unused; turning it off would speed the build but changes nothing
-  at runtime and forces a full rebuild.
-- `ERF_ENABLE_NOAHMP` is OFF. The coupled-SST path works regardless, but the
-  Noah-MP/REMORA-SST coexistence that the coupled-SST design exists to permit is
-  not exercised by this build.
+- `ERF_ENABLE_RRTMGP` is ON. `inputs_OCCAMS_maximal_1day` uses it; the other
+  OCCAMS decks run without radiation.
+- AMReX's TinyProfiler is ON (forced in `CMakeLists.txt`), so every run ends with
+  a timing table. Builds configured before that line was added do not have it,
+  whatever `ERF_ENABLE_TINY_PROFILE` says in their cache.
+- `ERF_ENABLE_NOAHMP` is ON. It pulls in the Noah-MP submodule (Fortran, hence
+  `-DCMAKE_Fortran_COMPILER=ftn`) so `erf.land_surface_model = NOAHMP` is available
+  at run time; the OCCAMS decks still run with the land model off until Noah-MP's
+  own inputs are wired.
+
+Module set this recipe was last verified with: `cpe/26.03`, `gcc-native/13.2`,
+`cray-mpich/9.0.1`, `cray-hdf5-parallel/1.14.3.9`, `cray-netcdf-hdf5parallel/4.9.0.13`,
+`cray-parallel-netcdf/1.12.3.13`. The profile loads the Cray defaults, so when
+NERSC moves them an existing binary stops loading with
+`error while loading shared libraries: libhdf5_hl_parallel_gnu_123.so.200` or
+similar. Reconfigure and rebuild into a new directory named for what it contains;
+do not reconfigure the old one, it is the record of what ran.
+
+Converting REMORA inputs: REMORA reads through PNetCDF, which cannot open
+NetCDF-4 files. Convert with `nccopy -k cdf5 in.nc out.nc` (the REMORA docs give
+the NCO equivalent `ncks -5`). The grid, initial and boundary copies under
+`OCCAM/pnetcdf_compat` are CDF-2 and work; the climatology must be CDF-5 because
+its `ocean_time` axis is not a record dimension and each 3-D field exceeds CDF-2's
+4 GiB per-variable limit.
 
 Run:
 
@@ -366,9 +386,10 @@ FILE = inputs_ERF
 driver.coupling_direction = two_way
 driver.atm2ocn_mode       = state
 
-# Coupling cadence is derived, not declared: the driver computes
-# atm_substeps_per_ocean_step = remora.fixed_dt / erf.fixed_dt and aborts
-# unless that ratio rounds to an integer within tolerance.
+# Coupling cadence: the solvers exchange every driver.exchange_interval
+# seconds (default remora.fixed_dt). The driver aborts unless the interval is
+# an integer multiple of both erf.fixed_dt and remora.fixed_dt, and unless
+# max_step (in ocean steps) ends on an exchange boundary.
 erf.fixed_dt    = 3.0
 remora.fixed_dt = 300.0
 
@@ -382,14 +403,15 @@ remora.n_cell = 50 20 40
 driver.remap_frame       = auto     # auto | spherical | cartesian
 driver.remap_v           = 1        # remap geometry and coverage detail
 driver.v                 = 0        # driver lifecycle detail
-driver.plot_int_exchange = -1       # exchange-field plotfiles
+driver.plot_int_exchange = -1       # exchange-field plotfiles, in ocean steps;
+                                    # checked once per exchange
 
 # What a wet ocean cell with no atmosphere source cell receives.
 # Spherical frame only; inert in the cartesian frame.
 driver.remap_donor_fill  = withhold # withhold | coawst
 driver.remap_donor_max_diagonals = 3.0   # coawst acceptance radius, coawst only
-driver.time_average_atm2ocn_state = 0 # mean state-character lanes over each ocean step
-driver.time_average_atm2ocn_flux  = 0 # mean flux-character lanes over each ocean step
+driver.time_average_atm2ocn_state = 0 # mean state-character lanes over each exchange
+driver.time_average_atm2ocn_flux  = 0 # mean flux-character lanes over each exchange
 ```
 
 `driver.remap_donor_fill` decides what happens to a wet REMORA cell that no ERF
@@ -423,7 +445,7 @@ interval-end forcing. The state control covers `Uwind`, `Vwind`, `Patm`,
 independent of `driver.atm2ocn_mode`, so the shared `rain` and radiation lanes
 always follow the flux control. When enabled, the driver uses a trapezoidal
 mean, labels it at the interval midpoint, and resets and drains its accumulator
-inside the macro-step rather than checkpointing it.
+inside the exchange interval rather than checkpointing it.
 
 Retired keys, for anyone reading an old deck: `driver.synthetic_only`,
 `driver.dt_atm`, `driver.atm_substeps_per_ocean_step`, `driver.ocean_steps`,

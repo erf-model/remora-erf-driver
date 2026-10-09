@@ -92,7 +92,9 @@ public:
                                   const amrex::Array<int,AMREX_SPACEDIM>& is_periodic,
                                   const amrex::IntVect& max_grid_size,
                                   amrex::Real erf_dt,
-                                  int atm_substeps_per_ocean_step,
+                                  amrex::Real ocean_dt,
+                                  int atm_steps_per_exchange,
+                                  int ocean_steps_per_exchange,
                                   coupling::AtmosToOceanContract atm2ocn_contract,
                                   bool use_two_way_coupling);
     ~ERFRemoraMultiBlockContainer();
@@ -131,6 +133,11 @@ public:
     }
     const amrex::MultiFab* GetO2AWeightMultiFab() const { return m_weight_o2a_mf.get(); }
     const amrex::iMultiFab* GetO2AIndexMultiFab() const { return m_index_o2a_mf.get(); }
+
+    // Public only because they launch device lambdas, which nvcc refuses inside
+    // private or protected member functions. Not part of the driver's interface.
+    void BuildOceanToAtmosWeights();
+    void SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land);
 
 private:
     using MutableStateFn = std::function<void(amrex::Vector<amrex::MultiFab*>&,
@@ -245,9 +252,7 @@ private:
     void BuildREMORAStagingPlan();
 
     void BuildAtmosToOceanWeights();
-    void BuildOceanToAtmosWeights();
-
-    void SetLandMaskFromDomainOverlap(const amrex::iMultiFab* erf_is_land);
+    void CompareWeightsWithSCRIP();
 
     // Driver-owned topology
     amrex::RealBox m_atm_rb;
@@ -273,11 +278,17 @@ private:
     amrex::Real m_ocean_time_offset = 0.0;
     // Negative means "leave REMORA's stop_time alone"; see SetOceanFrameStopTime.
     amrex::Real m_ocean_frame_stop_time = -1.0;
-    int m_atm_substeps_per_ocean_step;
+    amrex::Real m_ocean_dt;
+    int m_atm_steps_per_exchange;
+    int m_ocean_steps_per_exchange;
     long long m_atm_tick = 0;
     int m_plot_int_exchange = -1;
     std::string m_plot_file_exchange_o2a = "exchange_o2a";
     std::string m_plot_file_exchange_a2o = "exchange_a2o";
+    // Optional external SCRIP weights to compare ours against (driver.scrip_*).
+    std::string m_scrip_weights_file;
+    std::string m_scrip_a2o_group = "atm1_to_ocn1_weights.nc";
+    std::string m_scrip_o2a_group = "ocn1_to_atm1_weights.nc";
     coupling::AtmosToOceanContract m_atmos_to_ocean_contract;
     bool m_use_two_way_coupling = false;
     int m_driver_verbose = 0;
@@ -336,6 +347,9 @@ private:
     // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.
     std::unique_ptr<amrex::MultiFab> m_erf_node_coords;
     std::unique_ptr<amrex::MultiFab> m_erf_land_mask;
+    // 1 where an O2A destination cell has no coupled SST (any OwnerMatchStatus but
+    // Coupled), on the O2A layout. Used as a land-style mask by the O2A min/max.
+    std::unique_ptr<amrex::MultiFab> m_o2a_uncoupled_mask;
     // Same data staged onto the REMORA layout, with the comm plan that put it
     // there. Reused every remap apply, not just at weight-build time.
     std::unique_ptr<RemapStagingPlan> m_staging_plan;
@@ -349,7 +363,7 @@ private:
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
     // Valid-region-only trapezoidal sums. They are reset, filled, and drained
-    // within one ocean macro-step and are never checkpoint state.
+    // within one exchange interval and are never checkpoint state.
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_accumulator_storage;
     amrex::Real m_a2o_accum_weight = 0.0;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;

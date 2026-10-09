@@ -16,7 +16,7 @@
 #   Cases are the suffixes of inputs_OCCAMS_*: oneway, state, flux, smoke.
 #
 # Environment overrides:
-#   BUILD_DIR   build directory holding erf-remora-driver (default ../../build_ncutil)
+#   BUILD_DIR   build directory holding erf-remora-driver (default ../../build_cpu_noahmp)
 #   NRANKS      MPI ranks (default 16)
 #   NNODES      nodes (default 1)
 #   LOGDIR      where to write logs (default .)
@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-BUILD_DIR="${BUILD_DIR:-../../build_ncutil}"
+BUILD_DIR="${BUILD_DIR:-../../build_cpu_noahmp}"
 NRANKS="${NRANKS:-16}"
 NNODES="${NNODES:-1}"
 LOGDIR="${LOGDIR:-.}"
@@ -94,7 +94,7 @@ summarize () {
     local log="$1"
     echo
     echo "--- coupling diagnostics from $(basename "${log}") ---"
-    grep -E 'remap frame =|O2A coverage:|remap staging plan|O2A remap staging plan' "${log}" || true
+    grep -E 'remap frame =|O2A SST owner match|^\[driver\]   (ERF |zero-area)|remap staging plan|O2A remap staging plan' "${log}" || true
     # Warnings are the silent-degradation cases: donor fill, stencil overflow,
     # wet cells with no atmospheric source, non-overlapping longitudes.
     if grep -qE '^\[driver\] (WARNING|remap: [0-9])' "${log}"; then

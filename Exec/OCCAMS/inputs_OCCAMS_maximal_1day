@@ -1,0 +1,135 @@
+# OCCAMS maximal-physics one-day benchmark: two-way, flux passing.
+#
+# Every tier-1 toggle from translation_map.tsv is set explicitly here, including the
+# ones whose value equals the C++ default, so the run is reproducible from this file
+# plus the two base decks. Tier row numbers are cited in brackets. Rationale lives in
+# translation_map.tsv (columns transform_or_assumption, mismatch_tier, run_evidence)
+# and Exec/README.md, not here.
+#
+# Prerequisites (data only, see scratch/maximal_1day_run_manifest.md):
+#   pnetcdf_compat/OCCAMS_clm_v7_merc_202108_64bit.nc   CDF-5 copy of the climatology
+#   pnetcdf_compat/oneyear_nudge_64bit.nc               CDF-5 copy of the nudge coefficients
+#   pnetcdf_compat/oneyear_forcings_qair.nc             forcing file with Qair renamed qair
+#   rrtmgp_coeffs/                                       RRTMGP coefficient files (present)
+#   Exec/OCCAMS/erfbdy                                   boundary cache on WRF levels (present)
+
+FILE = inputs_REMORA
+FILE = inputs_ERF
+
+# ---------------------------------------------------------------- run control
+amrex.fpe_trap_invalid    = 1
+fabarray.mfiter_tile_size = 1024 1024 1024
+
+start_datetime = "2021-08-01 00:00:00"
+max_step       = 288                       # ocean steps; 288 x 300 s = 24 h   [2,3]
+
+# 120 ERF boxes and 108 REMORA boxes instead of 30 each, so 64 to 128 ranks fill a node
+amr.max_grid_size_x = 64
+amr.max_grid_size_y = 64
+
+# ---------------------------------------------------------------- driver
+driver.coupling_direction = two_way
+driver.atm2ocn_mode       = flux           # the reference run passed fluxes (ATM2OCN_FLUXES) [175,212]
+driver.ocean_time_offset  = 49939200.0     # [137]
+driver.remap_frame        = spherical      # [162,163]
+driver.remap_v            = 1
+driver.time_average_atm2ocn_flux  = 1      # mean over the 300 s exchange, not the end sample
+
+# ---------------------------------------------------------------- ERF: grid and time
+erf.fixed_dt                = 10.0         # WRF time_step [23]
+erf.avg_grid_faces_to_nodes = true         # WRF levels [25]
+erf.rebalance_wrf_input     = true         # [40]
+erf.vert_implicit_fac       = 1 1 1        # [170]
+
+# ---------------------------------------------------------------- ERF: physics
+# Radiation: WRF ra_lw/ra_sw = 4 (RRTMG), radt = 15 min = 90 steps at dt 10   [48,54,259]
+erf.radiation_model        = "RRTMGP"
+erf.rad_freq_in_steps      = 90
+erf.rad_t_sfc              = 292.0         # required; used as surface T for upwelling LW
+                                           # when no land model updates it (domain mean guess)
+erf.rad_do_subcol_sampling = false
+erf.rad_write_fluxes       = false
+# WRF o3input = 2 (CAM climatology), 89 layers bottom-up, from o3_profile_from_wrf.py   [268,269]
+erf.o3vmr = 3.815e-08 3.824e-08 3.834e-08 3.847e-08 3.862e-08 3.880e-08 3.901e-08 3.927e-08 3.957e-08 3.994e-08 4.037e-08 4.089e-08 4.150e-08 4.224e-08 4.309e-08 4.409e-08 4.528e-08 4.668e-08 4.823e-08 4.976e-08 5.134e-08 5.296e-08 5.443e-08 5.590e-08 5.742e-08 5.896e-08 6.052e-08 6.212e-08 6.376e-08 6.507e-08 6.623e-08 6.741e-08 6.861e-08 6.976e-08 7.094e-08 7.213e-08 7.335e-08 7.456e-08 7.580e-08 7.706e-08 7.858e-08 8.056e-08 8.259e-08 8.469e-08 8.756e-08 9.140e-08 9.542e-08 9.964e-08 1.040e-07 1.086e-07 1.133e-07 1.183e-07 1.241e-07 1.306e-07 1.374e-07 1.447e-07 1.526e-07 1.613e-07 1.704e-07 1.801e-07 1.930e-07 2.089e-07 2.261e-07 2.447e-07 2.648e-07 2.865e-07 3.099e-07 3.352e-07 3.626e-07 3.923e-07 4.244e-07 4.591e-07 4.968e-07 5.375e-07 5.816e-07 6.293e-07 6.880e-07 7.664e-07 8.538e-07 9.511e-07 1.056e-06 1.162e-06 1.278e-06 1.407e-06 1.542e-06 1.669e-06 1.806e-06 1.956e-06 2.112e-06
+erf.rrtmgp_file_path       = /global/cfs/cdirs/m4304/jmsexton/OCCAM/rrtmgp_coeffs
+erf.rrtmgp_coeffs_sw       = rrtmgp-gas-sw-g112.nc
+erf.rrtmgp_coeffs_lw       = rrtmgp-gas-lw-g128.nc
+erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc
+erf.rrtmgp_cloud_optics_lw = rrtmgp-cloud-optics-coeffs-lw.nc
+
+# Microphysics: WRF mp_physics = 28 (Thompson aerosol-aware). No ERF scheme is
+# aerosol-aware; Morrison is the double-moment scheme with a WRFInput track record  [44]
+erf.moisture_model = "Morrison"
+
+# Land surface: WRF Noah-MP. This build has ERF_ENABLE_NOAHMP=OFF, so None is
+# explicit here and land temperature comes from wrflowinp TSK                    [53,260]
+erf.land_surface_model = "None"
+
+# Boundary layer and surface layer                                               [168,169]
+erf.pbl_type               = "YSUNew"
+erf.most.use_interpolation = 1
+erf.most.zref              = 10.0
+erf.most.roughness_type_land = constant    # z0 from the base deck
+erf.most.roughness_type_sea  = coare3.0    # variable Charnock; reference used wave-coupled
+                                           # Taylor-Yelland, which needs a wave model [73]
+
+# Horizontal mixing: WRF diff_opt=1/km_opt=4 Smagorinsky crashes here with the PBL
+# scheme (out_flux_smag2d.txt), so LES stays off; WRF's 6th-order filter is on   [73,74]
+erf.les_type        = "None"
+erf.molec_diff_type = "None"
+erf.num_diff_coeff  = 0.12
+
+# Advection: WRF 5th order everywhere. Horizontal 5th; vertical kept 3rd per ERF's
+# WRF-like recommendation on these layer thicknesses. Moisture WENO5/WENO3.      [81,82]
+erf.dycore_horiz_adv_type    = "Upwind_5th"
+erf.dycore_vert_adv_type     = "Upwind_3rd"
+erf.dryscal_horiz_adv_type   = "Upwind_5th"
+erf.dryscal_vert_adv_type    = "Upwind_3rd"
+erf.moistscal_horiz_adv_type = "WENO5"
+erf.moistscal_vert_adv_type  = "WENO3"
+
+# Upper damping (WRF damp_opt=3), kept as translated                              [77]
+erf.rayleigh_damping_type = FastExplicit
+erf.rayleigh_damp_W       = true
+erf.rayleigh_zdamp        = 5000.0
+erf.rayleigh_dampcoef     = 0.2
+
+# ---------------------------------------------------------------- ERF: output
+erf.plot_file_1 = occams_max1d_erf_plt
+erf.plot_int_1  = 360                      # hourly, WRF history_interval = 60 min [10,11]
+erf.plot_vars_1 = density x_velocity y_velocity z_velocity pressure temp theta qv qc qrain qi qsnow qgraup nut pres_hse z_phys
+erf.check_file  = occams_max1d_erf_chk
+erf.check_int   = 8640                     # daily, WRF restart_interval = 1440 min [13]
+
+# ---------------------------------------------------------------- REMORA: time
+remora.fixed_dt = 300.0                    # exchange interval; ocean.in DT was 15 s  [107]
+remora.ndtfast  = 300                      # keeps the 1 s barotropic step          [108]
+
+# ---------------------------------------------------------------- REMORA: physics
+remora.bottom_stress_type = quadratic      # CPP UV_QDRAG                            [180]
+remora.rdrag2             = 0.003          # ocean.in RDRG2                          [131]
+remora.eos_type           = nonlinear      # CPP NONLIN_EOS                          [178]
+remora.vertical_mixing_type   = gls        # [117,183]
+remora.gls_stability_type     = canuto_a   # reference used Kantha-Clayson, not in REMORA [184]
+remora.horizontal_mixing_type = "constant" # [112,182]
+remora.tracer_horizontal_advection_scheme = "upstream3"   # ocean.in Hadvection U3  [99]
+
+# Climatology nudging: ocean.in L*CLM and Lnudge*CLM all T, 30-day scales from base [139,145,147]
+remora.nc_clim_his_file   = "/global/cfs/cdirs/m4304/jmsexton/OCCAM/pnetcdf_compat/OCCAMS_clm_v7_merc_202108_64bit.nc"
+remora.nc_clim_coeff_file = "/global/cfs/cdirs/m4304/jmsexton/OCCAM/pnetcdf_compat/oneyear_nudge_64bit.nc"
+remora.do_m2_clim_nudg    = true
+remora.do_m3_clim_nudg    = true
+remora.do_temp_clim_nudg  = true
+remora.do_salt_clim_nudg  = true
+
+# Humidity from the forcing file (percent) instead of a constant; needs the renamed copy [154,156,191]
+remora.nc_frc_file     = "/global/cfs/cdirs/m4304/jmsexton/OCCAM/pnetcdf_compat/oneyear_forcings_qair.nc"
+remora.qair_type       = "netcdf"
+remora.qair_is_percent = true
+# Fallback if the renamed copy is absent: remora.qair_type = "constant" (base deck value 0.776)
+
+# ---------------------------------------------------------------- REMORA: output
+remora.plot_file  = occams_max1d_remora_plt
+remora.plot_int   = 36                     # 3-hourly at a 300 s step, ocean.in NHIS   [111]
+remora.check_file = occams_max1d_remora_chk
+remora.check_int  = 288                    # daily                                     [110]

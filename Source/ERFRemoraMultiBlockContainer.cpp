@@ -10,7 +10,9 @@
 #include <AMReX_Reduce.H>
 #include <AMReX_String.H>
 
+#ifdef ERF_USE_NETCDF
 #include <netcdf.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -1747,6 +1749,9 @@ ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
 {
     using namespace amrex;
     if (m_scrip_weights_file.empty()) { return; }
+#ifndef ERF_USE_NETCDF
+    amrex::Print() << "[driver] driver.scrip_weights_file needs a NetCDF build; SCRIP check skipped.\n";
+#else
 
     auto compare = [&] (const std::string& group, const MultiFab& weight_mf,
                         const iMultiFab& index_mf, const Box& src_domain,
@@ -1900,6 +1905,7 @@ ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
         compare(m_scrip_o2a_group, *m_weight_o2a_mf, *m_index_o2a_mf,
                 m_geom_ocn.Domain(), "O2A SST", "ERF");
     }
+#endif
 }
 
 // Decide the frame, and refuse to guess. ERF reports lon/lat degrees

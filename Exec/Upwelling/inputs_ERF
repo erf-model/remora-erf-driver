@@ -1,4 +1,25 @@
 # ------------------  INPUTS TO MAIN PROGRAM  -------------------
+#
+# ERF side of the coupled upwelling case.  This is set up to reproduce the
+# standalone configuration validated against Perlin et al. (2007),
+# ERF/.Exec_dev/RemoraCoupling/inputs_oneway: same physics, same closure
+# constants, same idealized 1 C/day cooling, radiation off.  Every setting
+# that affects the solution is matched, so with coupling_direction =
+# ERFtoREMORA (the atmosphere receives no SST back) the vertical profiles
+# here should reproduce the standalone ones.
+#
+# One deliberate difference remains, which does not change the answer: the
+# full 50 km x 20 km domain at 1 km resolution.  The standalone deck narrows
+# the alongshore extent to 5 km because the uncoupled problem is
+# alongshore-uniform; the solution is identical in y, so this only changes the
+# domain decomposition.
+#
+# !! REQUIRES an ERF submodule containing erf-model/ERF #4229, #4235, #4236,
+# !! #4238, #4246 and #4248.  The taper, alpha and Perlin07 inputs below do not
+# !! exist in older ERF and ParmParse ignores unknown keys SILENTLY -- the run
+# !! would complete but use the untapered NN09 length scale with alpha = 0.23,
+# !! no moisture diffusion and no radiative cooling, which does not reproduce
+# !! the validated result.
 
 erf.moisture_model = MoistNoCondensation
 
@@ -25,19 +46,36 @@ xhi.type = "Outflow"
 zlo.type = "surface_layer"
 erf.surface_layer.flux_type = "bulk_coeff"
 
+# Constant exchange coefficients.  Perlin et al. use the stability-dependent
+# scheme of Louis (1979); with these values the standalone case gives a surface
+# stress of 0.19 N/m2 against their 0.14 and a mixed layer about 0.5 K warmer.
 erf.most.Cd  = 0.0014 # ustar
 erf.most.Ch  = 0.0012 # theta flux
 erf.most.Cq  = 0.0012 # qv    flux
 
+# With coupling_direction = ERFtoREMORA the atmosphere receives no SST back,
+# so this fixed value is what the surface layer sees throughout -- which is
+# exactly the "uncoupled" control of Perlin et al.
 erf.most.surf_temp  = 287.15
+# NOTE: with erf.is_land = 0 the surface mixing ratio is overwritten every step
+# with the saturation value at surf_temp, so surf_moist has no effect here.
 erf.most.surf_moist = .00802
 erf.most.z0     = 0.1
-erf.most.zref   = 25.0
+# zref lowered from 25 m to the first cell centre, matching the standalone case.
+erf.most.zref   = 10.0
+
+# The MYNN length-scale taper below needs a diagnosed boundary layer height.
+erf.most.pblh_calc = MYNN25
 
 zhi.type = "SlipWall"
 
 # TIME STEP CONTROL
-erf.substepping_type = Implicit
+# erf.fixed_dt is set in the driver deck (inputs_oneway / inputs_twoway) and
+# must be 3.0 to match the standalone case.  fixed_mri_dt_ratio must be set
+# explicitly: it defaults to 0, which means the acoustic substep count is
+# chosen from the CFL instead and will not match.
+erf.substepping_type   = Implicit
+erf.fixed_mri_dt_ratio = 6
 
 # DIAGNOSTICS & VERBOSITY
 erf.sum_interval   = 1200    # timesteps between computing mass
@@ -48,14 +86,50 @@ amr.v              = 1       # verbosity in Amr.cpp
 amr.max_level       = 0       # maximum level number allowed
 
 # PLOTFILES
-erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys Kmv KE qv
+# NOTE: "Kmv"/"Khv" are stored as rho*K (kg/m/s); "nut" is the eddy viscosity
+# in m2/s.  Compare against Fig. 8a of Perlin et al. using nut, not Kmv.
+erf.plot_vars_1     = density x_velocity y_velocity z_velocity pressure temp theta pres_hse z_phys nut Kmv Khv Lturb pblh KE qv
 
 # SOLVER CHOICE
+# Stated explicitly rather than left to the defaults, so that the coupled and
+# standalone runs use the same advection.
+erf.dycore_horiz_adv_type    = Upwind_3rd
+erf.dycore_vert_adv_type     = Upwind_3rd
+erf.dryscal_horiz_adv_type   = Upwind_3rd_SL
+erf.dryscal_vert_adv_type    = Upwind_3rd_SL
+erf.moistscal_horiz_adv_type = Upwind_3rd_SL
+erf.moistscal_vert_adv_type  = Upwind_3rd_SL
+
 erf.use_gravity = true
 
 erf.les_type          = None
 erf.molec_diff_type   = None
-erf.pbl_type          = MRF
+erf.pbl_type          = MYNN25
+
+# --- Turbulence closure -----------------------------------------------------
+# Three departures from ERF's MYNN defaults, all needed to reproduce the
+# Perlin et al. profiles.  See the validation section of the coupling paper.
+#
+# 1. Mellor-Yamada (1982) closure constants rather than Nakanishi-Niino; this
+#    is the set COAMPS uses.  C2/C3/C5 are NN09 extensions and are zeroed so
+#    the stability functions reduce to the MY82 form.
+erf.pbl_mynn_A1 = 0.92
+erf.pbl_mynn_A2 = 0.74
+erf.pbl_mynn_B1 = 16.6
+erf.pbl_mynn_B2 = 10.1
+erf.pbl_mynn_C1 = 0.08
+erf.pbl_mynn_C2 = 0.0
+erf.pbl_mynn_C3 = 0.0
+erf.pbl_mynn_C5 = 0.0
+
+# 2. The MY82 coefficient on the ABL-depth length scale, not NN09's 0.23.
+erf.pbl_mynn_Lt_alpha = 0.10
+
+# 3. Boundary-layer-depth taper, l_T -> l_T (1 - z/h)^n.  Without it the master
+#    length scale saturates and stays flat to the inversion, giving a
+#    flat-topped eddy viscosity.  n = 1.35 was calibrated against their Fig. 8a
+#    and is not independently derived.
+erf.pbl_mynn_Lt_taper_exp = 1.35
 
 # From ABL/inputs_GABLS1_mynn25
 prob.KE_0            = 0.4 # [m2/s2]
@@ -69,7 +143,6 @@ erf.latitude = 42
 erf.abl_geo_wind = 0.0 -15.0 0.0
 erf.rotational_time_period = 86164.0900027328
 
-# Recently added information (6/18)
 erf.add_custom_rhotheta_forcing = true
 erf.custom_forcing_uses_primitive_vars = true
 
@@ -77,12 +150,19 @@ erf.terrain_type = None
 erf.terrain_z_levels = 0.000000 20.000000 40.599936 61.817805 83.672143 106.182041 129.367164 153.247767 177.844712 203.179487 229.274225 256.151722 283.835459 312.349619 341.719113 371.969599 403.127503 435.220045 468.275261 502.322028 537.390090 573.510082 610.713559 649.033022 688.501947 729.154814 771.027137 814.155497 858.577570 904.332165 951.459251 1000.000000 1048.540749 1108.961213 1184.168798 1277.782458 1394.306840 1539.349044 1719.888436 1944.612489 2224.334823 2572.515549 3005.908967 3545.369770 4216.856567 5052.680999 6093.062558 7388.063932 9000.000000
 
 # PROBLEM PARAMETERS (optional)
-prob.rho_0 = 1.0
-prob.T_0 = 100.0
+# prob.rho_0 / prob.T_0 are deliberately not set: they only reach base_parms,
+# which the constant-density and Uniform HSE paths read.  With
+# init_type = input_sounding the base state comes from erf_init_dens_hse_dry
+# and the sounding, so they have no effect.
+# Perlin07 gives the KE_0 / KE_decay_* initial TKE profile and dispatches the
+# uniform rhotheta tendency used for the radiative cooling below.
+erf.prob_name = Perlin07
 
-erf.prob_name = constant_rhotheta_src
-#prob.advection_heating_rate = 1.1574074e-5
-prob.advection_heating_rate = 0.0
+# Perlin et al. apply a uniform 1 C/day cooling as a stand-in for the radiative
+# and large-scale tendencies their idealized domain omits.  Radiation is off
+# (see below) so this supplies it, exactly as in the standalone deck.
+# -1.1574074074e-5 K/s = -1 K/day.
+prob.advection_heating_rate = -1.1574074074e-5
 
 erf.rayleigh_damping_type = SlowExplicit
 erf.rayleigh_zdamp    = 1000.0
@@ -98,29 +178,39 @@ erf.init_type = "input_sounding"
 erf.sounding_type = Ideal
 erf.input_sounding_file = input_sounding_for_ERF
 
-erf.rad_t_sfc              = 300.
+# --- Radiation --------------------------------------------------------------
+# Off, so that prob.advection_heating_rate above is the only thermal forcing
+# and this run reproduces the standalone Perlin et al. comparison.  To put
+# interactive radiation back, set erf.radiation_model = RRTMGP, uncomment the
+# block below, and zero prob.advection_heating_rate -- running both would
+# double-count the cooling.
+#
+# Note when re-enabling: rad_t_sfc = 300 K is inconsistent with the 287.15 K
+# sea surface prescribed above and will bias the downwelling longwave; 287.15
+# is the physically consistent value.
+erf.radiation_model        = None
 
-erf.radiation_model        = "RRTMGP"
-erf.rad.datalog            = "radiation_datalog"
-erf.rad_cons_lat           = 42
-erf.rad_cons_lon           = -124
-erf.profile_rad_int        = -100
-erf.rad_freq_in_steps      = 600
-erf.rad_do_subcol_sampling = false
-erf.rad_write_fluxes       = false
-erf.co2vmr                 = 0.00036
-erf.o3vmr                  = 3.0e-8
-erf.n2ovmr                 = 3.2e-7
-erf.covmr                  = 1.5e-7
-erf.ch4vmr                 = 1.7e-6
-erf.o2vmr                  = 0.209
-erf.n2vmr                  = 0.7906
-erf.nswbands               = 14
-erf.nlwbands               = 16
-erf.nswgpts                = 224
-erf.nlwgpts                = 256
-erf.rrtmgp_file_path       = ../../../data-files
-erf.rrtmgp_coeffs_sw       = rrtmgp-data-sw-g224-2018-12-04.nc
-erf.rrtmgp_coeffs_lw       = rrtmgp-data-lw-g256-2018-12-04.nc
-erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc
-erf.rrtmgp_cloud_optics_lw = rrtmgp-cloud-optics-coeffs-lw.nc
+#erf.rad_t_sfc              = 300.
+#erf.rad.datalog            = "radiation_datalog"
+#erf.rad_cons_lat           = 42
+#erf.rad_cons_lon           = -124
+#erf.profile_rad_int        = -100
+#erf.rad_freq_in_steps      = 600
+#erf.rad_do_subcol_sampling = false
+#erf.rad_write_fluxes       = false
+#erf.co2vmr                 = 0.00036
+#erf.o3vmr                  = 3.0e-8
+#erf.n2ovmr                 = 3.2e-7
+#erf.covmr                  = 1.5e-7
+#erf.ch4vmr                 = 1.7e-6
+#erf.o2vmr                  = 0.209
+#erf.n2vmr                  = 0.7906
+#erf.nswbands               = 14
+#erf.nlwbands               = 16
+#erf.nswgpts                = 224
+#erf.nlwgpts                = 256
+#erf.rrtmgp_file_path       = ../../../data-files
+#erf.rrtmgp_coeffs_sw       = rrtmgp-data-sw-g224-2018-12-04.nc
+#erf.rrtmgp_coeffs_lw       = rrtmgp-data-lw-g256-2018-12-04.nc
+#erf.rrtmgp_cloud_optics_sw = rrtmgp-cloud-optics-coeffs-sw.nc
+#erf.rrtmgp_cloud_optics_lw = rrtmgp-cloud-optics-coeffs-lw.nc

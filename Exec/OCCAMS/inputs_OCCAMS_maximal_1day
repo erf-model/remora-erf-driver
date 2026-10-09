@@ -18,6 +18,9 @@ FILE = inputs_ERF
 
 # ---------------------------------------------------------------- run control
 amrex.fpe_trap_invalid    = 1
+# CUDA builds: the driver builds remap weights in host loops over MultiFab data,
+# so the default arena must be managed memory. CPU builds ignore this.
+amrex.the_arena_is_managed = 1
 fabarray.mfiter_tile_size = 1024 1024 1024
 
 start_datetime = "2021-08-01 00:00:00"

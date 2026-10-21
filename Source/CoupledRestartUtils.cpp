@@ -120,6 +120,21 @@ ReadCheckpointHeaderMetadata (const std::string& checkpoint_dir, SolverKind solv
         }
     }
 
+    // REMORA writes t_new as elapsed time since start_time and appends a trailing
+    // "start_time <t>" line; put t_new back on the model clock. Older REMORA
+    // checkpoints have no such line and already hold model-clock time.
+    if (solver == SolverKind::REMORA) {
+        while (std::getline(is, line)) {
+            std::istringstream lis(line);
+            std::string word;
+            double chk_start_time = 0.0;
+            if (lis >> word && word == "start_time" && lis >> chk_start_time) {
+                meta.time = static_cast<amrex::Real>(chk_start_time + static_cast<double>(meta.time));
+                break;
+            }
+        }
+    }
+
     return meta;
 }
 } // namespace erf_remora::restart

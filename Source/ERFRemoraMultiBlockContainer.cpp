@@ -722,13 +722,15 @@ ERFRemoraMultiBlockContainer::SetLandMaskFromDomainOverlap(const amrex::iMultiFa
     const amrex::Real ocn_ylo = m_ocn_rb.lo(1);
     const amrex::Real ocn_yhi = m_ocn_rb.hi(1);
 
+    // By value: ProbLo()/CellSize() point into the host-side Geometry, which a
+    // device lambda cannot dereference.
+    const auto plo = m_geom.ProbLoArray();
+    const auto dx  = m_geom.CellSizeArray();
+
     // Iterate over land mask and mark cells outside ocean domain as land
     for (amrex::MFIter mfi(*lmask); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.validbox();
         auto lmask_arr = lmask->array(mfi);
-
-        const amrex::Real* plo = m_geom.ProbLo();
-        const amrex::Real* dx  = m_geom.CellSize();
 
         amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) {
             // Only modify cells currently marked as water (lmask = 0)

@@ -402,6 +402,7 @@ remora.n_cell = 50 20 40
 # Optional driver controls
 driver.remap_frame       = auto     # auto | spherical | cartesian
 driver.remap_v           = 1        # remap geometry and coverage detail
+driver.remap_dump_weights = 0       # write the built remap arrays to remap_weights/
 driver.v                 = 0        # driver lifecycle detail
 driver.plot_int_exchange = -1       # exchange-field plotfiles, in ocean steps;
                                     # checked once per exchange

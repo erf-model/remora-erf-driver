@@ -211,6 +211,7 @@ private:
 
     // Weight calculation and stencil safety helpers
     void BuildRemapWeights();
+    void DumpRemapWeights() const;
     // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
     // to report coverage over the cells that actually carry ocean. Pass nullptr
     // when unavailable; coverage is then reported over all cells only.
@@ -310,6 +311,9 @@ private:
     // Off while the REMORA interior is the whole exchange region; needed once a
     // smaller ocean grid nested inside the atmosphere exchanges on its outer ring.
     bool m_remap_extend_corner_ring = false;
+    // Write the built remap arrays to remap_weights/ for exact run-to-run
+    // comparison (driver.remap_dump_weights). Off by default.
+    bool m_remap_dump_weights = false;
     // True if atmosphere domain extends beyond ocean domain in any direction (x/y).
     // Computed once in AllocateCachesFromSolverLayouts() after geometries are available.
     bool m_atm_extends_beyond_ocn = false;

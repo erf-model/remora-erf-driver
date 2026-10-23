@@ -22,6 +22,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 namespace erf_remora
 {
@@ -81,6 +82,40 @@ MaskedMinMax (const amrex::MultiFab& mf,
     ParallelDescriptor::ReduceRealMax(result.max_value);
     ParallelDescriptor::ReduceLongSum(result.included_cells);
     return result;
+}
+
+// Gather a remap array onto a single box on the IO rank and write its data raw
+// (<dir>/<name>.bin) with a text description (<dir>/<name>.txt). The single box
+// makes the bytes independent of rank count and box decomposition, so two runs'
+// arrays compare exactly with cmp. Collective.
+template <class FAB>
+void
+DumpFabArrayRaw (const amrex::FabArray<FAB>& src, const std::string& dir, const std::string& name)
+{
+    using namespace amrex;
+    using value_type = typename FAB::value_type;
+
+    const int io_rank = ParallelDescriptor::IOProcessorNumber();
+    const Box domain = src.boxArray().minimalBox();
+    // Pinned so the IO rank can read the gathered data from the host on GPU builds.
+    FabArray<FAB> gathered(BoxArray(domain), DistributionMapping(Vector<int>{io_rank}),
+                           src.nComp(), 0, MFInfo().SetArena(The_Pinned_Arena()));
+    gathered.setVal(value_type(0));
+    gathered.ParallelCopy(src, 0, 0, src.nComp());
+    Gpu::streamSynchronize();
+
+    for (MFIter mfi(gathered); mfi.isValid(); ++mfi) {
+        const FAB& fab = gathered[mfi];
+        std::ofstream bin(dir + "/" + name + ".bin", std::ios::binary);
+        bin.write(reinterpret_cast<const char*>(fab.dataPtr()),
+                  static_cast<std::streamsize>(sizeof(value_type) * fab.box().numPts() * fab.nComp()));
+        std::ofstream txt(dir + "/" + name + ".txt");
+        txt << "box " << fab.box() << "\n"
+            << "ncomp " << fab.nComp() << "\n"
+            << "type " << (std::is_integral_v<value_type> ? "int" : "float") << sizeof(value_type) * 8 << "\n"
+            << "order i fastest, then j, k, component\n";
+        if (!bin || !txt) { amrex::Abort("driver.remap_dump_weights: failed to write " + dir + "/" + name); }
+    }
 }
 
 // Which model owns an O2A destination cell, and whether ERF's land mask and
@@ -596,6 +631,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_min_coverage_frac", m_remap_min_coverage_frac);
     pp_driver.query("remap_donor_fill", m_remap_donor_fill_request);
     pp_driver.query("remap_donor_max_diagonals", m_remap_donor_max_diagonals);
+    pp_driver.query("remap_dump_weights", m_remap_dump_weights);
     // contains() rather than the query() return, so "set explicitly to the
     // default" is distinguishable from "not set" when reporting it as inert.
     m_remap_donor_max_diagonals_set = pp_driver.contains("remap_donor_max_diagonals");
@@ -1736,6 +1772,42 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     BuildAtmosToOceanWeights();
     BuildOceanToAtmosWeights();
     CompareWeightsWithSCRIP();
+
+    if (m_remap_dump_weights) {
+        DumpRemapWeights();
+    }
+}
+
+// Write every remap array the exchanges read, for exact comparison of two runs
+// (driver.remap_dump_weights; see DumpFabArrayRaw). Collective.
+void
+ERFRemoraMultiBlockContainer::DumpRemapWeights () const
+{
+    using namespace amrex;
+
+    const std::string dir = "remap_weights";
+    UtilCreateCleanDirectory(dir, true);
+
+    static constexpr std::array<const char*, kNumWeightFamilies> family_names = {
+        "scalar", "taux", "tauy", "wind"
+    };
+    for (int f = 0; f < kNumWeightFamilies; ++f) {
+        const std::string family = family_names[f];
+        DumpFabArrayRaw(*m_weight_mf_by_family[f], dir, "a2o_weight_" + family);
+        DumpFabArrayRaw(*m_index_mf_by_family[f], dir, "a2o_index_" + family);
+        if (m_donor_fill_mf_by_family[f]) {
+            DumpFabArrayRaw(*m_donor_fill_mf_by_family[f], dir, "a2o_donor_fill_" + family);
+        }
+    }
+    if (m_weight_o2a_mf) {
+        DumpFabArrayRaw(*m_weight_o2a_mf, dir, "o2a_weight");
+        DumpFabArrayRaw(*m_index_o2a_mf, dir, "o2a_index");
+        DumpFabArrayRaw(*m_valid_o2a_mf, dir, "o2a_valid");
+    }
+    if (m_o2a_uncoupled_mask) {
+        DumpFabArrayRaw(*m_o2a_uncoupled_mask, dir, "o2a_uncoupled_mask");
+    }
+    amrex::Print() << "[driver] remap weights written to " << dir << "/\n";
 }
 
 // Compare our weights with an external SCRIP file (driver.scrip_weights_file,

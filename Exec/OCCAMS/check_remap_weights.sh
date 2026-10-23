@@ -33,7 +33,10 @@
 #               amrex.the_arena_is_managed explicitly: the decks set it to 1
 #               before the fix and not at all after it.
 #   FCOMPARE_TOL  extra fcompare arguments for compare (default: none, i.e.
-#               exact). Use e.g. "--abs_tol 1e-10" only for CPU-vs-GPU.
+#               exact). GPU runs are not bitwise reproducible past the first
+#               exchange, so GPU comparisons need e.g.
+#               "--rel_tol 1e-9 --abs_tol 1e-9". The dumped remap arrays
+#               (remap_weights/*.bin) are always compared exactly.
 #
 # Results: <out-dir>/<case>/{run.log,erfplt*,remoraplt*,exchange_*}, plus
 # <out-dir>/MANIFEST recording the driver, launcher and overrides.
@@ -57,6 +60,7 @@ default_cases=(smoke smoke_ring smoke_coawst twoway)
 # erfbdy cache is shared with run_occams.sh so it is not rebuilt per case.
 common_args=(
   driver.remap_v=2
+  driver.remap_dump_weights=1
   driver.plot_int_exchange=1
   erf.plot_int_1=2 remora.plot_int=1
   erf.check_int=-1 remora.check_int=-1
@@ -69,7 +73,7 @@ common_args=(
 # The lines that describe the weights: frame, staging, mesh, coverage, owner
 # match, stencil counts, SCRIP comparison and warnings. Timings are dropped.
 pick_remap_lines () {
-  grep -E '^\[driver\]|coverage|conservation|WARNING' "$1" | grep -viE 'time|elapsed|seconds'
+  grep -E '^\[driver\]|coverage|conservation|WARNING' "$1" | grep -viE 'time|elapsed|seconds|weights written'
 }
 
 run_cases () {
@@ -156,10 +160,22 @@ compare_cases () {
         echo "$name/$plt: DIFFERS (see $cdir/$plt.fcompare)"; fail=1
       fi
     done
+    # The remap arrays themselves (driver.remap_dump_weights): always exact, since
+    # they are built on the host whatever the GPU does downstream. Binaries that
+    # predate the option write none, and the check is skipped.
+    local nw=0 bw
+    if [[ -d $bdir/remap_weights && -d $cdir/remap_weights ]]; then
+      for bw in "$bdir"/remap_weights/*.bin; do
+        nw=$((nw + 1))
+        if ! cmp -s "$bw" "$cdir/remap_weights/$(basename "$bw")"; then
+          echo "$name/remap_weights/$(basename "$bw"): DIFFERS"; fail=1
+        fi
+      done
+    fi
     if ! diff <(pick_remap_lines "$bdir/run.log") <(pick_remap_lines "$cdir/run.log") > "$cdir/remap_lines.diff"; then
       echo "$name: remap diagnostics differ (see $cdir/remap_lines.diff)"; fail=1
     fi
-    echo "$name: compared $n plotfiles and $(pick_remap_lines "$bdir/run.log" | wc -l) remap lines"
+    echo "$name: compared $n plotfiles, $nw weight arrays and $(pick_remap_lines "$bdir/run.log" | wc -l) remap lines"
   done
 
   if (( fail )); then echo "RESULT: DIFFERENCES FOUND"; return 1; fi

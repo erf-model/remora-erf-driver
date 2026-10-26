@@ -378,7 +378,8 @@ Key dispatch:
 Example inputs file:
 
 ```text
-# Import the two solver decks (relative to this file's directory)
+# Import the two solver decks (relative to the directory the driver runs in,
+# not to this file: ParmParse opens FILE paths as given)
 FILE = inputs_REMORA
 FILE = inputs_ERF
 

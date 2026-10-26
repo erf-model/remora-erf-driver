@@ -38,8 +38,13 @@
 #               "--rel_tol 1e-9 --abs_tol 1e-9". The dumped remap arrays
 #               (remap_weights/*.bin) are always compared exactly.
 #
+# The script reads the decks (inputs_OCCAMS_*, inputs_ERF, inputs_REMORA) from
+# its own directory, so it can live in a copy of Exec/OCCAMS anywhere, e.g. on
+# scratch. The erfbdy cache is kept in that directory too.
+#
 # Results: <out-dir>/<case>/{run.log,erfplt*,remoraplt*,exchange_*}, plus
-# <out-dir>/MANIFEST recording the driver, launcher and overrides.
+# <out-dir>/MANIFEST recording the driver, launcher and overrides. Each case
+# directory holds symlinks to the decks it ran.
 
 set -uo pipefail
 
@@ -119,13 +124,21 @@ run_cases () {
     local dir=$out/$name
     if [[ -e $dir ]]; then echo "error: $dir exists; refusing to overwrite" >&2; exit 1; fi
     mkdir -p "$dir"
+    # The decks pull in inputs_ERF and inputs_REMORA with FILE = <name>, which
+    # ParmParse opens relative to the working directory, not to the deck. Link
+    # all three into the case directory and run from there.
+    local f
+    for f in "$deck" inputs_ERF inputs_REMORA; do
+      [[ -f $here/$f ]] || { echo "error: $here/$f not found; keep it next to this script" >&2; exit 1; }
+      ln -s "$here/$f" "$dir/$f"
+    done
 
     echo "=== $name: $deck ${case_args[*]:-} ${extra}"
     local start=$SECONDS
     # ParmParse keeps the last value given, so case overrides follow the common
     # arguments and EXTRA_ARGS follows both.
     # shellcheck disable=SC2086  # LAUNCH, WRAP and EXTRA_ARGS are word lists
-    if (cd "$dir" && $launch $wrap "$driver" "$here/$deck" \
+    if (cd "$dir" && $launch $wrap "$driver" "$deck" \
           "${common_args[@]}" ${case_args[@]+"${case_args[@]}"} $extra > run.log 2>&1); then
       echo "    ok ($((SECONDS - start)) s)"
     else

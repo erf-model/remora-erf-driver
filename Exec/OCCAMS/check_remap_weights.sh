@@ -11,7 +11,9 @@
 #
 # Usage:
 #   check_remap_weights.sh run <out-dir> [case ...]
-#   check_remap_weights.sh compare <baseline-dir> <candidate-dir>
+#   check_remap_weights.sh compare <baseline-dir> <candidate-dir> [case ...]
+#     With cases named, only those are compared; otherwise every case in the
+#     baseline (except twoway_timing) must be in the candidate.
 #
 # Cases (default: smoke smoke_ring smoke_coawst twoway):
 #   smoke          inputs_OCCAMS_smoke: one-way, spherical. ERF corner mesh, ERF
@@ -160,6 +162,8 @@ run_cases () {
 
 compare_cases () {
   local base=$1 cand=$2
+  shift 2
+  local only=("$@")
   local fcompare=${FCOMPARE:-$(dirname "$(realpath "${DRIVER:-$base}")")/amrex-build/Tools/Plotfile/amrex_fcompare}
   [[ -x $fcompare ]] || { echo "error: no fcompare at $fcompare; set FCOMPARE" >&2; exit 1; }
   local tol=${FCOMPARE_TOL:-}
@@ -185,6 +189,7 @@ compare_cases () {
   for bdir in "$base"/*/; do
     local name; name=$(basename "$bdir")
     [[ $name == twoway_timing ]] && continue
+    if (( ${#only[@]} > 0 )) && [[ " ${only[*]} " != *" $name "* ]]; then continue; fi
     local cdir=$cand/$name
     [[ -d $cdir ]] || { echo "$name: missing in candidate"; fail=1; continue; }
 
@@ -230,7 +235,7 @@ compare_cases () {
 case ${1:-} in
   run)     shift; [[ $# -ge 1 ]] || { echo "usage: $0 run <out-dir> [case ...]" >&2; exit 2; }
            run_cases "$@" ;;
-  compare) shift; [[ $# -eq 2 ]] || { echo "usage: $0 compare <baseline-dir> <candidate-dir>" >&2; exit 2; }
+  compare) shift; [[ $# -ge 2 ]] || { echo "usage: $0 compare <baseline-dir> <candidate-dir> [case ...]" >&2; exit 2; }
            compare_cases "$@" ;;
   *)       sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 2 ;;
 esac

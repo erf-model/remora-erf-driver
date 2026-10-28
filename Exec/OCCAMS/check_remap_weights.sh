@@ -157,6 +157,23 @@ compare_cases () {
   local tol=${FCOMPARE_TOL:-}
   local fail=0
 
+  # fcompare exits 1 both on a real difference and when it cannot do its job, so
+  # first make sure it runs at all: a plotfile compared with itself must pass.
+  # A build made with the Cray wrappers and cudatoolkit loaded links libcudart
+  # even for CPU, and then needs that module environment to start.
+  local probe
+  probe=$(ls -d "$base"/*/*/Header 2>/dev/null | head -1)
+  if [[ -n $probe ]]; then
+    probe=$(dirname "$probe")
+    local probe_out
+    if ! probe_out=$("$fcompare" "$probe" "$probe" 2>&1); then
+      echo "error: fcompare cannot run ($fcompare):" >&2
+      echo "$probe_out" | head -3 | sed 's/^/    /' >&2
+      echo "       load the module environment the build used (e.g. the Perlmutter profile) and re-run compare" >&2
+      exit 1
+    fi
+  fi
+
   for bdir in "$base"/*/; do
     local name; name=$(basename "$bdir")
     [[ $name == twoway_timing ]] && continue
@@ -170,7 +187,14 @@ compare_cases () {
       if [[ ! -f $cdir/$plt/Header ]]; then echo "$name/$plt: missing"; fail=1; continue; fi
       # shellcheck disable=SC2086
       if ! "$fcompare" --abort_if_not_all_found $tol "$bdir/$plt" "$cdir/$plt" > "$cdir/$plt.fcompare" 2>&1; then
-        echo "$name/$plt: DIFFERS (see $cdir/$plt.fcompare)"; fail=1
+        # A real difference comes with fcompare's error table; anything else is
+        # fcompare failing (missing variable, unreadable plotfile, ...).
+        if grep -q "variable name" "$cdir/$plt.fcompare"; then
+          echo "$name/$plt: DIFFERS (see $cdir/$plt.fcompare)"
+        else
+          echo "$name/$plt: fcompare FAILED, not a comparison (see $cdir/$plt.fcompare)"
+        fi
+        fail=1
       fi
     done
     # The remap arrays themselves (driver.remap_dump_weights): always exact, since

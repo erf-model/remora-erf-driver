@@ -29,7 +29,8 @@
 #   DRIVER      erf-remora-driver to run (required)
 #   FCOMPARE    amrex_fcompare (default: next to DRIVER, which needs the build
 #               configured with -DERF_REMORA_ENABLE_FCOMPARE=ON)
-#   LAUNCH      launcher prefix (default: "srun -N 1 -n 16")
+#   LAUNCH      launcher prefix (default: "srun -N 1 -n 16"; set it empty to run
+#               the driver without a launcher)
 #   WRAP        placed between LAUNCH and DRIVER, e.g. "compute-sanitizer --tool memcheck"
 #   EXTRA_ARGS  key=value overrides appended to every case. Pass
 #               amrex.the_arena_is_managed explicitly: the decks set it to 1
@@ -80,7 +81,8 @@ common_args=(
 # The lines that describe the weights: frame, staging, mesh, coverage, owner
 # match, stencil counts, SCRIP comparison and warnings. Timings are dropped.
 pick_remap_lines () {
-  grep -E '^\[driver\]|coverage|conservation|WARNING' "$1" | grep -viE 'time|elapsed|seconds|weights written'
+  grep -E '^\[driver\]|coverage|conservation|WARNING' "$1" |
+    grep -viE 'elapsed|wall[- ]?clock|time spent|run time|weights written'
 }
 
 run_cases () {
@@ -91,7 +93,7 @@ run_cases () {
   : "${DRIVER:?set DRIVER to the erf-remora-driver to run}"
   local driver; driver=$(realpath "$DRIVER")
   [[ -x $driver ]] || { echo "error: no executable at $driver" >&2; exit 1; }
-  local launch=${LAUNCH:-srun -N 1 -n 16}
+  local launch=${LAUNCH-srun -N 1 -n 16}   # LAUNCH= (empty) runs the driver directly
   local wrap=${WRAP:-}
   local extra=${EXTRA_ARGS:-}
 
@@ -211,10 +213,13 @@ compare_cases () {
       fi
     done
     # The remap arrays themselves (driver.remap_dump_weights): always exact, since
-    # they are built on the host whatever the GPU does downstream. Binaries that
-    # predate the option write none, and the check is skipped.
+    # they are built on the host whatever the GPU does downstream. A baseline from
+    # a binary that predates the option has none, and the check is skipped; a
+    # candidate missing them when the baseline has them is a failure.
     local nw=0 bw
-    if [[ -d $bdir/remap_weights && -d $cdir/remap_weights ]]; then
+    if [[ -d $bdir/remap_weights && ! -d $cdir/remap_weights ]]; then
+      echo "$name: baseline has remap_weights/ but the candidate does not"; fail=1
+    elif [[ -d $bdir/remap_weights ]]; then
       for bw in "$bdir"/remap_weights/*.bin; do
         nw=$((nw + 1))
         if ! cmp -s "$bw" "$cdir/remap_weights/$(basename "$bw")"; then

@@ -85,9 +85,10 @@ MaskedMinMax (const amrex::MultiFab& mf,
 }
 
 // Gather a remap array onto a single box on the IO rank and write its data raw
-// (<dir>/<name>.bin) with a text description (<dir>/<name>.txt). The single box
-// makes the bytes independent of rank count and box decomposition, so two runs'
-// arrays compare exactly with cmp. Collective.
+// (<dir>/<name>.bin) with a text description (<dir>/<name>.txt), so two runs'
+// arrays compare exactly with cmp. The bytes do not depend on rank count or
+// DistributionMapping. Across different BoxArrays a cell's stencil can list the
+// same overlaps in a different order, since each box builds its own. Collective.
 template <class FAB>
 void
 DumpFabArrayRaw (const amrex::FabArray<FAB>& src, const std::string& dir, const std::string& name)
@@ -97,11 +98,33 @@ DumpFabArrayRaw (const amrex::FabArray<FAB>& src, const std::string& dir, const 
 
     const int io_rank = ParallelDescriptor::IOProcessorNumber();
     const Box domain = src.boxArray().minimalBox();
+    const int ncomp = src.nComp();
+
+    // A face-staggered array's boxes overlap on the faces between them, and each
+    // box builds its own stencil there. ParallelCopy would keep whichever copy
+    // lands last. Give each such face to its lower box (the rule the coverage
+    // counts in NormalizeWeightsAndCheckConservation use), zero it in the other,
+    // and add: every point then comes from exactly one box, whatever the order.
+    FabArray<FAB> owned(src.boxArray(), src.DistributionMap(), ncomp, 0, MFInfo().SetArena(The_Pinned_Arena()));
+    amrex::Copy(owned, src, 0, 0, ncomp, 0);
+    const IntVect stagger = src.ixType().toIntVect();
+    Gpu::streamSynchronize();   // the Copy above may still be running; setVal below is on the host
+    for (MFIter mfi(owned); mfi.isValid(); ++mfi) {
+        const Box& vbx = mfi.validbox();
+        for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+            if (stagger[dir] == 1 && vbx.bigEnd(dir) < domain.bigEnd(dir)) {
+                Box hi_face = vbx;
+                hi_face.setSmall(dir, vbx.bigEnd(dir));
+                owned[mfi].template setVal<RunOn::Host>(value_type(0), hi_face, 0, ncomp);
+            }
+        }
+    }
+
     // Pinned so the IO rank can read the gathered data from the host on GPU builds.
     FabArray<FAB> gathered(BoxArray(domain), DistributionMapping(Vector<int>{io_rank}),
-                           src.nComp(), 0, MFInfo().SetArena(The_Pinned_Arena()));
+                           ncomp, 0, MFInfo().SetArena(The_Pinned_Arena()));
     gathered.setVal(value_type(0));
-    gathered.ParallelCopy(src, 0, 0, src.nComp());
+    gathered.ParallelAdd(owned, 0, 0, ncomp);
     Gpu::streamSynchronize();
 
     for (MFIter mfi(gathered); mfi.isValid(); ++mfi) {
@@ -148,6 +171,18 @@ RequireHostAccess (const char* where, const FAs&... fas)
     amrex::Gpu::streamSynchronize();
 }
 
+// Same, for arrays that may be absent: null pointers are skipped.
+template <class... FAs>
+void
+RequireHostAccessIfPresent (const char* where, const FAs*... fas)
+{
+    if (!(... && (fas == nullptr || fas->arena()->isHostAccessible()))) {
+        amrex::Abort(std::string(where) + ": a remap array is in device memory, but this loop reads "
+                     "it on the host. Allocate it with HostArenaInfo() or read it through HostView().");
+    }
+    amrex::Gpu::streamSynchronize();
+}
+
 // Host-readable view of a solver-owned array: src itself when its arena is host
 // accessible (CPU builds, or amrex.the_arena_is_managed=1), otherwise a pinned
 // copy in `copy`, ghost cells included, since the staging plans read REMORA's
@@ -163,27 +198,18 @@ HostView (const FA* src, FA& copy)
     return &copy;
 }
 
-// dst = src on the valid region, on the device. A free function because nvcc
-// rejects device lambdas in private member functions.
-void
-CopyIntToReal (amrex::MultiFab& dst, const amrex::iMultiFab& src)
-{
-    for (amrex::MFIter mfi(dst); mfi.isValid(); ++mfi) {
-        auto const& d = dst.array(mfi);
-        auto const& s = src.const_array(mfi);
-        amrex::ParallelFor(mfi.validbox(), [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept {
-            d(i,j,k) = static_cast<amrex::Real>(s(i,j,k));
-        });
-    }
-}
-
 // Replace a remap array built on the pinned arena with a default-arena copy, so
-// the per-exchange remap kernels read device memory rather than host memory
-// over the bus. Null is left alone.
+// the per-exchange remap kernels read device (or managed) memory rather than
+// host memory over the bus. On CPU builds both arenas are host memory and this
+// does nothing. Null is left alone.
 template <class FA>
 void
 MoveToDefaultArena (std::unique_ptr<FA>& fa)
 {
+#ifndef AMREX_USE_GPU
+    amrex::ignore_unused(fa);
+    return;
+#endif
     if (!fa) { return; }
     auto moved = std::make_unique<FA>(fa->boxArray(), fa->DistributionMap(), fa->nComp(), fa->nGrowVect());
     amrex::Copy(*moved, *fa, 0, 0, fa->nComp(), fa->nGrowVect());
@@ -1312,8 +1338,7 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     const IntVect stagger = weight_mf.boxArray().ixType().toIntVect();
 
     RequireHostAccess("NormalizeWeightsAndCheckConservation", weight_mf, index_mf);
-    if (wet_mask != nullptr) { RequireHostAccess("NormalizeWeightsAndCheckConservation", *wet_mask); }
-    if (donor_fill != nullptr) { RequireHostAccess("NormalizeWeightsAndCheckConservation", *donor_fill); }
+    RequireHostAccessIfPresent("NormalizeWeightsAndCheckConservation", wet_mask, donor_fill);
 
     for (MFIter mfi(weight_mf); mfi.isValid(); ++mfi) {
         Box bx = mfi.validbox();
@@ -1868,6 +1893,21 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     if (m_remap_dump_weights) {
         DumpRemapWeights();
     }
+
+    // The corner mesh, the staged coordinates and masks, and the donor flags are
+    // read only by the weight build above. They live on the pinned arena, so free
+    // them rather than hold page-locked host memory for the rest of the run. The
+    // staging plans keep their layouts and comm metadata.
+    m_erf_node_coords.reset();
+    if (m_staging_plan) {
+        m_staging_plan->node_mf.reset();
+        m_staging_plan->land_mf.reset();
+    }
+    if (m_remora_staging_plan) {
+        m_remora_staging_plan->node_mf.reset();
+        m_remora_staging_plan->wet_mf.reset();
+    }
+    for (auto& donor_fill : m_donor_fill_mf_by_family) { donor_fill.reset(); }
 }
 
 // Write every remap array the exchanges read, for exact comparison of two runs
@@ -2374,7 +2414,7 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
     // nothing reads it on the host (the staging plan copies it).
     m_erf_land_mask = std::make_unique<MultiFab>(erf_cell_ba, erf_dm, 1, 0);
     if (erf_is_land != nullptr) {
-        CopyIntToReal(*m_erf_land_mask, *erf_is_land);
+        amrex::Copy(*m_erf_land_mask, *erf_is_land, 0, 0, 1, 0);
     } else {
         m_erf_land_mask->setVal(0.0);   // no mask reported: treat everything as water
     }
@@ -2900,8 +2940,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
         }
 
         RequireHostAccess("BuildAtmosToOceanWeights", *weight_mf, *index_mf);
-        if (donor_fill_mf) { RequireHostAccess("BuildAtmosToOceanWeights", *donor_fill_mf); }
-        if (family_mask) { RequireHostAccess("BuildAtmosToOceanWeights", *family_mask); }
+        RequireHostAccessIfPresent("BuildAtmosToOceanWeights", donor_fill_mf, family_mask);
         if (m_remap_spherical) {
             RequireHostAccess("BuildAtmosToOceanWeights", *remora_lon, *remora_lat,
                               *m_staging_plan->node_mf, *m_staging_plan->land_mf);

@@ -348,7 +348,9 @@ private:
     bool m_remap_donor_max_diagonals_set = false;
 
     // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
-    // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.
+    // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask. The corner
+    // mesh is freed once BuildRemapWeights is done; the land mask stays for the
+    // exchange diagnostics.
     std::unique_ptr<amrex::MultiFab> m_erf_node_coords;
     std::unique_ptr<amrex::MultiFab> m_erf_land_mask;
     // 1 where an O2A destination cell has no coupled SST (any OwnerMatchStatus but

@@ -137,11 +137,19 @@ run_cases () {
     local start=$SECONDS
     # ParmParse keeps the last value given, so case overrides follow the common
     # arguments and EXTRA_ARGS follows both.
+    local status=0
     # shellcheck disable=SC2086  # LAUNCH, WRAP and EXTRA_ARGS are word lists
-    if (cd "$dir" && $launch $wrap "$driver" "$deck" \
-          "${common_args[@]}" ${case_args[@]+"${case_args[@]}"} $extra > run.log 2>&1); then
+    (cd "$dir" && $launch $wrap "$driver" "$deck" \
+        "${common_args[@]}" ${case_args[@]+"${case_args[@]}"} $extra > run.log 2>&1) || status=$?
+    # A rank that traps (amrex.fpe_trap_invalid) or aborts leaves Backtrace.<rank>
+    # files even when the launcher's exit status does not say so.
+    local backtraces
+    backtraces=$(find "$dir" -maxdepth 1 -name 'Backtrace.*' | wc -l)
+    if (( status == 0 && backtraces == 0 )); then
       echo "    ok ($((SECONDS - start)) s)"
     else
+      (( backtraces > 0 )) && echo "    $backtraces Backtrace file(s); first lines of $dir/Backtrace.*:" \
+        && head -4 "$(find "$dir" -maxdepth 1 -name 'Backtrace.*' | sort | head -1)" | sed 's/^/      /'
       echo "    FAILED ($((SECONDS - start)) s); see $dir/run.log"
       grep -m3 -E 'Abort|Error|SIGSEGV|SIGABRT|error' "$dir/run.log" | sed 's/^/    /'
       failed+=("$name")

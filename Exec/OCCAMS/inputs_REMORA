@@ -36,6 +36,13 @@ remora.bc.tke.type    = outflow outflow slipwall outflow
 remora.fixed_dt            = 15.0
 remora.ndtfast = 15
 
+# ocean.in TIME_REF=20200101: the model clock's reference date. REMORA places each
+# NetCDF file's times on this clock from the reference date in its units attribute,
+# so the 2020-based boundary file and the 1900-based forcing file both line up, and
+# driver.ocean_time_offset (DSTART, 578 days) counts from it. Without it the clock
+# starts at 0001-01-01 and the offset lands in year 2. See translation_map.tsv.
+remora.time_ref = 20200101
+
 remora.sum_interval = 1
 remora.v            = 0
 

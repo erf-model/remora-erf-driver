@@ -31,7 +31,10 @@
 #               configured with -DERF_REMORA_ENABLE_FCOMPARE=ON)
 #   LAUNCH      launcher prefix (default: "srun -N 1 -n 16"; set it empty to run
 #               the driver without a launcher)
-#   WRAP        placed between LAUNCH and DRIVER, e.g. "compute-sanitizer --tool memcheck"
+#   WRAP        placed between LAUNCH and DRIVER, e.g.
+#               "compute-sanitizer --tool memcheck --report-api-errors no --error-exitcode 99".
+#               Without --report-api-errors no, GPU-aware MPI probing host buffers with
+#               cuPointerGetAttribute shows up as tens of thousands of API "errors".
 #   EXTRA_ARGS  key=value overrides appended to every case. Pass
 #               amrex.the_arena_is_managed explicitly: the decks set it to 1
 #               before the fix and not at all after it.

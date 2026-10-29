@@ -211,6 +211,7 @@ private:
 
     // Weight calculation and stencil safety helpers
     void BuildRemapWeights();
+    void DumpRemapWeights() const;
     // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
     // to report coverage over the cells that actually carry ocean. Pass nullptr
     // when unavailable; coverage is then reported over all cells only.
@@ -310,6 +311,9 @@ private:
     // Off while the REMORA interior is the whole exchange region; needed once a
     // smaller ocean grid nested inside the atmosphere exchanges on its outer ring.
     bool m_remap_extend_corner_ring = false;
+    // Write the built remap arrays to remap_weights/ for exact run-to-run
+    // comparison (driver.remap_dump_weights). Off by default.
+    bool m_remap_dump_weights = false;
     // True if atmosphere domain extends beyond ocean domain in any direction (x/y).
     // Computed once in AllocateCachesFromSolverLayouts() after geometries are available.
     bool m_atm_extends_beyond_ocn = false;
@@ -344,7 +348,9 @@ private:
     bool m_remap_donor_max_diagonals_set = false;
 
     // Spherical-frame ERF geometry on the ERF layout: nodal corner mesh
-    // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask.
+    // (comp 0 = lon, comp 1 = lat) and the cell-centered land mask. The corner
+    // mesh is freed once BuildRemapWeights is done; the land mask stays for the
+    // exchange diagnostics.
     std::unique_ptr<amrex::MultiFab> m_erf_node_coords;
     std::unique_ptr<amrex::MultiFab> m_erf_land_mask;
     // 1 where an O2A destination cell has no coupled SST (any OwnerMatchStatus but

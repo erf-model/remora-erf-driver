@@ -22,6 +22,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 namespace erf_remora
 {
@@ -81,6 +82,139 @@ MaskedMinMax (const amrex::MultiFab& mf,
     ParallelDescriptor::ReduceRealMax(result.max_value);
     ParallelDescriptor::ReduceLongSum(result.included_cells);
     return result;
+}
+
+// Gather a remap array onto a single box on the IO rank and write its data raw
+// (<dir>/<name>.bin) with a text description (<dir>/<name>.txt), so two runs'
+// arrays compare exactly with cmp. The bytes do not depend on rank count or
+// DistributionMapping. Across different BoxArrays a cell's stencil can list the
+// same overlaps in a different order, since each box builds its own. Collective.
+template <class FAB>
+void
+DumpFabArrayRaw (const amrex::FabArray<FAB>& src, const std::string& dir, const std::string& name)
+{
+    using namespace amrex;
+    using value_type = typename FAB::value_type;
+
+    const int io_rank = ParallelDescriptor::IOProcessorNumber();
+    const Box domain = src.boxArray().minimalBox();
+    const int ncomp = src.nComp();
+
+    // A face-staggered array's boxes overlap on the faces between them, and each
+    // box builds its own stencil there. ParallelCopy would keep whichever copy
+    // lands last. Give each such face to its lower box (the rule the coverage
+    // counts in NormalizeWeightsAndCheckConservation use), zero it in the other,
+    // and add: every point then comes from exactly one box, whatever the order.
+    FabArray<FAB> owned(src.boxArray(), src.DistributionMap(), ncomp, 0, MFInfo().SetArena(The_Pinned_Arena()));
+    amrex::Copy(owned, src, 0, 0, ncomp, 0);
+    const IntVect stagger = src.ixType().toIntVect();
+    Gpu::streamSynchronize();   // the Copy above may still be running; setVal below is on the host
+    for (MFIter mfi(owned); mfi.isValid(); ++mfi) {
+        const Box& vbx = mfi.validbox();
+        for (int dir = 0; dir < AMREX_SPACEDIM; ++dir) {
+            if (stagger[dir] == 1 && vbx.bigEnd(dir) < domain.bigEnd(dir)) {
+                Box hi_face = vbx;
+                hi_face.setSmall(dir, vbx.bigEnd(dir));
+                owned[mfi].template setVal<RunOn::Host>(value_type(0), hi_face, 0, ncomp);
+            }
+        }
+    }
+
+    // Pinned so the IO rank can read the gathered data from the host on GPU builds.
+    FabArray<FAB> gathered(BoxArray(domain), DistributionMapping(Vector<int>{io_rank}),
+                           ncomp, 0, MFInfo().SetArena(The_Pinned_Arena()));
+    gathered.setVal(value_type(0));
+    gathered.ParallelAdd(owned, 0, 0, ncomp);
+    Gpu::streamSynchronize();
+
+    for (MFIter mfi(gathered); mfi.isValid(); ++mfi) {
+        const FAB& fab = gathered[mfi];
+        std::ofstream bin(dir + "/" + name + ".bin", std::ios::binary);
+        bin.write(reinterpret_cast<const char*>(fab.dataPtr()),
+                  static_cast<std::streamsize>(sizeof(value_type) * fab.box().numPts() * fab.nComp()));
+        std::ofstream txt(dir + "/" + name + ".txt");
+        txt << "box " << fab.box() << "\n"
+            << "ncomp " << fab.nComp() << "\n"
+            << "type " << (std::is_integral_v<value_type> ? "int" : "float") << sizeof(value_type) * 8 << "\n"
+            << "order i fastest, then j, k, component\n";
+        if (!bin || !txt) { amrex::Abort("driver.remap_dump_weights: failed to write " + dir + "/" + name); }
+    }
+}
+
+// The remap weights are built in host loops over FabArray data (polygon
+// clipping with dynamic overlap lists does not map onto ParallelFor), so every
+// array those loops touch must be host accessible even when the default arena
+// is device memory. Driver-owned setup arrays are allocated with HostArenaInfo();
+// solver-owned inputs are read through HostView(); the weight, index and valid
+// arrays the exchanges read are built on the pinned arena and moved to the
+// default arena by MoveToDefaultArena() once the build is done. Pinned memory is
+// also device accessible, so the ParallelCopy, FillBoundary and ParallelFor
+// calls between the host loops work on it unchanged.
+amrex::MFInfo
+HostArenaInfo ()
+{
+    return amrex::MFInfo().SetArena(amrex::The_Pinned_Arena());
+}
+
+// Every host loop over remap arrays starts here. Aborts with a message instead
+// of segfaulting when an array is in device memory, and waits for device work
+// still writing the arrays: setVal, Copy, ParallelCopy and FillBoundary return
+// before their kernels finish on GPU builds.
+template <class... FAs>
+void
+RequireHostAccess (const char* where, const FAs&... fas)
+{
+    if (!(... && fas.arena()->isHostAccessible())) {
+        amrex::Abort(std::string(where) + ": a remap array is in device memory, but this loop reads "
+                     "it on the host. Allocate it with HostArenaInfo() or read it through HostView().");
+    }
+    amrex::Gpu::streamSynchronize();
+}
+
+// Same, for arrays that may be absent: null pointers are skipped.
+template <class... FAs>
+void
+RequireHostAccessIfPresent (const char* where, const FAs*... fas)
+{
+    if (!(... && (fas == nullptr || fas->arena()->isHostAccessible()))) {
+        amrex::Abort(std::string(where) + ": a remap array is in device memory, but this loop reads "
+                     "it on the host. Allocate it with HostArenaInfo() or read it through HostView().");
+    }
+    amrex::Gpu::streamSynchronize();
+}
+
+// Host-readable view of a solver-owned array: src itself when its arena is host
+// accessible (CPU builds, or amrex.the_arena_is_managed=1), otherwise a pinned
+// copy in `copy`, ghost cells included, since the staging plans read REMORA's
+// coordinates one cell past the valid box. Null in, null out.
+template <class FA>
+const FA*
+HostView (const FA* src, FA& copy)
+{
+    if (src == nullptr || src->arena()->isHostAccessible()) { return src; }
+    copy.define(src->boxArray(), src->DistributionMap(), src->nComp(), src->nGrowVect(), HostArenaInfo());
+    amrex::Copy(copy, *src, 0, 0, src->nComp(), src->nGrowVect());
+    amrex::Gpu::streamSynchronize();
+    return &copy;
+}
+
+// Replace a remap array built on the pinned arena with a default-arena copy, so
+// the per-exchange remap kernels read device (or managed) memory rather than
+// host memory over the bus. On CPU builds both arenas are host memory and this
+// does nothing. Null is left alone.
+template <class FA>
+void
+MoveToDefaultArena (std::unique_ptr<FA>& fa)
+{
+#ifndef AMREX_USE_GPU
+    amrex::ignore_unused(fa);
+    return;
+#endif
+    if (!fa) { return; }
+    auto moved = std::make_unique<FA>(fa->boxArray(), fa->DistributionMap(), fa->nComp(), fa->nGrowVect());
+    amrex::Copy(*moved, *fa, 0, 0, fa->nComp(), fa->nGrowVect());
+    amrex::Gpu::streamSynchronize();
+    fa = std::move(moved);
 }
 
 // Which model owns an O2A destination cell, and whether ERF's land mask and
@@ -596,6 +730,7 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_min_coverage_frac", m_remap_min_coverage_frac);
     pp_driver.query("remap_donor_fill", m_remap_donor_fill_request);
     pp_driver.query("remap_donor_max_diagonals", m_remap_donor_max_diagonals);
+    pp_driver.query("remap_dump_weights", m_remap_dump_weights);
     // contains() rather than the query() return, so "set explicitly to the
     // default" is distinguishable from "not set" when reporting it as inert.
     m_remap_donor_max_diagonals_set = pp_driver.contains("remap_donor_max_diagonals");
@@ -722,13 +857,15 @@ ERFRemoraMultiBlockContainer::SetLandMaskFromDomainOverlap(const amrex::iMultiFa
     const amrex::Real ocn_ylo = m_ocn_rb.lo(1);
     const amrex::Real ocn_yhi = m_ocn_rb.hi(1);
 
+    // By value: ProbLo()/CellSize() point into the host-side Geometry, which a
+    // device lambda cannot dereference.
+    const auto plo = m_geom.ProbLoArray();
+    const auto dx  = m_geom.CellSizeArray();
+
     // Iterate over land mask and mark cells outside ocean domain as land
     for (amrex::MFIter mfi(*lmask); mfi.isValid(); ++mfi) {
         const amrex::Box& bx = mfi.validbox();
         auto lmask_arr = lmask->array(mfi);
-
-        const amrex::Real* plo = m_geom.ProbLo();
-        const amrex::Real* dx  = m_geom.CellSize();
 
         amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE(int i, int j, int k) {
             // Only modify cells currently marked as water (lmask = 0)
@@ -992,11 +1129,12 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         const std::array<const amrex::DistributionMapping*, kNumWeightFamilies> family_dm = {
             &remora_rho_dm, &remora_u_dm, &remora_v_dm, &remora_rho_dm
         };
+        // Built on the host; BuildRemapWeights moves them to the default arena.
         for (int f = 0; f < kNumWeightFamilies; ++f) {
             m_weight_mf_by_family[f] = std::make_unique<amrex::MultiFab>(
-                *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0);
+                *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0, HostArenaInfo());
             m_index_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
-                *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0);
+                *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0, HostArenaInfo());
             // The donor-fill flag array is NOT allocated here. It is only ever
             // written by the coawst donor search, which runs solely in the
             // spherical frame, and neither the mode nor the frame is resolved
@@ -1010,11 +1148,12 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         }
     }
 
-    // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout)
+    // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout). Built on the host
+    // like the A2O ones above.
     if (m_use_two_way_coupling) {
-        m_weight_o2a_mf = std::make_unique<amrex::MultiFab>(m_ba, m_dm, MAX_STENCIL_SIZE, 0);
-        m_index_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 3 * MAX_STENCIL_SIZE, 0);
-        m_valid_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 1, 0);
+        m_weight_o2a_mf = std::make_unique<amrex::MultiFab>(m_ba, m_dm, MAX_STENCIL_SIZE, 0, HostArenaInfo());
+        m_index_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 3 * MAX_STENCIL_SIZE, 0, HostArenaInfo());
+        m_valid_o2a_mf = std::make_unique<amrex::iMultiFab>(m_ba, m_dm, 1, 0, HostArenaInfo());
         m_valid_o2a_mf->setVal(0);
     }
 
@@ -1197,6 +1336,9 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     // face including shared ones; this only makes the counts truthful.
     const Box stagger_domain = weight_mf.boxArray().minimalBox();
     const IntVect stagger = weight_mf.boxArray().ixType().toIntVect();
+
+    RequireHostAccess("NormalizeWeightsAndCheckConservation", weight_mf, index_mf);
+    RequireHostAccessIfPresent("NormalizeWeightsAndCheckConservation", wet_mask, donor_fill);
 
     for (MFIter mfi(weight_mf); mfi.isValid(); ++mfi) {
         Box bx = mfi.validbox();
@@ -1416,6 +1558,7 @@ BuildReplicatedMaskLookup (const amrex::MultiFab& mask_mf, const amrex::Box& dom
 {
     using namespace amrex;
 
+    RequireHostAccess("BuildReplicatedMaskLookup", mask_mf);
     Vector<Real> mask_values(domain.numPts(), Real(0.0));
     for (MFIter mfi(mask_mf); mfi.isValid(); ++mfi) {
         const Box bx = mfi.validbox() & domain;
@@ -1677,6 +1820,7 @@ ExtendCornerMeshOneRing (amrex::MultiFab& node_mf, const amrex::Box& node_domain
 {
     using namespace amrex;
 
+    RequireHostAccess("ExtendCornerMeshOneRing", node_mf);
     for (MFIter mfi(node_mf); mfi.isValid(); ++mfi) {
         const Box gbx = mfi.growntilebox();
         auto arr = node_mf.array(mfi);
@@ -1734,6 +1878,68 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     BuildAtmosToOceanWeights();
     BuildOceanToAtmosWeights();
     CompareWeightsWithSCRIP();
+
+    // Built on the pinned arena for the host loops above; the per-exchange remap
+    // kernels read these, so move them to device memory. Must finish before
+    // InitializeBlocks packs the bootstrap ocean->atmos state with the O2A set.
+    for (int f = 0; f < kNumWeightFamilies; ++f) {
+        MoveToDefaultArena(m_weight_mf_by_family[f]);
+        MoveToDefaultArena(m_index_mf_by_family[f]);
+    }
+    MoveToDefaultArena(m_weight_o2a_mf);
+    MoveToDefaultArena(m_index_o2a_mf);
+    MoveToDefaultArena(m_valid_o2a_mf);
+
+    if (m_remap_dump_weights) {
+        DumpRemapWeights();
+    }
+
+    // The corner mesh, the staged coordinates and masks, and the donor flags are
+    // read only by the weight build above. They live on the pinned arena, so free
+    // them rather than hold page-locked host memory for the rest of the run. The
+    // staging plans keep their layouts and comm metadata.
+    m_erf_node_coords.reset();
+    if (m_staging_plan) {
+        m_staging_plan->node_mf.reset();
+        m_staging_plan->land_mf.reset();
+    }
+    if (m_remora_staging_plan) {
+        m_remora_staging_plan->node_mf.reset();
+        m_remora_staging_plan->wet_mf.reset();
+    }
+    for (auto& donor_fill : m_donor_fill_mf_by_family) { donor_fill.reset(); }
+}
+
+// Write every remap array the exchanges read, for exact comparison of two runs
+// (driver.remap_dump_weights; see DumpFabArrayRaw). Collective.
+void
+ERFRemoraMultiBlockContainer::DumpRemapWeights () const
+{
+    using namespace amrex;
+
+    const std::string dir = "remap_weights";
+    UtilCreateCleanDirectory(dir, true);
+
+    static constexpr std::array<const char*, kNumWeightFamilies> family_names = {
+        "scalar", "taux", "tauy", "wind"
+    };
+    for (int f = 0; f < kNumWeightFamilies; ++f) {
+        const std::string family = family_names[f];
+        DumpFabArrayRaw(*m_weight_mf_by_family[f], dir, "a2o_weight_" + family);
+        DumpFabArrayRaw(*m_index_mf_by_family[f], dir, "a2o_index_" + family);
+        if (m_donor_fill_mf_by_family[f]) {
+            DumpFabArrayRaw(*m_donor_fill_mf_by_family[f], dir, "a2o_donor_fill_" + family);
+        }
+    }
+    if (m_weight_o2a_mf) {
+        DumpFabArrayRaw(*m_weight_o2a_mf, dir, "o2a_weight");
+        DumpFabArrayRaw(*m_index_o2a_mf, dir, "o2a_index");
+        DumpFabArrayRaw(*m_valid_o2a_mf, dir, "o2a_valid");
+    }
+    if (m_o2a_uncoupled_mask) {
+        DumpFabArrayRaw(*m_o2a_uncoupled_mask, dir, "o2a_uncoupled_mask");
+    }
+    amrex::Print() << "[driver] remap weights written to " << dir << "/\n";
 }
 
 // Compare our weights with an external SCRIP file (driver.scrip_weights_file,
@@ -1852,6 +2058,7 @@ ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
         OwnerMatchTally both, ours_only, scrip_only;
         Real l1_sum = 0, l1_max = -1;
         Long l1_first = std::numeric_limits<Long>::max();
+        RequireHostAccess("CompareWeightsWithSCRIP", weight_mf, index_mf);
         for (MFIter mfi(weight_mf); mfi.isValid(); ++mfi) {
             auto const& wa = weight_mf.const_array(mfi);
             auto const& ia = index_mf.const_array(mfi);
@@ -2161,7 +2368,8 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
     const BoxArray erf_node_ba = convert(erf_cell_ba, IntVect(1,1,0));
 
     // One ghost node so the ring extension (when enabled) has somewhere to write.
-    m_erf_node_coords = std::make_unique<MultiFab>(erf_node_ba, erf_dm, 2, IntVect(1,1,0));
+    // Setup only: the staging plans and the O2A weight build read it on the host.
+    m_erf_node_coords = std::make_unique<MultiFab>(erf_node_ba, erf_dm, 2, IntVect(1,1,0), HostArenaInfo());
     m_erf_node_coords->setVal(0.0);
 
     const Box node_domain = erf_node_ba.minimalBox();
@@ -2169,12 +2377,13 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
 
     // Cell centers with one ghost ring: interior ghosts from neighbors, domain
     // ghosts extrapolated (ExtendCornerMeshOneRing is index-generic).
-    MultiFab centers(erf_cell_ba, erf_dm, 2, IntVect(1,1,0));
+    MultiFab centers(erf_cell_ba, erf_dm, 2, IntVect(1,1,0), HostArenaInfo());
     MultiFab::Copy(centers, *erf_lon, 0, 0, 1, 0);
     MultiFab::Copy(centers, *erf_lat, 0, 1, 1, 0);
     centers.FillBoundary();
     ExtendCornerMeshOneRing(centers, cell_domain);
 
+    RequireHostAccess("BuildERFCornerMesh", *m_erf_node_coords, centers);
     for (MFIter mfi(*m_erf_node_coords); mfi.isValid(); ++mfi) {
         const Box nbx = mfi.validbox();
         auto node = m_erf_node_coords->array(mfi);
@@ -2201,18 +2410,11 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
     }
 
     // Land mask as Real so it rides the same staging machinery as the coords.
+    // Default arena: the per-exchange diagnostics read it on the device, and
+    // nothing reads it on the host (the staging plan copies it).
     m_erf_land_mask = std::make_unique<MultiFab>(erf_cell_ba, erf_dm, 1, 0);
     if (erf_is_land != nullptr) {
-        for (MFIter mfi(*m_erf_land_mask); mfi.isValid(); ++mfi) {
-            const Box bx = mfi.validbox();
-            auto mask = m_erf_land_mask->array(mfi);
-            auto const& is_land = erf_is_land->const_array(mfi);
-            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
-                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
-                    mask(i,j,0) = static_cast<Real>(is_land(i,j,0));
-                }
-            }
-        }
+        amrex::Copy(*m_erf_land_mask, *erf_is_land, 0, 0, 1, 0);
     } else {
         m_erf_land_mask->setVal(0.0);   // no mask reported: treat everything as water
     }
@@ -2224,12 +2426,16 @@ ERFRemoraMultiBlockContainer::BuildERFCornerMesh()
         // term; a mesh misplaced by a staggering mistake shows up here as a
         // sizable fraction of a cell.
         Real max_offset = 0.0;
+        MultiFab lon_copy, lat_copy;
+        const MultiFab* erf_lon_host = HostView(erf_lon, lon_copy);
+        const MultiFab* erf_lat_host = HostView(erf_lat, lat_copy);
+        RequireHostAccess("BuildERFCornerMesh", *m_erf_node_coords, *erf_lon_host, *erf_lat_host);
         for (MFIter mfi(*m_erf_node_coords); mfi.isValid(); ++mfi) {
             // The node MultiFab's validbox is nodal; iterate its cells.
             const Box bx = amrex::enclosedCells(mfi.validbox()) & cell_domain;
             auto const& node = m_erf_node_coords->const_array(mfi);
-            auto const& lon  = erf_lon->const_array(mfi);
-            auto const& lat  = erf_lat->const_array(mfi);
+            auto const& lon  = erf_lon_host->const_array(mfi);
+            auto const& lat  = erf_lat_host->const_array(mfi);
             for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
                 for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
                     Real mean[2];
@@ -2284,6 +2490,7 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
     const int n_erf_boxes = static_cast<int>(erf_cell_ba.size());
     Vector<Real> erf_lo(2 * n_erf_boxes,  std::numeric_limits<Real>::max());
     Vector<Real> erf_hi(2 * n_erf_boxes, -std::numeric_limits<Real>::max());
+    RequireHostAccess("BuildERFStagingPlan", erf_node);
     for (MFIter mfi(erf_node); mfi.isValid(); ++mfi) {
         const int b = mfi.index();
         const Box nbx = mfi.validbox();
@@ -2303,14 +2510,18 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
     // REMORA box bounds, same treatment. The rho layout drives this: face
     // families live on staggered versions of the same boxes, so the rho
     // footprint grown by one cell covers them.
-    const MultiFab* remora_lon = nullptr;
-    const MultiFab* remora_lat = nullptr;
-    REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon, &remora_lat);
-    AMREX_ALWAYS_ASSERT(remora_lon != nullptr && remora_lat != nullptr);
+    const MultiFab* remora_lon_dev = nullptr;
+    const MultiFab* remora_lat_dev = nullptr;
+    REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon_dev, &remora_lat_dev);
+    AMREX_ALWAYS_ASSERT(remora_lon_dev != nullptr && remora_lat_dev != nullptr);
+    MultiFab lon_copy, lat_copy;
+    const MultiFab* remora_lon = HostView(remora_lon_dev, lon_copy);
+    const MultiFab* remora_lat = HostView(remora_lat_dev, lat_copy);
 
     const int n_remora_boxes = static_cast<int>(m_ba_ocn.size());
     Vector<Real> remora_lo(2 * n_remora_boxes,  std::numeric_limits<Real>::max());
     Vector<Real> remora_hi(2 * n_remora_boxes, -std::numeric_limits<Real>::max());
+    RequireHostAccess("BuildERFStagingPlan", *remora_lon, *remora_lat);
     for (MFIter mfi(*remora_lon); mfi.isValid(); ++mfi) {
         const int b = mfi.index();
         // One extra node ring so face-staggered REMORA points and their
@@ -2378,8 +2589,9 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
     // where neighboring REMORA boxes need overlapping ERF regions; that is fine
     // for a copy, since MultiBlockCommMetaData::define builds tags per
     // destination box independently.
-    plan.node_mf = std::make_unique<MultiFab>(plan.node_ba, m_dm_ocn, 2, 0);
-    plan.land_mf = std::make_unique<MultiFab>(plan.cell_ba, m_dm_ocn, 1, 0);
+    // Read by the A2O weight build's host loops.
+    plan.node_mf = std::make_unique<MultiFab>(plan.node_ba, m_dm_ocn, 2, 0, HostArenaInfo());
+    plan.land_mf = std::make_unique<MultiFab>(plan.cell_ba, m_dm_ocn, 1, 0, HostArenaInfo());
     plan.node_mf->setVal(0.0);
     plan.land_mf->setVal(0.0);
 
@@ -2477,11 +2689,15 @@ ERFRemoraMultiBlockContainer::BuildREMORAStagingPlan()
     const int n_remora_boxes = static_cast<int>(remora_cell_ba.size());
     Vector<Real> remora_lo(2 * n_remora_boxes,  std::numeric_limits<Real>::max());
     Vector<Real> remora_hi(2 * n_remora_boxes, -std::numeric_limits<Real>::max());
-    for (MFIter mfi(*remora_lon); mfi.isValid(); ++mfi) {
+    MultiFab lon_copy, lat_copy;
+    const MultiFab* remora_lon_host = HostView(remora_lon, lon_copy);
+    const MultiFab* remora_lat_host = HostView(remora_lat, lat_copy);
+    RequireHostAccess("BuildREMORAStagingPlan", *remora_lon_host, *remora_lat_host);
+    for (MFIter mfi(*remora_lon_host); mfi.isValid(); ++mfi) {
         const int b = mfi.index();
         const Box nbx = mfi.validbox();
-        auto const& lon = remora_lon->const_array(mfi);
-        auto const& lat = remora_lat->const_array(mfi);
+        auto const& lon = remora_lon_host->const_array(mfi);
+        auto const& lat = remora_lat_host->const_array(mfi);
         PlanarBBox bb;
         for (int j = nbx.smallEnd(1); j <= nbx.bigEnd(1); ++j) {
             for (int i = nbx.smallEnd(0); i <= nbx.bigEnd(0); ++i) {
@@ -2499,6 +2715,7 @@ ERFRemoraMultiBlockContainer::BuildREMORAStagingPlan()
     const int n_erf_boxes = static_cast<int>(erf_cell_ba.size());
     Vector<Real> erf_lo(2 * n_erf_boxes,  std::numeric_limits<Real>::max());
     Vector<Real> erf_hi(2 * n_erf_boxes, -std::numeric_limits<Real>::max());
+    RequireHostAccess("BuildREMORAStagingPlan", erf_node);
     for (MFIter mfi(erf_node); mfi.isValid(); ++mfi) {
         const int b = mfi.index();
         const Box nbx = mfi.validbox();
@@ -2555,8 +2772,9 @@ ERFRemoraMultiBlockContainer::BuildREMORAStagingPlan()
     // where neighboring ERF boxes need overlapping REMORA regions; that is fine
     // for a copy, since MultiBlockCommMetaData::define builds tags per
     // destination box independently.
-    plan.node_mf = std::make_unique<MultiFab>(plan.node_ba, erf_dm, 2, 0);
-    plan.wet_mf = std::make_unique<MultiFab>(plan.cell_ba, erf_dm, 1, 0);
+    // Read by the O2A weight build's host loops.
+    plan.node_mf = std::make_unique<MultiFab>(plan.node_ba, erf_dm, 2, 0, HostArenaInfo());
+    plan.wet_mf = std::make_unique<MultiFab>(plan.cell_ba, erf_dm, 1, 0, HostArenaInfo());
     plan.node_mf->setVal(0.0);
     plan.wet_mf->setVal(0.0);
 
@@ -2593,20 +2811,29 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
 {
     using namespace amrex;
 
-    const MultiFab* remora_lon = nullptr;
-    const MultiFab* remora_lat = nullptr;
+    // Everything read from REMORA below goes through a host view: the loops that
+    // read it run on the host.
+    const MultiFab* remora_lon_dev = nullptr;
+    const MultiFab* remora_lat_dev = nullptr;
     if (m_remap_spherical) {
-        REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon, &remora_lat);
+        REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon_dev, &remora_lat_dev);
     }
+    MultiFab lon_copy, lat_copy;
+    const MultiFab* remora_lon = HostView(remora_lon_dev, lon_copy);
+    const MultiFab* remora_lat = HostView(remora_lat_dev, lat_copy);
 
     // REMORA wet/dry masks, so coverage can be reported over the cells that carry
     // ocean rather than over land the atmosphere grid was never going to force.
-    const MultiFab* remora_mskr = nullptr;
-    const MultiFab* remora_msku = nullptr;
-    const MultiFab* remora_mskv = nullptr;
+    const MultiFab* remora_mskr_dev = nullptr;
+    const MultiFab* remora_msku_dev = nullptr;
+    const MultiFab* remora_mskv_dev = nullptr;
     if (m_remora != nullptr) {
-        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+        REMORAGetMasks(m_remora, &remora_mskr_dev, &remora_msku_dev, &remora_mskv_dev);
     }
+    MultiFab mskr_copy, msku_copy, mskv_copy;
+    const MultiFab* remora_mskr = HostView(remora_mskr_dev, mskr_copy);
+    const MultiFab* remora_msku = HostView(remora_msku_dev, msku_copy);
+    const MultiFab* remora_mskv = HostView(remora_mskv_dev, mskv_copy);
 
     // Reset A2O weight and index caches, one family slot at a time. Each slot
     // was allocated (AllocateCachesFromSolverLayouts) against its own
@@ -2653,7 +2880,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             (m_remap_donor_fill_mode == DonorFillMode::Coawst) && m_remap_spherical;
         if (donor_fill_can_run && !m_donor_fill_mf_by_family[f]) {
             m_donor_fill_mf_by_family[f] = std::make_unique<iMultiFab>(
-                weight_mf->boxArray(), weight_mf->DistributionMap(), 1, 0);
+                weight_mf->boxArray(), weight_mf->DistributionMap(), 1, 0, HostArenaInfo());
         }
         iMultiFab* donor_fill_mf = m_donor_fill_mf_by_family[f].get();
 
@@ -2712,6 +2939,12 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
             family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
         }
 
+        RequireHostAccess("BuildAtmosToOceanWeights", *weight_mf, *index_mf);
+        RequireHostAccessIfPresent("BuildAtmosToOceanWeights", donor_fill_mf, family_mask);
+        if (m_remap_spherical) {
+            RequireHostAccess("BuildAtmosToOceanWeights", *remora_lon, *remora_lat,
+                              *m_staging_plan->node_mf, *m_staging_plan->land_mf);
+        }
         for (MFIter mfi(*weight_mf); mfi.isValid(); ++mfi) {
             Box bx = mfi.validbox();
             auto weight_arr = weight_mf->array(mfi);
@@ -3217,7 +3450,7 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
         // between non-intersecting layouts would silently report every cell as water.
         const iMultiFab* erf_is_land = nullptr;
         if (m_erf != nullptr) { ERFGetLandMask(m_erf, &erf_is_land); }
-        iMultiFab land_dst(m_ba, m_dm, 1, 0);
+        iMultiFab land_dst(m_ba, m_dm, 1, 0, HostArenaInfo());
         land_dst.setVal(0);
         if (erf_is_land != nullptr) {
             land_dst.ParallelCopy(*erf_is_land, 0, 0, 1);
@@ -3291,6 +3524,9 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                 m_remora_staging_plan->wet_mf != nullptr,
                 "BuildOceanToAtmosWeights spherical path requires the staged REMORA corner mesh and wet mask.");
 
+            RequireHostAccess("BuildOceanToAtmosWeights", *m_weight_o2a_mf, *m_index_o2a_mf,
+                              *m_valid_o2a_mf, land_dst, *m_erf_node_coords,
+                              *m_remora_staging_plan->node_mf, *m_remora_staging_plan->wet_mf);
             for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
                 Box bx = mfi.validbox();
                 auto weight_arr = m_weight_o2a_mf->array(mfi);
@@ -3366,10 +3602,12 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
             // Cartesian O2A still uses a replicated rho-mask lookup because it has
             // no staged REMORA source layout. Spherical O2A consumes
             // m_remora_staging_plan->wet_mf instead.
-            const MultiFab* remora_mskr = nullptr;
+            const MultiFab* remora_mskr_dev = nullptr;
             if (m_remora != nullptr) {
-                REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
+                REMORAGetMasks(m_remora, &remora_mskr_dev, nullptr, nullptr);
             }
+            MultiFab mskr_copy;
+            const MultiFab* remora_mskr = HostView(remora_mskr_dev, mskr_copy);
 
             const Box remora_cell_domain = m_geom_ocn.Domain();
             const bool use_remora_mskr =
@@ -3385,6 +3623,8 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                        > Real(0.5);
             };
 
+            RequireHostAccess("BuildOceanToAtmosWeights", *m_weight_o2a_mf, *m_index_o2a_mf,
+                              *m_valid_o2a_mf, land_dst);
             for (MFIter mfi(*m_weight_o2a_mf); mfi.isValid(); ++mfi) {
                 Box bx = mfi.validbox();
                 auto weight_arr = m_weight_o2a_mf->array(mfi);

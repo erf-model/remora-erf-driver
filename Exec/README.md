@@ -389,6 +389,27 @@ numbers have not been checked against either code's source; they are plausible
 and conventional, but treat them as unverified until someone reads the couplers
 directly.
 
+### Dumping the weights for comparison between runs
+
+`driver.remap_dump_weights = 1` writes every remap array the exchanges read to
+`remap_weights/` in the run directory, once after they are built: the A2O
+weights and indices per family (`a2o_weight_scalar`, `a2o_index_taux`, ...), the
+coawst donor flags when that search ran, and on two-way runs the O2A weights,
+indices, valid flags and uncoupled mask. Each array is gathered onto one box and
+written raw (`<name>.bin`) with its box, component count and type in `<name>.txt`.
+A face shared by two boxes of a face-staggered family is taken from the lower box,
+so the bytes do not depend on rank count or on how boxes are assigned to ranks.
+They can depend on the box layout itself (`amr.max_grid_size`, the domain), since
+each box builds its own stencils and may list a cell's overlaps in a different
+order. Two runs with the same box layout compare exactly with
+`cmp run_a/remap_weights/a2o_weight_scalar.bin run_b/remap_weights/a2o_weight_scalar.bin`
+when both binaries compile the host-side clipping the same way. That holds for one
+binary under different settings (for example `amrex.the_arena_is_managed`), and for
+CPU and CUDA builds made with the same host compiler and flags. It does not hold on
+Perlmutter between the Cray CPU build and the CUDA build, which round the clipping
+arithmetic differently (#34). An existing `remap_weights/` is renamed aside, as
+plotfiles are.
+
 ### Comparing with an external SCRIP weights file
 
 `driver.scrip_weights_file = <path>` compares our weights, once after they are

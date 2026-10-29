@@ -275,28 +275,32 @@ struct OwnerMatchTally
     }
 };
 
+// Twice the signed shoelace area, CCW positive. Each term is taken relative to
+// the first vertex: absolute lon/lat products are ~1e7 times the area of a
+// small cell, so the result would carry only ~9 digits and would depend on
+// compiler contraction choices (issue #34). The area is translation-invariant.
+amrex::Real SignedArea2 (const amrex::Vector<Point2D>& poly) {
+    amrex::Real area = 0.0;
+    const int n = static_cast<int>(poly.size());
+    const Point2D o = poly[0];
+    for (int i = 1; i + 1 < n; ++i) {
+        const amrex::Real xi = poly[i].x - o.x, yi = poly[i].y - o.y;
+        const amrex::Real xj = poly[i+1].x - o.x, yj = poly[i+1].y - o.y;
+        area += xi * yj - xj * yi;
+    }
+    return area;
+}
+
 // Compute 2D polygon area using Shoelace formula
 amrex::Real PolygonArea (const amrex::Vector<Point2D>& poly) {
     if (poly.size() < 3) return 0.0;
-    amrex::Real area = 0.0;
-    int n = static_cast<int>(poly.size());
-    for (int i = 0; i < n; ++i) {
-        int j = (i + 1) % n;
-        area += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
-    }
-    return 0.5 * std::abs(area);
+    return 0.5 * std::abs(SignedArea2(poly));
 }
 
 // Ensure polygon vertices are ordered counter-clockwise (CCW)
 void EnsureCounterClockwise(amrex::Vector<Point2D>& poly) {
     if (poly.size() < 3) return;
-    amrex::Real signed_area = 0.0;
-    int n = static_cast<int>(poly.size());
-    for (int i = 0; i < n; ++i) {
-        int j = (i + 1) % n;
-        signed_area += poly[i].x * poly[j].y - poly[j].x * poly[i].y;
-    }
-    if (signed_area < 0.0) {
+    if (SignedArea2(poly) < 0.0) {
         std::reverse(poly.begin(), poly.end());
     }
 }
@@ -358,6 +362,20 @@ amrex::Vector<Point2D> ClipPolygon(amrex::Vector<Point2D> subjectPoly, amrex::Ve
         }
     }
     return outputPoly;
+}
+
+// Area of subjectPoly clipped by clipPoly. Both polygons are first shifted so
+// subjectPoly's first vertex is the origin; otherwise EdgeIntersection's
+// line constants are built from absolute coordinates and the clipped vertices
+// lose the same ~7 digits as an absolute shoelace sum (issue #34). Neighbouring
+// coordinates are within a factor of two of each other, so the shift itself is
+// exact (Sterbenz) away from lon/lat = 0.
+amrex::Real ClippedArea (amrex::Vector<Point2D> subjectPoly, amrex::Vector<Point2D> clipPoly) {
+    if (subjectPoly.empty() || clipPoly.empty()) return 0.0;
+    const Point2D o = subjectPoly[0];
+    for (auto& p : subjectPoly) { p.x -= o.x; p.y -= o.y; }
+    for (auto& p : clipPoly)    { p.x -= o.x; p.y -= o.y; }
+    return PolygonArea(ClipPolygon(std::move(subjectPoly), std::move(clipPoly)));
 }
 
 // Extract 4-corner physical quad for cell (i, j) from 2D coordinate MultiFabs
@@ -3091,8 +3109,8 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                             for (int erf_j = cj_lo; erf_j <= cj_hi; ++erf_j) {
                                 for (int erf_i = ci_lo; erf_i <= ci_hi; ++erf_i) {
                                     if (erf_src_is_land(erf_i, erf_j)) { continue; }
-                                    const Real area = PolygonArea(
-                                        ClipPolygon(remora_poly, erf_src_poly(erf_i, erf_j)));
+                                    const Real area =
+                                        ClippedArea(remora_poly, erf_src_poly(erf_i, erf_j));
                                     if (area > 0.0) {
                                         overlaps.emplace_back(area, IntVect(erf_i, erf_j, 0));
                                     }
@@ -3112,7 +3130,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                                     ExtractCellQuadFromCoords(erf_i, erf_j,
                                                               Array4<const Real>(erf_node, 0),
                                                               Array4<const Real>(erf_node, 1));
-                                const Real area = PolygonArea(ClipPolygon(remora_poly, erf_poly));
+                                const Real area = ClippedArea(remora_poly, erf_poly);
                                 if (area > 0.0) { overlaps.emplace_back(area, erf_ij); }
                             }
                         }
@@ -3146,7 +3164,7 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
                                     {erf_bounds.hi(0), erf_bounds.hi(1)},
                                     {erf_bounds.lo(0), erf_bounds.hi(1)}
                                 };
-                                const Real area = PolygonArea(ClipPolygon(remora_poly, erf_poly));
+                                const Real area = ClippedArea(remora_poly, erf_poly);
                                 if (area > 0.0) {
                                     overlaps.emplace_back(area, IntVect(erf_i, erf_j, 0));
                                 }
@@ -3582,8 +3600,7 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                                 ExtractCellQuadFromCoords(src_i, src_j,
                                                           Array4<const Real>(remora_node, 0),
                                                           Array4<const Real>(remora_node, 1));
-                            const Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
-                            const Real intersect_area = PolygonArea(clipped_poly);
+                            const Real intersect_area = ClippedArea(erf_poly, remora_poly);
                             if (intersect_area <= 0.0) { continue; }
 
                             any_geometric_overlap = true;
@@ -3681,8 +3698,7 @@ ERFRemoraMultiBlockContainer::BuildOceanToAtmosWeights()
                                     {remora_cell_bounds.lo(0), remora_cell_bounds.hi(1)}
                                 };
 
-                                Vector<Point2D> clipped_poly = ClipPolygon(erf_poly, remora_poly);
-                                Real intersect_area = PolygonArea(clipped_poly);
+                                Real intersect_area = ClippedArea(erf_poly, remora_poly);
                                 if (intersect_area <= 0.0) { continue; }
 
                                 any_geometric_overlap = true;

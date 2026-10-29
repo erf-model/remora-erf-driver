@@ -233,6 +233,12 @@ compare_cases () {
     echo "$name: compared $n plotfiles, $nw weight arrays and $(pick_remap_lines "$bdir/run.log" | wc -l) remap lines"
   done
 
+  # A named case missing from the baseline would otherwise compare nothing and pass.
+  local want
+  for want in ${only[@]+"${only[@]}"}; do
+    [[ -d $base/$want ]] || { echo "$want: named but not in baseline $base"; fail=1; }
+  done
+
   if (( fail )); then echo "RESULT: DIFFERENCES FOUND"; return 1; fi
   echo "RESULT: identical${tol:+ (within $tol)}"
 }

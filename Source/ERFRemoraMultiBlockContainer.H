@@ -170,6 +170,14 @@ private:
                         amrex::Real time,
                         long long ocean_step,
                         bool ocean_to_atmos) const;
+    // Abort if any packed lane holds a NaN or an infinity in a valid cell.
+    void AbortOnNonFinite(const char* what,
+                          const amrex::Vector<amrex::MultiFab*>& lanes,
+                          const amrex::Vector<std::string>& names) const;
+    void CheckDebugInjectNaNLane() const;
+    void MaybeInjectDebugNaN(const amrex::Vector<amrex::MultiFab*>& lanes,
+                             const amrex::Vector<std::string>& names,
+                             bool after_guard) const;
     // The two exchange directions are sampled at different instants; each is
     // stamped with the time it actually represents.
     void WriteExchangePlotfiles(amrex::Real o2a_time,
@@ -314,6 +322,13 @@ private:
     // Write the built remap arrays to remap_weights/ for exact run-to-run
     // comparison (driver.remap_dump_weights). Off by default.
     bool m_remap_dump_weights = false;
+    // Test hook for the non-finite guards (issue #36): poison one cell of the
+    // named exchange lane with a NaN on every exchange (driver.debug_inject_nan_lane).
+    // By default the NaN goes in ahead of the post-pack guard; with
+    // driver.debug_inject_nan_after_guard=1 it goes in behind it, so only
+    // ValidateFields (driver.v >= 1, atmos->ocean lanes) stands in its way.
+    std::string m_debug_inject_nan_lane;
+    bool m_debug_inject_nan_after_guard = false;
     // True if atmosphere domain extends beyond ocean domain in any direction (x/y).
     // Computed once in AllocateCachesFromSolverLayouts() after geometries are available.
     bool m_atm_extends_beyond_ocn = false;

@@ -205,7 +205,10 @@ is not "what does it say" but "what value is normal here".
 
 ### Verbosity
 
-- `driver.v = 1` — driver lifecycle and layout queries.
+- `driver.v = 1` — driver lifecycle and layout queries, and the per-exchange
+  `Exchange validation` / `Post-pack` / `Pre-apply` / `Post-apply` lines. Those
+  print each lane's wet-cell min/max and abort on any non-finite wet value (see
+  [Non-finite guards](#non-finite-guards)).
 - `driver.remap_v = 1` — remap geometry detail: corner ranges, extents, stencil
   occupancy, the resolved donor-fill mode, and per-direction coverage summaries.
 - `driver.remap_v = 2` — additionally the per-REMORA-box staged lon/lat bounding
@@ -695,6 +698,41 @@ REMORA ApplyAtmosphericFluxes validation (wet cells only; srflx W/m2, others kin
 `srflx` is stored in W/m2 and converted where it enters `stflux`; the others are
 kinematic as REMORA stores them.
 
+### Non-finite guards
+
+Every packed lane is checked for NaN and infinity right after it is packed, in
+every valid cell (land included) and every component, at any verbosity:
+
+```
+Non-finite value detected in PackSurfaceState output, lane '<name>'.
+Non-finite value detected in PackAtmosphericStates output, lane '<name>'.
+```
+
+Either one aborts the run before the bad values reach the other solver. The
+check tests each value (`MultiFab::contains_nan` / `contains_inf`). It does not
+look at min/max: `amrex::min(d, r)` is `(r < d) ? r : d`, so a NaN survives a
+min/max reduction only if it is visited first, and whether it is depends on
+rank count, box layout and GPU block layout.
+
+Under `driver.v = 1`, the validation lines also count non-finite values over wet
+cells and abort on a nonzero count:
+
+```
+Post-pack atmos->ocean validation: <n> non-finite value(s) in field '<name>' (wet only) at ocean_step=<s>
+```
+
+Their printed min/max cover the finite wet cells only.
+
+On CPU, `amrex.fpe_trap_invalid = 1` (set in the Upwelling decks) often traps
+first. On GPU nothing traps, so these checks are the only thing that stops a NaN.
+
+`driver.debug_inject_nan_lane = <lane>` writes a NaN into one cell of that lane
+on every exchange, to check that the guards fire. Add
+`driver.debug_inject_nan_after_guard = 1` to write it after the post-pack check
+instead, so only the `driver.v = 1` validation can catch it. That works for
+atmos->ocean lanes only. Both are test hooks, and a run with them set is
+expected to abort.
+
 ### Parallel layout
 
 ```
@@ -730,7 +768,7 @@ aborts on the assertion rather than mis-mapping quietly.
 
 ## Tests
 
-The CTest suite drives the Upwelling decks with runtime overrides — 111 tests,
+The CTest suite drives the Upwelling decks with runtime overrides — 114 tests,
 all from `Exec/Upwelling`. OCCAMS is not in the suite; its external data is not
 in the repository.
 
@@ -823,7 +861,7 @@ ctest --test-dir build -R '_flux_.*_np4_compare_to_np1' --output-on-failure
 ctest --test-dir build -R 'reproducer_restart_twoway' --output-on-failure
 ```
 
-### The three tests that are not Upwelling matrix entries
+### The tests that are not Upwelling matrix entries
 
 - `compile_erf_remora_driver` — build gate; other tests depend on it.
 - `reproducer_coupled_sst_coverage` — the coverage-contract test. Drives
@@ -847,9 +885,21 @@ ctest --test-dir build -R reproducer_coupled_sst_coverage --output-on-failure
 ctest --test-dir build -R reproducer_lane_provenance --output-on-failure
 ```
 
-Neither of these carries the `restart` or `parallel` label, so neither is run by
+- `reproducer_nonfinite_guards`, plus `parallel_nonfinite_guards_np<N>` for
+  each MPI rank count — the non-finite guard test. Drives `inputs_twoway` four
+  times with `driver.debug_inject_nan_lane` and `amrex.fpe_trap_invalid = 0`.
+  Each run has to abort with the message of the guard meant to catch its NaN:
+  the two post-pack checks (SST, Tair), and the wet-cell validation count on a
+  cell-centred lane (Tair) and on an x-face lane (tau_x).
+
+```bash
+ctest --test-dir build -R nonfinite_guards --output-on-failure
+```
+
+None of the serial tests above carries the `restart` or `parallel` label, so
 `.github/workflows/ci.yml`, which selects only `compile`, `restart` and
-`parallel`. Run them locally or add a `-L coupling` step.
+`parallel`, does not run them. It does run `parallel_nonfinite_guards_np<N>`.
+Run the serial ones locally or add a `-L coupling` step.
 
 ### What the suite does not cover
 

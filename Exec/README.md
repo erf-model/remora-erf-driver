@@ -407,8 +407,12 @@ when both binaries compile the host-side clipping the same way. That holds for o
 binary under different settings (for example `amrex.the_arena_is_managed`), and for
 CPU and CUDA builds made with the same host compiler and flags. It does not hold on
 Perlmutter between the Cray CPU build and the CUDA build, which round the clipping
-arithmetic differently (#34). An existing `remap_weights/` is renamed aside, as
-plotfiles are.
+arithmetic differently. The clipping runs in a frame local to each destination
+cell, so those builds agree to rounding (~1e-16) but not bitwise.
+`Exec/OCCAMS/diff_remap_weights.py <a> <b>` reports how far two dumps differ,
+matching each cell's entries by source cell, since a sliver overlap of
+rounding-level area present in only one build shifts the later slots. An
+existing `remap_weights/` is renamed aside, as plotfiles are.
 
 ### Comparing with an external SCRIP weights file
 

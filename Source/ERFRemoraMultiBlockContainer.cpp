@@ -34,6 +34,10 @@ struct MaskedMinMaxResult
     amrex::Real max_value = 0.0;
     amrex::Long included_cells = 0;
     amrex::Long nonfinite_cells = 0;
+
+    // With no finite included cell the extrema are still the reduction
+    // sentinels, and must not be reported as values.
+    [[nodiscard]] bool has_finite () const { return included_cells > nonfinite_cells; }
 };
 
 // Returns extrema over water cells when a mask is supplied, or over every cell
@@ -45,7 +49,7 @@ struct MaskedMinMaxResult
 // NaN survives only if it is visited first, which depends on rank count, box
 // layout and GPU block layout. Keeping them out of the comparisons also keeps
 // amrex.fpe_trap_invalid from firing here instead of the caller's own check.
-// The extrema cover the finite included cells only.
+// The extrema cover the finite included cells only; see has_finite().
 // Collective; every caller must invoke this on every rank.
 MaskedMinMaxResult
 MaskedMinMax (const amrex::MultiFab& mf,
@@ -103,33 +107,74 @@ MaskedMinMax (const amrex::MultiFab& mf,
 bool
 ContainsNonFinite (const amrex::MultiFab& mf)
 {
-    return mf.contains_nan(0, mf.nComp()) || mf.contains_inf(0, mf.nComp());
+    // One pass and one MPI reduction, where contains_nan || contains_inf
+    // would take two of each.
+    const auto ma = mf.const_arrays();
+    bool r = amrex::ParReduce(amrex::TypeList<amrex::ReduceOpLogicalOr>{},
+                              amrex::TypeList<bool>{}, mf, amrex::IntVect(0), mf.nComp(),
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+            -> amrex::GpuTuple<bool>
+        {
+            return !amrex::isfinite(ma[box_no](i,j,k,n));
+        });
+    amrex::ParallelDescriptor::ReduceBoolOr(r);
+    return r;
 }
 
 // Overwrite component 0 of one cell with a quiet NaN, for exercising the
 // non-finite guards. The cell is the center of the lane's index space at its
-// lowest k, which lies on a wet cell in the coupled test decks, so the masked
-// checks see it as well as the unmasked ones. A single cell is the case the old
-// min/max guards could miss. Not collective.
+// lowest k. A single cell is the case the old min/max guards could miss.
+//
+// Aborts if the cell lies in no valid box, or, when a wet mask is given (laid
+// out like mf; mskr/msku/mskv convention, wet > 0.5), if it is not wet: either
+// way the guard under test would have nothing to find, and the run would fail
+// or pass for the wrong reason. Collective.
 void
-PoisonOneCellWithNaN (amrex::MultiFab& mf)
+PoisonOneCellWithNaN (amrex::MultiFab& mf, const amrex::MultiFab* wet_mask)
 {
     const amrex::Box domain = mf.boxArray().minimalBox();
     amrex::IntVect iv = (domain.smallEnd() + domain.bigEnd()) / 2;
     iv[2] = domain.smallEnd(2);
     const amrex::Box target(iv, iv, mf.ixType());
     const amrex::Real nan = std::numeric_limits<amrex::Real>::quiet_NaN();
+
+    amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum> reduce_ops;
+    amrex::ReduceData<amrex::Long, amrex::Long> reduce_data(reduce_ops);
+    using ReduceTuple = typename decltype(reduce_data)::Type;
+    const bool use_mask = (wet_mask != nullptr);
     for (amrex::MFIter mfi(mf); mfi.isValid(); ++mfi) {
         const amrex::Box bx = mfi.validbox() & target;
-        if (bx.ok()) {
-            const auto arr = mf.array(mfi);
-            amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        if (!bx.ok()) { continue; }
+        const auto arr = mf.array(mfi);
+        const auto mask_arr = use_mask ? wet_mask->const_array(mfi)
+                                       : amrex::Array4<const amrex::Real>{};
+        reduce_ops.eval(bx, reduce_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) -> ReduceTuple
             {
-                arr(i,j,k,0) = nan;
+                return {amrex::Long(1),
+                        (!use_mask || mask_arr(i,j,k) > amrex::Real(0.5)) ? amrex::Long(1)
+                                                                          : amrex::Long(0)};
             });
-        }
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            arr(i,j,k,0) = nan;
+        });
     }
-    amrex::Print() << "driver.debug_inject_nan_lane: NaN written at " << iv << "\n";
+    const auto reduced = reduce_data.value(reduce_ops);
+    amrex::Long counts[2] = {amrex::get<0>(reduced), amrex::get<1>(reduced)};
+    amrex::ParallelDescriptor::ReduceLongSum(counts, 2);
+
+    std::ostringstream where;
+    where << iv;
+    if (counts[0] == 0) {
+        amrex::Abort("driver.debug_inject_nan_lane: cell " + where.str() +
+                     " is in no valid box of the lane; nothing was poisoned.");
+    }
+    if (counts[1] == 0) {
+        amrex::Abort("driver.debug_inject_nan_lane: cell " + where.str() +
+                     " is land; the wet-cell validation cannot see it.");
+    }
+    amrex::Print() << "driver.debug_inject_nan_lane: NaN written at " << where.str() << "\n";
 }
 
 // Gather a remap array onto a single box on the IO rank and write its data raw
@@ -3964,6 +4009,11 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
             amrex::Print() << "  " << names[idx] << ": no wet cells" << marker << "\n";
             continue;
         }
+        if (!extrema.has_finite()) {
+            amrex::Print() << "  " << names[idx] << ": all " << extrema.included_cells
+                           << " cells non-finite" << marker << "\n";
+            continue;
+        }
         amrex::Print() << "  " << names[idx] << ": min=" << extrema.min_value
                        << " max=" << extrema.max_value;
         if (extrema.nonfinite_cells != 0) {
@@ -4057,6 +4107,9 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
                            << " nboxes=" << mf->boxArray().size();
             if (extrema.included_cells == 0) {
                 amrex::Print() << " no wet cells" << marker << "\n";
+            } else if (!extrema.has_finite()) {
+                amrex::Print() << " all " << extrema.included_cells
+                               << " cells non-finite" << marker << "\n";
             } else {
                 amrex::Print() << " min=" << extrema.min_value
                                << " max=" << extrema.max_value;
@@ -4127,7 +4180,27 @@ ERFRemoraMultiBlockContainer::MaybeInjectDebugNaN (const amrex::Vector<amrex::Mu
             amrex::Abort("driver.debug_inject_nan_lane='" + m_debug_inject_nan_lane +
                          "' names a withheld lane.");
         }
-        PoisonOneCellWithNaN(*lanes[idx]);
+        // Behind the post-pack guard only ValidateFields' wet-cell count can
+        // see the NaN, so the cell has to be wet under the mask it will use.
+        // Ahead of it the unmasked guard sees any cell.
+        const amrex::MultiFab* wet_mask = nullptr;
+        if (after_guard && m_remora != nullptr) {
+            const amrex::MultiFab* mskr = nullptr;
+            const amrex::MultiFab* msku = nullptr;
+            const amrex::MultiFab* mskv = nullptr;
+            REMORAGetMasks(m_remora, &mskr, &msku, &mskv);
+            const amrex::IntVect stagger = lanes[idx]->boxArray().ixType().toIntVect();
+            wet_mask = (stagger == amrex::IntVect(1,0,0)) ? msku
+                     : (stagger == amrex::IntVect(0,1,0)) ? mskv
+                     : (stagger == amrex::IntVect::TheCellVector()) ? mskr : nullptr;
+            // Same rule as ValidateFields: a mask on another layout is not used.
+            if (wet_mask != nullptr &&
+                (wet_mask->boxArray() != lanes[idx]->boxArray() ||
+                 wet_mask->DistributionMap() != lanes[idx]->DistributionMap())) {
+                wet_mask = nullptr;
+            }
+        }
+        PoisonOneCellWithNaN(*lanes[idx], wet_mask);
         return;
     }
 }

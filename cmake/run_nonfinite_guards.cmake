@@ -33,8 +33,10 @@ endif()
 get_filename_component(_input_name "${ERF_REMORA_INPUT_FILE}" NAME)
 get_filename_component(_deck_dir "${_input_file}" DIRECTORY)
 
+# The serial run is tagged "serial", not "np1", so that it never shares a work
+# directory with an MPI run at one rank.
 set(_launcher "")
-set(_rank_tag "np1")
+set(_rank_tag "serial")
 if(DEFINED ERF_REMORA_MPI_NPROCS AND NOT "${ERF_REMORA_MPI_NPROCS}" STREQUAL "")
   if(NOT DEFINED MPIEXEC_EXECUTABLE OR NOT DEFINED MPIEXEC_NUMPROC_FLAG)
     message(FATAL_ERROR "ERF_REMORA_MPI_NPROCS needs MPIEXEC_EXECUTABLE and MPIEXEC_NUMPROC_FLAG")

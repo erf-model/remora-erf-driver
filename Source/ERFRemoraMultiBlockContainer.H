@@ -322,7 +322,7 @@ private:
     // Write the built remap arrays to remap_weights/ for exact run-to-run
     // comparison (driver.remap_dump_weights). Off by default.
     bool m_remap_dump_weights = false;
-    // Test hook for the non-finite guards (issue #36): poison one cell of the
+    // Test hook for the non-finite guards: poison one cell of the
     // named exchange lane with a NaN on every exchange (driver.debug_inject_nan_lane).
     // By default the NaN goes in ahead of the post-pack guard; with
     // driver.debug_inject_nan_after_guard=1 it goes in behind it, so only

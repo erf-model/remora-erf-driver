@@ -366,6 +366,8 @@ if(ERF_REMORA_ENABLE_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_coupled_sst_coverage.cmake")
   set(ERF_REMORA_LANE_PROVENANCE_TEST_SCRIPT
       "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_lane_provenance.cmake")
+  set(ERF_REMORA_NONFINITE_GUARDS_TEST_SCRIPT
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_nonfinite_guards.cmake")
 
   add_test(
     NAME compile_erf_remora_driver
@@ -417,6 +419,47 @@ if(ERF_REMORA_ENABLE_TESTS)
       LABELS "reproducer;coupling"
       PROCESSORS 1
   )
+
+  # A single NaN in any exchanged lane must stop the run at the guard meant to
+  # catch it, at any rank count. See issue #36.
+  add_test(
+    NAME reproducer_nonfinite_guards
+    COMMAND
+      "${CMAKE_COMMAND}"
+      -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+      -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+      -DERF_REMORA_INPUT_FILE=Exec/Upwelling/inputs_twoway
+      -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+      -P "${ERF_REMORA_NONFINITE_GUARDS_TEST_SCRIPT}"
+  )
+  set_tests_properties(reproducer_nonfinite_guards
+    PROPERTIES
+      LABELS "reproducer;coupling"
+      PROCESSORS 1
+  )
+  if(ERF_REMORA_ENABLE_MPI AND MPIEXEC_EXECUTABLE)
+    foreach(_mpi_nprocs IN LISTS ERF_REMORA_PARALLEL_TEST_NRANKS)
+      add_test(
+        NAME parallel_nonfinite_guards_np${_mpi_nprocs}
+        COMMAND
+          "${CMAKE_COMMAND}"
+          -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+          -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+          -DERF_REMORA_INPUT_FILE=Exec/Upwelling/inputs_twoway
+          -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+          -DMPIEXEC_EXECUTABLE=${MPIEXEC_EXECUTABLE}
+          -DMPIEXEC_NUMPROC_FLAG=${MPIEXEC_NUMPROC_FLAG}
+          -DMPIEXEC_PREFLAGS=${MPIEXEC_PREFLAGS}
+          -DERF_REMORA_MPI_NPROCS=${_mpi_nprocs}
+          -P "${ERF_REMORA_NONFINITE_GUARDS_TEST_SCRIPT}"
+      )
+      set_tests_properties(parallel_nonfinite_guards_np${_mpi_nprocs}
+        PROPERTIES
+          LABELS "parallel;coupling"
+          PROCESSORS ${_mpi_nprocs}
+      )
+    endforeach()
+  endif()
 
   # The reproducibility tests below ask whether the coupled run gives the same
   # answer twice: once across rank counts, once across a checkpoint/restart.

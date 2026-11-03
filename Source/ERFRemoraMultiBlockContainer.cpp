@@ -33,11 +33,23 @@ struct MaskedMinMaxResult
     amrex::Real min_value = 0.0;
     amrex::Real max_value = 0.0;
     amrex::Long included_cells = 0;
+    amrex::Long nonfinite_cells = 0;
+
+    // With no finite included cell the extrema are still the reduction
+    // sentinels, and must not be reported as values.
+    [[nodiscard]] bool has_finite () const { return included_cells > nonfinite_cells; }
 };
 
 // Returns extrema over water cells when a mask is supplied, or over every cell
 // when it is not. The included-cell count makes an all-masked result explicit,
 // so the reduction sentinels are never reported as physical values.
+//
+// Non-finite values are counted rather than folded into the extrema. Min/max
+// cannot be trusted to carry a NaN: amrex::min(d, r) is (r < d) ? r : d, so a
+// NaN survives only if it is visited first, which depends on rank count, box
+// layout and GPU block layout. Keeping them out of the comparisons also keeps
+// amrex.fpe_trap_invalid from firing here instead of the caller's own check.
+// The extrema cover the finite included cells only; see has_finite().
 // Collective; every caller must invoke this on every rank.
 MaskedMinMaxResult
 MaskedMinMax (const amrex::MultiFab& mf,
@@ -49,8 +61,8 @@ MaskedMinMax (const amrex::MultiFab& mf,
     constexpr Real min_sentinel = std::numeric_limits<Real>::max();
     constexpr Real max_sentinel = -std::numeric_limits<Real>::max();
 
-    ReduceOps<ReduceOpMin, ReduceOpMax, ReduceOpSum> reduce_ops;
-    ReduceData<Real, Real, Long> reduce_data(reduce_ops);
+    ReduceOps<ReduceOpMin, ReduceOpMax, ReduceOpSum, ReduceOpSum> reduce_ops;
+    ReduceData<Real, Real, Long, Long> reduce_data(reduce_ops);
     using ReduceTuple = typename decltype(reduce_data)::Type;
 
     const bool use_mask = (mask != nullptr);
@@ -66,9 +78,12 @@ MaskedMinMax (const amrex::MultiFab& mf,
                     (mask_is_land ? mask_arr(i,j,k) == Real(0.0)
                                   : mask_arr(i,j,k) > Real(0.5));
                 const Real value = field_arr(i,j,k);
-                return {is_water ? value : min_sentinel,
-                        is_water ? value : max_sentinel,
-                        is_water ? Long(1) : Long(0)};
+                const bool is_finite = amrex::isfinite(value);
+                const bool use_value = is_water && is_finite;
+                return {use_value ? value : min_sentinel,
+                        use_value ? value : max_sentinel,
+                        is_water ? Long(1) : Long(0),
+                        (is_water && !is_finite) ? Long(1) : Long(0)};
             });
     }
 
@@ -77,11 +92,89 @@ MaskedMinMax (const amrex::MultiFab& mf,
     result.min_value = amrex::get<0>(reduced);
     result.max_value = amrex::get<1>(reduced);
     result.included_cells = amrex::get<2>(reduced);
+    result.nonfinite_cells = amrex::get<3>(reduced);
 
     ParallelDescriptor::ReduceRealMin(result.min_value);
     ParallelDescriptor::ReduceRealMax(result.max_value);
     ParallelDescriptor::ReduceLongSum(result.included_cells);
+    ParallelDescriptor::ReduceLongSum(result.nonfinite_cells);
     return result;
+}
+
+// True if any valid cell of any component holds a NaN or an infinity. Tests
+// every value rather than inferring it from min/max, which can drop a NaN (see
+// MaskedMinMax). Unmasked, so land cells count too. Collective.
+bool
+ContainsNonFinite (const amrex::MultiFab& mf)
+{
+    // One pass and one MPI reduction, where contains_nan || contains_inf
+    // would take two of each.
+    const auto ma = mf.const_arrays();
+    bool r = amrex::ParReduce(amrex::TypeList<amrex::ReduceOpLogicalOr>{},
+                              amrex::TypeList<bool>{}, mf, amrex::IntVect(0), mf.nComp(),
+        [=] AMREX_GPU_DEVICE (int box_no, int i, int j, int k, int n) noexcept
+            -> amrex::GpuTuple<bool>
+        {
+            return !amrex::isfinite(ma[box_no](i,j,k,n));
+        });
+    amrex::ParallelDescriptor::ReduceBoolOr(r);
+    return r;
+}
+
+// Overwrite component 0 of one cell with a quiet NaN, for exercising the
+// non-finite guards. The cell is the center of the lane's index space at its
+// lowest k. A single cell is the case the old min/max guards could miss.
+//
+// Aborts if the cell lies in no valid box, or, when a wet mask is given (laid
+// out like mf; mskr/msku/mskv convention, wet > 0.5), if it is not wet: either
+// way the guard under test would have nothing to find, and the run would fail
+// or pass for the wrong reason. Collective.
+void
+PoisonOneCellWithNaN (amrex::MultiFab& mf, const amrex::MultiFab* wet_mask)
+{
+    const amrex::Box domain = mf.boxArray().minimalBox();
+    amrex::IntVect iv = (domain.smallEnd() + domain.bigEnd()) / 2;
+    iv[2] = domain.smallEnd(2);
+    const amrex::Box target(iv, iv, mf.ixType());
+    const amrex::Real nan = std::numeric_limits<amrex::Real>::quiet_NaN();
+
+    amrex::ReduceOps<amrex::ReduceOpSum, amrex::ReduceOpSum> reduce_ops;
+    amrex::ReduceData<amrex::Long, amrex::Long> reduce_data(reduce_ops);
+    using ReduceTuple = typename decltype(reduce_data)::Type;
+    const bool use_mask = (wet_mask != nullptr);
+    for (amrex::MFIter mfi(mf); mfi.isValid(); ++mfi) {
+        const amrex::Box bx = mfi.validbox() & target;
+        if (!bx.ok()) { continue; }
+        const auto arr = mf.array(mfi);
+        const auto mask_arr = use_mask ? wet_mask->const_array(mfi)
+                                       : amrex::Array4<const amrex::Real>{};
+        reduce_ops.eval(bx, reduce_data,
+            [=] AMREX_GPU_DEVICE (int i, int j, int k) -> ReduceTuple
+            {
+                return {amrex::Long(1),
+                        (!use_mask || mask_arr(i,j,k) > amrex::Real(0.5)) ? amrex::Long(1)
+                                                                          : amrex::Long(0)};
+            });
+        amrex::ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) noexcept
+        {
+            arr(i,j,k,0) = nan;
+        });
+    }
+    const auto reduced = reduce_data.value(reduce_ops);
+    amrex::Long counts[2] = {amrex::get<0>(reduced), amrex::get<1>(reduced)};
+    amrex::ParallelDescriptor::ReduceLongSum(counts, 2);
+
+    std::ostringstream where;
+    where << iv;
+    if (counts[0] == 0) {
+        amrex::Abort("driver.debug_inject_nan_lane: cell " + where.str() +
+                     " is in no valid box of the lane; nothing was poisoned.");
+    }
+    if (counts[1] == 0) {
+        amrex::Abort("driver.debug_inject_nan_lane: cell " + where.str() +
+                     " is land; the wet-cell validation cannot see it.");
+    }
+    amrex::Print() << "driver.debug_inject_nan_lane: NaN written at " << where.str() << "\n";
 }
 
 // Gather a remap array onto a single box on the IO rank and write its data raw
@@ -749,6 +842,8 @@ ERFRemoraMultiBlockContainer::ERFRemoraMultiBlockContainer (
     pp_driver.query("remap_donor_fill", m_remap_donor_fill_request);
     pp_driver.query("remap_donor_max_diagonals", m_remap_donor_max_diagonals);
     pp_driver.query("remap_dump_weights", m_remap_dump_weights);
+    pp_driver.query("debug_inject_nan_lane", m_debug_inject_nan_lane);
+    pp_driver.query("debug_inject_nan_after_guard", m_debug_inject_nan_after_guard);
     // contains() rather than the query() return, so "set explicitly to the
     // default" is distinguishable from "not set" when reporting it as inert.
     m_remap_donor_max_diagonals_set = pp_driver.contains("remap_donor_max_diagonals");
@@ -997,8 +1092,11 @@ ERFRemoraMultiBlockContainer::InitializeBlocks ()
         REMORAPackSurfaceState(m_remora, m_ocean_to_atmos, amrex::Real(0.0),
                                m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE,
                                erf_is_land_bootstrap);
+        AbortOnNonFinite("PackSurfaceState (bootstrap)",
+                         m_ocean_to_atmos, coupling::OceanToAtmosNames());
         FillOceanToAtmosGhosts();
     }
+    CheckDebugInjectNaNLane();
 
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
         DriverPrintLine(m_driver_verbose, "validating flux active view shape and centering");
@@ -3911,8 +4009,17 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
             amrex::Print() << "  " << names[idx] << ": no wet cells" << marker << "\n";
             continue;
         }
+        if (!extrema.has_finite()) {
+            amrex::Print() << "  " << names[idx] << ": all " << extrema.included_cells
+                           << " cells non-finite" << marker << "\n";
+            continue;
+        }
         amrex::Print() << "  " << names[idx] << ": min=" << extrema.min_value
-                       << " max=" << extrema.max_value << marker << "\n";
+                       << " max=" << extrema.max_value;
+        if (extrema.nonfinite_cells != 0) {
+            amrex::Print() << " non-finite=" << extrema.nonfinite_cells;
+        }
+        amrex::Print() << marker << "\n";
         if (names[idx] == "rain" &&
             (extrema.min_value > 100.0 || extrema.max_value > 100.0)) {
             amrex::Print() << "  *** WARNING: implausibly large rain values detected! ***\n";
@@ -4000,18 +4107,101 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
                            << " nboxes=" << mf->boxArray().size();
             if (extrema.included_cells == 0) {
                 amrex::Print() << " no wet cells" << marker << "\n";
+            } else if (!extrema.has_finite()) {
+                amrex::Print() << " all " << extrema.included_cells
+                               << " cells non-finite" << marker << "\n";
             } else {
                 amrex::Print() << " min=" << extrema.min_value
-                               << " max=" << extrema.max_value
-                               << marker << "\n";
+                               << " max=" << extrema.max_value;
+                if (extrema.nonfinite_cells != 0) {
+                    amrex::Print() << " non-finite=" << extrema.nonfinite_cells;
+                }
+                amrex::Print() << marker << "\n";
             }
         }
 
-        if (extrema.included_cells != 0 &&
-            (!std::isfinite(extrema.min_value) || !std::isfinite(extrema.max_value))) {
-            amrex::Abort(std::string(label) + ": non-finite extrema in field '" +
-                         names[idx] + "' at ocean_step=" + std::to_string(ocean_step));
+        if (extrema.nonfinite_cells != 0) {
+            amrex::Abort(std::string(label) + ": " + std::to_string(extrema.nonfinite_cells) +
+                         " non-finite value(s) in field '" + names[idx] + "'" + marker +
+                         " at ocean_step=" + std::to_string(ocean_step));
         }
+    }
+}
+
+void
+ERFRemoraMultiBlockContainer::AbortOnNonFinite (const char* what,
+                                                const amrex::Vector<amrex::MultiFab*>& lanes,
+                                                const amrex::Vector<std::string>& names) const
+{
+    AMREX_ALWAYS_ASSERT(lanes.size() == names.size());
+    // Every rank holds the same lane vector, so every rank enters the same
+    // collectives in the same order.
+    for (int idx = 0; idx < static_cast<int>(lanes.size()); ++idx) {
+        if (lanes[idx] != nullptr && ContainsNonFinite(*lanes[idx])) {
+            amrex::Abort(std::string("Non-finite value detected in ") + what +
+                         " output, lane '" + names[idx] + "'.");
+        }
+    }
+}
+
+void
+ERFRemoraMultiBlockContainer::CheckDebugInjectNaNLane () const
+{
+    if (m_debug_inject_nan_lane.empty()) { return; }
+    const auto& o2a = coupling::OceanToAtmosNames();
+    const bool is_o2a = m_use_two_way_coupling &&
+        std::find(o2a.begin(), o2a.end(), m_debug_inject_nan_lane) != o2a.end();
+    const bool is_a2o =
+        std::find(m_atmos_to_ocean_active_names.begin(), m_atmos_to_ocean_active_names.end(),
+                  m_debug_inject_nan_lane) != m_atmos_to_ocean_active_names.end();
+    if (!is_o2a && !is_a2o) {
+        amrex::Abort("driver.debug_inject_nan_lane='" + m_debug_inject_nan_lane +
+                     "' is not an exchange lane of this run.");
+    }
+    if (is_o2a && m_debug_inject_nan_after_guard) {
+        amrex::Abort("driver.debug_inject_nan_after_guard applies to atmos->ocean lanes only; "
+                     "nothing checks an ocean->atmos lane between its pack and its apply.");
+    }
+    amrex::Print() << "WARNING: driver.debug_inject_nan_lane=" << m_debug_inject_nan_lane
+                   << " will poison every exchange; this run is expected to abort.\n";
+}
+
+void
+ERFRemoraMultiBlockContainer::MaybeInjectDebugNaN (const amrex::Vector<amrex::MultiFab*>& lanes,
+                                                   const amrex::Vector<std::string>& names,
+                                                   bool after_guard) const
+{
+    if (m_debug_inject_nan_lane.empty() || after_guard != m_debug_inject_nan_after_guard) {
+        return;
+    }
+    for (int idx = 0; idx < static_cast<int>(names.size()); ++idx) {
+        if (names[idx] != m_debug_inject_nan_lane) { continue; }
+        if (lanes[idx] == nullptr) {
+            amrex::Abort("driver.debug_inject_nan_lane='" + m_debug_inject_nan_lane +
+                         "' names a withheld lane.");
+        }
+        // Behind the post-pack guard only ValidateFields' wet-cell count can
+        // see the NaN, so the cell has to be wet under the mask it will use.
+        // Ahead of it the unmasked guard sees any cell.
+        const amrex::MultiFab* wet_mask = nullptr;
+        if (after_guard && m_remora != nullptr) {
+            const amrex::MultiFab* mskr = nullptr;
+            const amrex::MultiFab* msku = nullptr;
+            const amrex::MultiFab* mskv = nullptr;
+            REMORAGetMasks(m_remora, &mskr, &msku, &mskv);
+            const amrex::IntVect stagger = lanes[idx]->boxArray().ixType().toIntVect();
+            wet_mask = (stagger == amrex::IntVect(1,0,0)) ? msku
+                     : (stagger == amrex::IntVect(0,1,0)) ? mskv
+                     : (stagger == amrex::IntVect::TheCellVector()) ? mskr : nullptr;
+            // Same rule as ValidateFields: a mask on another layout is not used.
+            if (wet_mask != nullptr &&
+                (wet_mask->boxArray() != lanes[idx]->boxArray() ||
+                 wet_mask->DistributionMap() != lanes[idx]->DistributionMap())) {
+                wet_mask = nullptr;
+            }
+        }
+        PoisonOneCellWithNaN(*lanes[idx], wet_mask);
+        return;
     }
 }
 
@@ -4218,18 +4408,8 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                                   m_weight_o2a_mf.get(), m_index_o2a_mf.get(), MAX_STENCIL_SIZE,
                                   erf_is_land);
 
-            // Finite check on packed surface state
-            for (auto* mf : state) {
-                if (mf) {
-                    // We use a simple check: if any value is non-finite, abort.
-                    // In a production environment, we'd use a reduction.
-                    const amrex::Real mn = mf->min(0);
-                    const amrex::Real mx = mf->max(0);
-                    if (mn != mn || mx != mx) {
-                        amrex::Abort("Non-finite value detected in PackSurfaceState output.");
-                    }
-                }
-            }
+            MaybeInjectDebugNaN(state, coupling::OceanToAtmosNames(), false);
+            AbortOnNonFinite("PackSurfaceState", state, coupling::OceanToAtmosNames());
         },
         [this](const amrex::Vector<amrex::MultiFab*>& state, amrex::Real time,
                long long /*ocean_step*/) {
@@ -4262,18 +4442,18 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
             constexpr int cloud_warn_limit = 5;
             constexpr amrex::Real cloud_tol = 1.0e-6;
 
-            // Finite check on packed atmospheric states
+            MaybeInjectDebugNaN(states, m_atmos_to_ocean_active_names, false);
+            AbortOnNonFinite("PackAtmosphericStates", states, m_atmos_to_ocean_active_names);
+            MaybeInjectDebugNaN(states, m_atmos_to_ocean_active_names, true);
+
             for (int idx = 0; idx < static_cast<int>(states.size()); ++idx) {
                 auto* mf = states[idx];
                 if (mf) {
-                    if (mf->min(0) != mf->min(0) || mf->max(0) != mf->max(0)) {
-                        amrex::Abort("Non-finite value detected in PackAtmosphericStates output.");
-                    }
                     const bool is_cloud_lane = (idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()) &&
                                                 m_atmos_to_ocean_active_indices[idx] == coupling::Cloud);
                     if (is_cloud_lane) {
-                        // min/max are collective (MPI_Allreduce), so they are issued
-                        // unconditionally here, exactly as the finite check above does.
+                        // MaskedMinMax is collective (MPI_Allreduce), so it is issued
+                        // unconditionally here, exactly as the finite check above is.
                         // cloud_warn_count is a process-local static; gating the
                         // reductions on it is what let the IO rank stop entering
                         // collectives that every other rank still executed. The counter

@@ -401,6 +401,28 @@ if(ERF_REMORA_ENABLE_TESTS)
       PROCESSORS 1
   )
 
+  # On a cold start with two atmosphere substeps per exchange, the averaged
+  # atmos->ocean forcing must equal the atmosphere state after its first
+  # substep. See issue #18.
+  if(FCOMPARE_EXE)
+    add_test(
+      NAME reproducer_cold_start_average
+      COMMAND
+        "${CMAKE_COMMAND}"
+        -DERF_REMORA_DRIVER_EXE=${ERF_REMORA_DRIVER_EXE}
+        -DERF_REMORA_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DERF_REMORA_INPUT_FILE=Exec/Upwelling/inputs_oneway
+        -DFCOMPARE_EXE=${FCOMPARE_EXE}
+        -DERF_REMORA_RRTMGP_DIR=${ERF_REMORA_RRTMGP_DIR}
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/run_cold_start_average.cmake"
+    )
+    set_tests_properties(reproducer_cold_start_average
+      PROPERTIES
+        LABELS "reproducer;coupling"
+        PROCESSORS 1
+    )
+  endif()
+
   # Every atmos->ocean forcing lane must have exactly one source, and the driver
   # must not hand REMORA a lane ERF never wrote. See issue #4.
   add_test(

@@ -4357,11 +4357,26 @@ ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename
         return;
     }
 
+    // ERF's rain is an interval mean however it is packed: ERF differences its
+    // accumulation since the previous pack, which with averaging off is the
+    // previous interval's end. Without it the rain lane is the driver's prefill.
+    const bool erf_rain_mean = m_atmos_to_ocean_lane_sources_resolved &&
+        m_atmos_to_ocean_lane_source[coupling::Rain] == coupling::LaneSource::Erf;
+    auto interval_mean = [&] (int global_idx) {
+        return global_idx >= 0 &&
+               (TimeAverageAtmosToOceanLane(global_idx) ||
+                (coupling::IsAccumulationRateLane(global_idx) && erf_rain_mean));
+    };
+    bool any_averaged = false;
+    for (int global_idx : m_atmos_to_ocean_active_indices) {
+        any_averaged = any_averaged || interval_mean(global_idx);
+    }
+
     os << "--- time averaging ---\n"
        << "driver.time_average_atm2ocn_state : " << (m_time_average_atm2ocn_state ? 1 : 0) << "\n"
        << "driver.time_average_atm2ocn_flux  : " << (m_time_average_atm2ocn_flux ? 1 : 0) << "\n"
-       << "any lane averaged                 : "
-       << (AtmosToOceanAveragingActive() ? "yes" : "no") << "\n\n";
+       << "any lane averaged                 : " << (any_averaged ? "yes" : "no")
+       << (erf_rain_mean ? " (ERF rain is an interval mean under any setting)" : "") << "\n\n";
 
     os << "--- lanes ---\n"
        << "A lane is averaged according to its CHARACTER, so a view holding both\n"
@@ -4376,12 +4391,7 @@ ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename
         const int global_idx =
             (local < static_cast<int>(m_atmos_to_ocean_active_indices.size()))
                 ? m_atmos_to_ocean_active_indices[local] : -1;
-        // A rain lane is an interval mean however it is packed: ERF differences its
-        // accumulation since the previous pack, which with averaging off is the
-        // previous interval's end.
-        const bool averaged = (global_idx >= 0) &&
-                              (TimeAverageAtmosToOceanLane(global_idx) ||
-                               coupling::IsAccumulationRateLane(global_idx));
+        const bool averaged = interval_mean(global_idx);
         const bool flux_character = (global_idx >= 0) &&
             (global_idx == coupling::Rain   || global_idx == coupling::SWrad  ||
              global_idx == coupling::LWrad  || global_idx == coupling::TauX   ||
@@ -4694,6 +4704,42 @@ ERFRemoraMultiBlockContainer::ResolveAtmosToOceanLaneSources ()
             "; REMORA longwave set to external downward";
     }
 
+    // SWrad, LWrad and rain sit in both views and were resolved above as state
+    // lanes. The flux contract hands REMORA every flux lane, so there they reach
+    // REMORA from ERF whatever the state rules said, or as zero where ERF computes
+    // none: a deck's own forcing for them is overwritten, and a request to keep
+    // it cannot be met. Say which, and refuse that request.
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        for (int local = 0; local < static_cast<int>(flux_indices.size()); ++local) {
+            const int global_idx = flux_indices[local];
+            if (global_idx >= coupling::TauX) { continue; }
+            const auto& spec = coupling::AtmosToOceanLane(global_idx);
+
+            std::string requested = "auto";
+            if (pp_lane.query(spec.name, requested) && amrex::toLower(requested) == "remora") {
+                amrex::Abort("driver.atm2ocn_lane_source." + std::string(spec.name) +
+                             " = remora cannot be honoured with driver.atm2ocn_mode = flux: the flux "
+                             "contract passes every flux lane, " + spec.name + " included, so "
+                             "REMORA's own " + spec.name + " forcing is replaced either way. "
+                             "Drop the override or use driver.atm2ocn_mode = state.");
+            }
+            if (m_atmos_to_ocean_lane_source[global_idx] == coupling::LaneSource::Erf) { continue; }
+
+            const bool erf_can_fill =
+                (local < static_cast<int>(erf_can_fill_flux.size())) && erf_can_fill_flux[local] != 0;
+            const std::string state_reason = m_atmos_to_ocean_lane_reason[global_idx];
+            if (erf_can_fill) {
+                m_atmos_to_ocean_lane_source[global_idx] = coupling::LaneSource::Erf;
+                m_atmos_to_ocean_lane_reason[global_idx] =
+                    "packed by ERF; flux mode passes every lane, overriding " + state_reason;
+            } else {
+                m_atmos_to_ocean_lane_source[global_idx] = coupling::LaneSource::RemoraDefault;
+                m_atmos_to_ocean_lane_reason[global_idx] =
+                    "ERF does not compute it; passed as zero (flux mode passes every lane)";
+            }
+        }
+    }
+
     m_atmos_to_ocean_lane_sources_resolved = true;
 }
 
@@ -4715,13 +4761,14 @@ ERFRemoraMultiBlockContainer::PrintAtmosToOceanLaneProvenance () const
         print_lane(global_idx);
     }
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        amrex::Print() << "  (above is the ocean_step=0 bootstrap; steady-state flux lanes follow)\n";
+        amrex::Print() << "  (flux mode: of the lanes above only SWrad, LWrad and rain reach REMORA; "
+                          "the flux lanes follow)\n";
         for (int global_idx : m_atmos_to_ocean_flux_active_indices) {
             if (global_idx >= coupling::TauX) { print_lane(global_idx); }
         }
     }
-    amrex::Print() << "  A lane sourced from REMORA is withheld from the apply view, so REMORA's own\n"
-                      "  forcing for it stands. Override per lane with "
+    amrex::Print() << "  In state mode a lane sourced from REMORA is withheld from the apply view, so\n"
+                      "  REMORA's own forcing for it stands. Override per lane with "
                       "driver.atm2ocn_lane_source.<lane>.\n";
 }
 

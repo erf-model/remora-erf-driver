@@ -300,7 +300,11 @@ Withholding is how the driver declines a lane, not a failure: REMORA treats any
 non-null lane as authoritative, so a lane of zeros would read as real forcing and
 displace REMORA's own. Withheld lanes also appear during validation as
 `<lane>: withheld (not supplied by ERF)`. The flux contract is exempt — REMORA
-drops the whole apply if any flux lane is null.
+drops the whole apply if any flux lane is null. So with `driver.atm2ocn_mode =
+flux`, `SWrad`, `LWrad` and `rain` reach REMORA from ERF, or as zero where ERF
+computes none, even when the REMORA deck sets its own (`remora.rain_type =
+netcdf`, say), and the table says so; `driver.atm2ocn_lane_source.<lane> = remora`
+on one of them aborts.
 
 `LWrad` gets one extra step: `remora.lwrad_type` defaults to `computed`, under
 which REMORA's bulk fluxes ignore the field entirely, so when that lane resolves

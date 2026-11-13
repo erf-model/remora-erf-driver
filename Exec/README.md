@@ -892,10 +892,13 @@ ctest --test-dir build -R reproducer_lane_provenance --output-on-failure
 ```
 
 - `reproducer_cold_start_average` — the cold-start averaging test. Drives
-  `inputs_oneway` with two atmosphere substeps per exchange and every lane
-  averaged, once per contract, and asserts that the first exchange plotfile
-  equals, at zero tolerance, that of a non-averaged run with one substep per
-  exchange: both hold the atmosphere state after its first substep.
+  `inputs_oneway` with two atmosphere substeps per exchange and asserts, lane by
+  lane at zero tolerance, that every averaged lane of the first exchange
+  plotfile holds the atmosphere state after its first substep, and that a lane
+  left unaveraged holds the state after its second. It runs every lane averaged
+  in each contract, and the state contract with only the flux flag set. Without
+  RRTMGP, `rain`, `SWrad`, `LWrad`, `Qair` and `cloud` do not change over those
+  two steps, so the test cannot check their weights.
 
 ```bash
 ctest --test-dir build -R reproducer_cold_start_average --output-on-failure

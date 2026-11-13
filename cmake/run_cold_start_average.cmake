@@ -4,13 +4,19 @@
 # trapezoid's left endpoint, because ERF's diagnostic flux arrays are still
 # zero, and reconstructs it as f(t) ~= 2*f1 - f2. With two substeps per
 # exchange the weights are 2 on f1 and 0 on f2, so the interval mean is f1
-# exactly.
+# exactly. A lane that is not averaged keeps the interval-end sample, f2.
 #
-# The reference for f1 comes from a second run: one atmosphere substep per
-# exchange with averaging off, which packs the atmosphere state after its first
-# step. The deck is one-way, so ERF's first step does not depend on the ocean
-# step and both runs see the same f1. The first exchange plotfiles of the two
-# runs must then match to zero tolerance.
+# Both references come from non-averaged runs: one substep per exchange writes
+# f1, two substeps per exchange write f2. Coupling is forced one-way, so ERF's
+# first two steps do not depend on the ocean step and every run sees the same
+# f1 and f2. Each lane of the averaged run's first exchange plotfile must equal
+# its reference at zero tolerance.
+#
+# What the check can distinguish depends on the build. Without RRTMGP,
+# radiation is off and rain, SWrad, LWrad, Qair and cloud are constant over the
+# first two steps of this deck, so for those lanes f1 = f2 and a wrong weight
+# would go unnoticed. With RRTMGP (ERF_REMORA_RRTMGP_DIR set) SWrad and LWrad
+# vary as well.
 
 if(NOT DEFINED ERF_REMORA_DRIVER_EXE)
   message(FATAL_ERROR "ERF_REMORA_DRIVER_EXE is required")
@@ -55,6 +61,7 @@ endif()
 
 set(_common_args
   "max_step=1"
+  "driver.coupling_direction=ERFtoREMORA"
   "erf.plot_int_1=-1"
   "erf.check_int=-1"
   "remora.plot_int=-1"
@@ -68,6 +75,11 @@ if(DEFINED ERF_REMORA_RRTMGP_DIR AND NOT "${ERF_REMORA_RRTMGP_DIR}" STREQUAL "")
 else()
   list(APPEND _common_args "erf.radiation_model=None")
 endif()
+
+# Lane vocabularies and characters, from Source/ERFRemoraCouplingContract.H.
+set(_flux_lanes_flux_contract tau_x tau_y SHflux LHflux SWrad LWrad rain evap)
+set(_state_lanes_state_contract Uwind Vwind Patm Qair Tair cloud)
+set(_flux_lanes_state_contract rain SWrad LWrad)
 
 function(_run _tag)
   set(_log "${_work_dir}/${_tag}.log")
@@ -92,35 +104,57 @@ function(_run _tag)
   endif()
 endfunction()
 
-# Each contract is checked with every lane it carries averaged. The flux
-# contract carries only flux-character lanes, and the driver rejects the state
-# flag there.
-foreach(_contract flux state)
-  set(_average_args "driver.time_average_atm2ocn_flux=1")
-  if(_contract STREQUAL "state")
-    list(APPEND _average_args "driver.time_average_atm2ocn_state=1")
-  endif()
-  _run(${_contract}_averaged_n2
-    "driver.atm2ocn_mode=${_contract}"
-    "remora.fixed_dt=2"
-    ${_average_args})
-  _run(${_contract}_instant_n1
-    "driver.atm2ocn_mode=${_contract}"
-    "remora.fixed_dt=1")
-
+# Require each named lane to have zero absolute error between the first
+# exchange plotfiles of two runs. fcompare cannot select variables, so its
+# per-variable table is parsed; its exit status is ignored because lanes
+# outside the list are allowed to differ.
+function(_expect_lanes_equal _case _test_tag _ref_tag _what)
   execute_process(
-    COMMAND ${_fcompare_cmd} -r 0 --abs_tol 0
-            "${_contract}_averaged_n2_a2o00000"
-            "${_contract}_instant_n1_a2o00000"
+    COMMAND ${_fcompare_cmd} "${_test_tag}_a2o00000" "${_ref_tag}_a2o00000"
     WORKING_DIRECTORY "${_work_dir}"
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _out
-    RESULT_VARIABLE _result
   )
-  if(NOT _result EQUAL 0)
-    message(FATAL_ERROR
-      "${_contract} contract: the cold-start two-substep mean is not the "
-      "atmosphere state after its first substep.\n${_out}")
-  endif()
-  message(STATUS "${_contract} contract: cold-start two-substep mean equals f1")
+  foreach(_lane IN LISTS ARGN)
+    if(NOT _out MATCHES "\n *${_lane} +([^ \n]+) +[^ \n]+\n")
+      message(FATAL_ERROR
+        "${_case}: fcompare reported no ${_lane} for ${_test_tag} vs ${_ref_tag}\n${_out}")
+    endif()
+    if(NOT CMAKE_MATCH_1 STREQUAL "0")
+      message(FATAL_ERROR
+        "${_case}: ${_lane} is not ${_what} (absolute error ${CMAKE_MATCH_1} "
+        "against ${_ref_tag})\n${_out}")
+    endif()
+  endforeach()
+  message(STATUS "${_case}: ${ARGN} equal ${_what}")
+endfunction()
+
+foreach(_contract flux state)
+  _run(${_contract}_instant_n1 "driver.atm2ocn_mode=${_contract}" "remora.fixed_dt=1")
 endforeach()
+_run(state_instant_n2 "driver.atm2ocn_mode=state" "remora.fixed_dt=2")
+
+# Every lane averaged: all of them must be f1.
+_run(flux_averaged_n2
+  "driver.atm2ocn_mode=flux" "remora.fixed_dt=2"
+  "driver.time_average_atm2ocn_flux=1")
+_expect_lanes_equal("flux contract, all lanes averaged"
+  flux_averaged_n2 flux_instant_n1 "the mean f1" ${_flux_lanes_flux_contract})
+
+_run(state_averaged_n2
+  "driver.atm2ocn_mode=state" "remora.fixed_dt=2"
+  "driver.time_average_atm2ocn_state=1" "driver.time_average_atm2ocn_flux=1")
+_expect_lanes_equal("state contract, all lanes averaged"
+  state_averaged_n2 state_instant_n1 "the mean f1"
+  ${_state_lanes_state_contract} ${_flux_lanes_state_contract})
+
+# Only the flux-character lanes averaged: those must be f1, and the state lanes
+# must keep the interval-end sample f2, which carries zero averaging weight.
+_run(state_flux_averaged_n2
+  "driver.atm2ocn_mode=state" "remora.fixed_dt=2"
+  "driver.time_average_atm2ocn_flux=1")
+_expect_lanes_equal("state contract, flux lanes averaged"
+  state_flux_averaged_n2 state_instant_n1 "the mean f1" ${_flux_lanes_state_contract})
+_expect_lanes_equal("state contract, flux lanes averaged"
+  state_flux_averaged_n2 state_instant_n2 "the interval-end sample f2"
+  ${_state_lanes_state_contract})

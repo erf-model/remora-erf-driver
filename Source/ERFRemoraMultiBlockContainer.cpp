@@ -1338,8 +1338,9 @@ void
 ERFRemoraMultiBlockContainer::AccumulateAtmosToOcean (amrex::Real weight)
 {
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        weight > amrex::Real(0.0),
-        "Atmos->ocean averaging sample weight must be positive");
+        weight >= amrex::Real(0.0),
+        "Atmos->ocean averaging sample weight must not be negative");
+    if (weight == amrex::Real(0.0)) { return; }
     for (int local_idx = 0;
          local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
         const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
@@ -4909,8 +4910,10 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                 //   n=10 -> 2.0 + 0.5 + 7*1.0 + 0.5 = 10.
                 // At n=2 the last-substep 0.5 and this -0.5 cancel, so f2 drops
                 // out and the mean collapses to f1 -- the interval midpoint,
-                // which is the exact linear answer over [t, t+2*dt]; f2 then
-                // carries zero weight and is not accumulated. At n=1 there
+                // which is the exact linear answer over [t, t+2*dt]. f2 then
+                // carries zero weight and AccumulateAtmosToOcean adds nothing,
+                // but it is still packed: non-averaged lanes keep that
+                // interval-end sample. At n=1 there
                 // is no f2 to extrapolate from, so the correction is skipped
                 // entirely; DrainAtmosToOceanAccumulators divides by the total
                 // accumulated weight, so that interval degrades cleanly to the
@@ -4922,9 +4925,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                         sample_weight -= amrex::Real(0.5);
                     }
                 }
-                if (sample_weight > amrex::Real(0.0)) {
-                    AccumulateAtmosToOcean(sample_weight);
-                }
+                AccumulateAtmosToOcean(sample_weight);
             }
         }
 

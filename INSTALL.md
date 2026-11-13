@@ -424,8 +424,8 @@ the ocean grid reaches past the atmosphere.
   `ApplyConservativeRemap` assigns that lane's fallback. Read the lane list before
   assuming this is harmless: **only Patm (101325 Pa) and Tair (288.15 K) get
   standard-atmosphere values.** Uwind/Vwind get 0 m/s; Cloud, SWrad, LWrad and all
-  eight flux lanes get a literal 0.0; Qair and Rain are not remapped at all and
-  keep whatever `PrefillAtmosToOceanFallbacks` wrote. Withholding is what CMEPS,
+  eight flux lanes get a literal 0.0, as does Rain; Qair is not remapped at all and
+  REMORA's own value stands. Withholding is what CMEPS,
   YAC, CDO and CESM do with an unmapped point, and it is the shipped default for
   that reason.
 - `coawst` instead grafts a full-weight stencil pointing at the nearest non-land
@@ -447,7 +447,9 @@ interval-end forcing. The state control covers `Uwind`, `Vwind`, `Patm`,
 independent of `driver.atm2ocn_mode`, so the shared `rain` and radiation lanes
 always follow the flux control. When enabled, the driver uses a trapezoidal
 mean, labels it at the interval midpoint, and resets and drains its accumulator
-inside the exchange interval rather than checkpointing it.
+inside the exchange interval rather than checkpointing it. `rain` is an interval
+mean of ERF's surface precipitation accumulation whatever the controls say; see
+"The rain lane" in `Exec/README.md`.
 
 Retired keys, for anyone reading an old deck: `driver.synthetic_only`,
 `driver.dt_atm`, `driver.atm_substeps_per_ocean_step`, `driver.ocean_steps`,

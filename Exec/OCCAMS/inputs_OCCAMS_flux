@@ -18,13 +18,15 @@ driver.ocean_time_offset  = 49939200.0
 # from ERF, so name them and keep the coupled intent in this wrapper.
 #
 # Left to inputs_REMORA on purpose: SWrad/LWrad, since this case runs ERF without
-# radiation, and Qair/rain, whose ERF packs are disabled upstream. Naming any of
-# those "erf" aborts rather than passing a lane ERF never wrote.
+# radiation, and Qair, whose ERF pack is disabled upstream. Naming either of
+# those "erf" aborts rather than passing a lane ERF never wrote. Rain comes from
+# ERF's Kessler surface accumulation, as its mean rate over each exchange.
 driver.atm2ocn_lane_source.Uwind = erf
 driver.atm2ocn_lane_source.Vwind = erf
 driver.atm2ocn_lane_source.Patm  = erf
 driver.atm2ocn_lane_source.Tair  = erf
 driver.atm2ocn_lane_source.cloud = erf
+driver.atm2ocn_lane_source.rain  = erf
 
 max_step = 1
 start_datetime = "2021-08-01 00:00:00"

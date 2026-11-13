@@ -36,8 +36,8 @@ namespace erf_remora::coupling
 //                                (RhoTheta/moisture)      Tair_data_from_file                    REMORA internals/IO
 //    5   Cloud   cloud, CLDFRA  ERF::cloud_fraction       vec_cloud; solverChoice.cloud;         0-1
 //                                                          cloud_data_from_file
-//    6   Rain    rain, RAIN     qrain/rain_accum          vec_rain; solverChoice.rain;          kg m^-2 s^-1 (or m s^-1)
-//                                diagnostics from qmoist   rain_data_from_file
+//    6   Rain    rain, RAIN     d(surface precip accum)/dt vec_rain; solverChoice.rain;         kg m^-2 s^-1
+//                                from the microphysics     rain_data_from_file
 //    7   SWrad   swrad, GSW     ERF rad/lsm fields        vec_srflx                              W m^-2
 //    8   LWrad   lwrad, GLW     ERF rad/lsm fields        vec_longwave_down (state path)        W m^-2
 //                                                          and/or vec_lrflx (flux field)
@@ -89,8 +89,10 @@ namespace erf_remora::coupling
 //  - Relative humidity: RH [0-1 fraction]
 //  - Air temperature: Tair [K]
 //  - Cloud fraction: Cloud [0-1 fraction]
-//  - Precipitation rate: Rain [kg m^-2 s^-1]  (project SI convention)
-//    TODO(initial-step-testing): verify/convert if upstream forcing uses legacy mm day^-1.
+//  - Precipitation rate: Rain [kg m^-2 s^-1], all phases as liquid water, >= 0.
+//    ERF keeps only cumulative surface accumulations [kg m^-2 == mm], so the lane
+//    is their change over the exchange interval divided by its length, the interval
+//    mean (see IsAccumulationRateLane). 1 kg m^-2 s^-1 = 3600 mm h^-1.
 //  - Shortwave radiation: SWrad [W m^-2]
 //  - Longwave radiation: LWrad [W m^-2]
 //
@@ -236,6 +238,15 @@ inline const amrex::Vector<AtmosToOceanLaneSpec>& AtmosToOceanLaneSpecs ()
         {Evap,   "evap",   nullptr,      "kg m^-2 s^-1"}
     };
     return specs;
+}
+
+// A lane ERF fills with the mean rate since its previous pack, differenced from a
+// cumulative accumulation, rather than with an instantaneous value. Averaging one
+// over an interval weights each sample by the ERF steps it spans, not by the
+// trapezoid, which makes the result the interval's accumulation over its length.
+inline bool IsAccumulationRateLane (int global_idx)
+{
+    return global_idx == Rain;
 }
 
 inline const AtmosToOceanLaneSpec& AtmosToOceanLane (int global_idx)

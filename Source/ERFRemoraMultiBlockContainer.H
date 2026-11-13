@@ -156,7 +156,7 @@ private:
     bool AtmosToOceanAveragingActive() const;
     bool TimeAverageAtmosToOceanLane(int global_idx) const;
     void ResetAtmosToOceanAccumulators();
-    void AccumulateAtmosToOcean(amrex::Real weight);
+    void AccumulateAtmosToOcean(amrex::Real weight, amrex::Real steps_since_last_sample);
     void DrainAtmosToOceanAccumulators();
     void FillOceanToAtmosGhosts();
     void FillAtmosToOceanGhosts();
@@ -384,9 +384,12 @@ private:
     // (same pattern used by erf-amrwind-driver in boundary-state read paths).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_storage;
     // Valid-region-only trapezoidal sums. They are reset, filled, and drained
-    // within one exchange interval and are never checkpoint state.
+    // within one exchange interval and are never checkpoint state. The rain lane
+    // is summed with its own weights, m_a2o_rate_accum_weight (see
+    // AccumulateAtmosToOcean).
     amrex::Vector<std::unique_ptr<amrex::MultiFab>> m_atmos_to_ocean_accumulator_storage;
     amrex::Real m_a2o_accum_weight = 0.0;
+    amrex::Real m_a2o_rate_accum_weight = 0.0;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean;
     amrex::Vector<amrex::MultiFab*> m_atmos_to_ocean_state_active;
     amrex::Vector<int> m_atmos_to_ocean_state_active_indices;

@@ -302,6 +302,12 @@ together. Non-averaged lanes retain the interval-end sample, and averaged
 exchange plotfiles are stamped at the interval midpoint. The accumulator is
 reset and consumed within one exchange interval; it is not checkpoint state.
 
+On the first interval of a cold start, ERF's diagnostic flux arrays are still
+zero, so the left endpoint is not sampled. It is reconstructed by linear
+extrapolation from the first two substep samples, f(t) = 2 f1 - f2. With two
+substeps per interval the mean is then f1, the interval midpoint, and f2
+carries no weight.
+
 ### Which geometry the remap chose
 
 ```
@@ -883,6 +889,19 @@ ctest --test-dir build -R reproducer_coupled_sst_coverage --output-on-failure
 
 ```bash
 ctest --test-dir build -R reproducer_lane_provenance --output-on-failure
+```
+
+- `reproducer_cold_start_average` — the cold-start averaging test. Drives
+  `inputs_oneway` with two atmosphere substeps per exchange and asserts, lane by
+  lane at zero tolerance, that every averaged lane of the first exchange
+  plotfile holds the atmosphere state after its first substep, and that a lane
+  left unaveraged holds the state after its second. It runs every lane averaged
+  in each contract, and the state contract with only the flux flag set. Without
+  RRTMGP, `rain`, `SWrad`, `LWrad`, `Qair` and `cloud` do not change over those
+  two steps, so the test cannot check their weights.
+
+```bash
+ctest --test-dir build -R reproducer_cold_start_average --output-on-failure
 ```
 
 - `reproducer_nonfinite_guards`, plus `parallel_nonfinite_guards_np<N>` for

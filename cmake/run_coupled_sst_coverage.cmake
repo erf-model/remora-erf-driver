@@ -6,9 +6,10 @@
 # destination, so an uncovered ERF cell used to arrive as a literal 0 K that was
 # indistinguishable from a computed zero, and was applied as though it were one.
 #
-# Two runs over the same deck:
+# Three runs over the same deck:
 #   full    - ocean and atmosphere share extents, so every surface cell is covered
 #   partial - ocean shrunk to a quarter of the atmosphere footprint, so most are not
+#   sliver  - the partial ocean shifted so its edge clips one ERF column by 5e-4
 #
 # The partial run is the one that matters. It asserts both halves of the
 # contract: that coverage is reported as partial rather than total, and that
@@ -199,13 +200,16 @@ endif()
 # and it is invisible to the aligned-grid cases above, where every cell is either
 # wholly covered or wholly outside.
 #
-# The check is a comparison against the same run with the threshold disabled,
-# NOT an inspection of t_surf. Before the weights were normalized, a sliver cell
-# took 5e-4 of one ocean SST -- about 0.14 K -- so a temperature floor caught it.
-# Normalization rescales the surviving weight to one, so the cell now receives a
-# physically plausible SST that no floor can distinguish from a correct value.
-# The defect is geometric, so the test has to measure geometry: with the
-# threshold active, strictly fewer cells must be reported covered.
+# The check counts covered cells, NOT an inspection of t_surf. Normalized weights
+# give a sliver cell a physically plausible SST that no floor can distinguish from
+# a correct value. The shifted ocean has the partial run's area but touches one
+# more ERF column, so it must report the same number of covered cells.
+#
+# This geometry does not exercise driver.remap_min_coverage_frac. The driver marks
+# ERF cells whose centres lie outside the ocean domain as land, so an edge column
+# overlapped by less than half is land whatever the threshold. The threshold acts
+# only on ERF water cells with a small wet overlap, which takes a REMORA land mask
+# across an ERF water cell; this deck has none.
 set(_sliver_args
   "remora.prob_lo=999.5 0. -300."
   "remora.prob_hi=25999.5 10000. 0."
@@ -216,10 +220,12 @@ set(_sliver_args
 )
 _run_case("sliver" "${_sliver_args}" _sliver_covered _sliver_total)
 
-if(NOT _sliver_covered LESS _sliver_total)
+if(NOT _sliver_covered EQUAL _partial_covered)
   message(FATAL_ERROR
     "Sliver-coverage run reported ${_sliver_covered} of ${_sliver_total} cells "
-    "covered; coverage must still be partial here.")
+    "covered; the unshifted ocean of the same size covered ${_partial_covered}. "
+    "The shifted ocean clips ERF's first column across 5e-4 of its area, and that "
+    "column must not be counted as covered.")
 endif()
 
 file(GLOB _sliver_plots "${_work_dir}/tsurf_sliver?????")
@@ -244,44 +250,21 @@ if(NOT _sliver_extrema MATCHES "t_surf[ \t]+([0-9.eE+-]+)[ \t]+([0-9.eE+-]+)")
 endif()
 set(_sliver_tsurf_min "${CMAKE_MATCH_1}")
 
-# The threshold has to be shown to do something. Re-run the same geometry with
-# it disabled: that run must report strictly MORE covered cells, because the
-# sliver column crosses from uncovered to covered. If the two counts agree the
-# threshold is inert and this test is proving nothing, which is the state
-# normalization silently produced when it removed the temperature symptom.
-set(_sliver_off_args ${_sliver_args} "driver.remap_min_coverage_frac=0.0")
-list(REMOVE_ITEM _sliver_off_args
-  "erf.plot2d_vars_1=t_surf" "erf.plot2d_file_1=tsurf_sliver" "erf.plot2d_int_1=1")
-_run_case("sliver_nothreshold" "${_sliver_off_args}" _sliver_off_covered _sliver_off_total)
-
-if(NOT _sliver_covered LESS _sliver_off_covered)
-  message(FATAL_ERROR
-    "The coverage threshold is inert.\n"
-    "With remap_min_coverage_frac at its configured value the run "
-    "reported ${_sliver_covered} of ${_sliver_total} cells covered; with the "
-    "threshold disabled it reported ${_sliver_off_covered}. The thresholded run "
-    "must report strictly fewer, because ERF's first column is clipped across "
-    "5e-4 of its area and must fall below the cut. Equal counts mean the "
-    "threshold is not excluding the sliver column at all.")
-endif()
-
 if(_sliver_tsurf_min LESS ERF_REMORA_TSURF_FLOOR_K)
   message(FATAL_ERROR
     "t_surf fell to ${_sliver_tsurf_min} K (floor ${ERF_REMORA_TSURF_FLOOR_K} K) in "
     "${_sliver_last}.\n"
     "The ocean clips ERF's first column across 5e-4 of its area. That cell was "
     "treated as covered and took a fraction of one ocean cell's SST instead of "
-    "keeping ERF's own value. Coverage must be thresholded on area, not on "
-    "whether any overlap exists.")
+    "keeping ERF's own value.")
 endif()
 
 message(STATUS
   "===== COUPLED SST COVERAGE SUMMARY =====\n"
   "  - full coverage:    ${_full_covered} of ${_full_total} cells covered\n"
   "  - partial coverage: ${_partial_covered} of ${_partial_total} cells covered\n"
-  "  - sliver coverage:  ${_sliver_covered} of ${_sliver_total} cells covered\n"
-  "  - same, threshold disabled: ${_sliver_off_covered} covered "
-  "(must exceed ${_sliver_covered}, or the threshold is inert)\n"
+  "  - sliver coverage:  ${_sliver_covered} of ${_sliver_total} cells covered "
+  "(must equal the partial run's ${_partial_covered})\n"
   "  - t_surf range, partial run: ${_tsurf_min} / ${_tsurf_max} K\n"
   "  - t_surf min, sliver run:    ${_sliver_tsurf_min} K\n"
   "  - uncovered and sliver-covered cells both retained ERF's own value "

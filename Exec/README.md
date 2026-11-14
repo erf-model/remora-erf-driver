@@ -429,16 +429,15 @@ directly.
 
 `driver.remap_dump_weights = 1` writes every remap array the exchanges read to
 `remap_weights/` in the run directory, once after they are built: the A2O
-weights and indices per family (`a2o_weight_scalar`, `a2o_index_taux`, ...), the
-coawst donor flags when that search ran, and on two-way runs the O2A weights,
+weights and indices (`a2o_weight`, `a2o_index`), the coawst donor flags
+(`a2o_donor_fill`) when that search ran, and on two-way runs the O2A weights,
 indices, valid flags and uncoupled mask. Each array is gathered onto one box and
 written raw (`<name>.bin`) with its box, component count and type in `<name>.txt`.
-A face shared by two boxes of a face-staggered family is taken from the lower box,
-so the bytes do not depend on rank count or on how boxes are assigned to ranks.
+The bytes do not depend on rank count or on how boxes are assigned to ranks.
 They can depend on the box layout itself (`amr.max_grid_size`, the domain), since
 each box builds its own stencils and may list a cell's overlaps in a different
 order. Two runs with the same box layout compare exactly with
-`cmp run_a/remap_weights/a2o_weight_scalar.bin run_b/remap_weights/a2o_weight_scalar.bin`
+`cmp run_a/remap_weights/a2o_weight.bin run_b/remap_weights/a2o_weight.bin`
 when both binaries compile the host-side clipping the same way. That holds for one
 binary under different settings (for example `amrex.the_arena_is_managed`), and for
 CPU and CUDA builds made with the same host compiler and flags. It does not hold on
@@ -459,9 +458,9 @@ inside a COAWST file (defaults `atm1_to_ocn1_weights.nc`,
 `ocn1_to_atm1_weights.nc`); a plain SCRIP file without groups is read as is.
 
 ```
-[driver] SCRIP check A2O scalar/rho vs atm1_to_ocn1_weights.nc (Conservative remapping):
+[driver] SCRIP check A2O rho vs atm1_to_ocn1_weights.nc (Conservative remapping):
          <n> cells covered by both, <a> only by ours (e.g. ...), <b> only by SCRIP (e.g. ...).
-[driver] SCRIP check A2O scalar/rho: weight L1 over cells covered by both mean <m> max <x> at ...
+[driver] SCRIP check A2O rho: weight L1 over cells covered by both mean <m> max <x> at ...
 ```
 
 The weight L1 runs from 0 (identical) to 2 (disjoint stencils); the file's
@@ -471,9 +470,12 @@ the whole file on one rank, so leave it off for production runs.
 
 ### Coverage, atmosphere to ocean
 
-Reported once per weight family — `A2O scalar/rho`, `A2O tau_x/u-face`,
-`A2O tau_y/v-face`, `A2O wind->rho` — because each is built against its own
-destination stagger and each can be uncovered differently.
+Reported once, as `A2O rho`. Every atmosphere-to-ocean lane, the vectors
+included, is remapped with the same cell-to-rho weights: Uwind/Vwind and
+TauX/TauY cross as eastward/northward components at cell centres, ERF turns them
+from its grid axes using its lat/lon, and REMORA turns them to its own with its
+grid `angle` (and averages the stresses to its u/v faces). The driver rotates
+nothing.
 
 ```
 [driver] WARNING remap (<label>): <N> of <M> REMORA wet cells (e.g. REMORA (i,j);
@@ -482,8 +484,8 @@ Submodules/ERF/Source/Coupling/ERF_to_REMORA.cpp branches on the -1 index sentin
 and assigns a per-lane fallback: ...
 ```
 
-The example and box are in the family's own index space, so face indices for the
-two tau families. On OCCAMS (flux deck) `N` is 168 rho, 182 u-face, 207 v-face.
+The example and box are in REMORA's rho index space. On OCCAMS (flux deck) `N`
+is 168.
 
 Do not read that as "these cells fall back to a standard atmosphere". Two lanes
 get a standard-atmosphere value. Every other lane gets zero, or nothing:
@@ -506,7 +508,7 @@ Expect a small count along coastlines where the two land masks disagree, or wher
 the ocean grid reaches past the atmosphere. A large count means the atmosphere
 does not cover the ocean nest.
 
-Under `remap_v = 1`, the per-family summary:
+Under `remap_v = 1`, the summary:
 
 ```
 [driver] remap coverage (<label>): cells=... uncovered=... no_stencil=...
@@ -676,13 +678,9 @@ matches COAWST (Warner et al. 2010), the coupled system this driver's remap was
 ported from, and those cells carry a neighbour's atmospheric state rather than
 their own.
 
-`<N>` here is a raw running total, summed over all four weight families and
-incremented once per box visit, so a donor-filled face on a box seam can be
-counted once per adjacent box and the number moves with the decomposition. Use
-the per-family `donor_filled=` fields on the coverage lines when comparing runs:
-those apply the same seam-ownership rule as every other coverage count. Watch the
-trend either way — a count that *rises* between runs means the two land masks are
-drifting apart.
+`<N>` counts the same cells as the `donor_filled=` field on the `A2O rho`
+coverage line. Watch the trend — a count that *rises* between runs means the two
+land masks are drifting apart.
 
 ```
 [driver] WARNING BuildOceanToAtmosWeights: <N> ocean overlaps dropped because a
@@ -923,7 +921,7 @@ ctest --test-dir build -R reproducer_lane_provenance --output-on-failure
   times with `driver.debug_inject_nan_lane` and `amrex.fpe_trap_invalid = 0`.
   Each run has to abort with the message of the guard meant to catch its NaN:
   the two post-pack checks (SST, Tair), and the wet-cell validation count on a
-  cell-centred lane (Tair) and on an x-face lane (tau_x).
+  state lane (Tair) and on a stress lane (tau_x).
 
 ```bash
 ctest --test-dir build -R nonfinite_guards --output-on-failure

@@ -13,8 +13,8 @@ Usage:
 contain one, or check_remap_weights.sh result directories (every case found in
 both is compared).
 
-For each weight/index pair (a2o_weight_<family> with a2o_index_<family>, and
-o2a_weight with o2a_index) it reports:
+For each weight/index pair (a2o_weight with a2o_index, and o2a_weight with
+o2a_index) it reports:
   slot      max |w_a - w_b| slot by slot, as the exchanges read them
   same-src  max |w_a - w_b| per destination cell, matching entries by source
             cell rather than by slot. Edge-touching overlaps whose area is pure
@@ -125,7 +125,7 @@ def compare_dir(a, b, tol):
 
 def weight_dirs(top):
     """Map case name -> remap_weights dir under top."""
-    if os.path.isfile(os.path.join(top, "a2o_weight_scalar.txt")):
+    if os.path.isfile(os.path.join(top, "a2o_weight.txt")):
         return {".": top}
     if os.path.isdir(os.path.join(top, "remap_weights")):
         return {".": os.path.join(top, "remap_weights")}

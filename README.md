@@ -55,6 +55,11 @@ reserves direct-flux layers (`tau_x`, `tau_y`, `SHflux`, `LHflux`, `evap`)
 for a future flux-passing mode without changing the driver-owned allocation
 model.
 
+Every lane crosses at cell centres (REMORA rho points). Vectors (`Uwind`/`Vwind`,
+`tau_x`/`tau_y`) cross as eastward/northward components: ERF turns them from its
+grid axes using its lat/lon, REMORA turns them to its own with its grid `angle`,
+and the driver remaps every lane with the same weights and rotates nothing.
+
 ## Test Problems
 
 ### Upwelling

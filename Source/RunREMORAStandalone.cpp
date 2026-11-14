@@ -69,22 +69,6 @@ REMORAGetAtmosToOceanRhoLayout(void* remora_handle,
 }
 
 void
-REMORAGetAtmosToOceanUFaceLayout(void* remora_handle,
-                                 amrex::BoxArray& ba,
-                                 amrex::DistributionMapping& dm)
-{
-    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanUFaceLayout(ba, dm);
-}
-
-void
-REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
-                                 amrex::BoxArray& ba,
-                                 amrex::DistributionMapping& dm)
-{
-    static_cast<REMORA*>(remora_handle)->GetAtmosToOceanVFaceLayout(ba, dm);
-}
-
-void
 REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
                                     const amrex::MultiFab** x_psi,
                                     const amrex::MultiFab** y_psi)

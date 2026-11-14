@@ -56,17 +56,16 @@ void ERFApplyOceanSurfaceState(void* erf_handle,
                                const amrex::Vector<amrex::MultiFab*>& state,
                                amrex::Real time,
                                const amrex::iMultiFab* erf_coverage = nullptr);
-// weight_mf_by_family/index_mf_by_family are keyed by WeightFamily slot order
-// {SCALAR_CENTERED, TAUX_FACE, TAUY_FACE, WIND_FACE_TO_CENTER}.
+// weight_mf/index_mf are the cell -> rho remap set, shared by every lane.
+// Vectors (Uwind/Vwind, TauX/TauY) are packed as eastward/northward
+// components at ERF cell centres; dst_mskr is REMORA's rho wet/dry mask.
 void ERFPackAtmosphericStates(void* erf_handle,
                               amrex::Vector<amrex::MultiFab*>& states,
                               amrex::Real time,
-                              const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
-                              const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
+                              const amrex::MultiFab& weight_mf,
+                              const amrex::iMultiFab& index_mf,
                               int max_stencil_size,
-                              const amrex::MultiFab* dst_mskr = nullptr,
-                              const amrex::MultiFab* dst_msku = nullptr,
-                              const amrex::MultiFab* dst_mskv = nullptr);
+                              const amrex::MultiFab* dst_mskr = nullptr);
 amrex::Real ERFEvolveOneStep(void* erf_handle, amrex::Real time, amrex::Real dt_request);
 void ERFWriteAtFinalTime(void* erf_handle);
 
@@ -83,12 +82,6 @@ void InitREMORASolver(void* remora_handle);
 void REMORAGetAtmosToOceanRhoLayout(void* remora_handle,
                                     amrex::BoxArray& ba,
                                     amrex::DistributionMapping& dm);
-void REMORAGetAtmosToOceanUFaceLayout(void* remora_handle,
-                                      amrex::BoxArray& ba,
-                                      amrex::DistributionMapping& dm);
-void REMORAGetAtmosToOceanVFaceLayout(void* remora_handle,
-                                      amrex::BoxArray& ba,
-                                      amrex::DistributionMapping& dm);
 void REMORAGetAtmosToOceanPsiCoordinates(void* remora_handle,
                                          const amrex::MultiFab** x_psi,
                                          const amrex::MultiFab** y_psi);

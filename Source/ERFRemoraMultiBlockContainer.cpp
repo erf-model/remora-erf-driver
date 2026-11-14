@@ -4298,6 +4298,25 @@ ERFRemoraMultiBlockContainer::ResolveAtmosToOceanLaneSources ()
         m_atmos_to_ocean_lane_reason[global_idx] = reason;
     }
 
+    // The wind crosses as an eastward/northward pair that REMORA turns to its grid axes
+    // together, so ERF supplies both components or neither. A deck's own wind component is
+    // along REMORA's grid axes, and pairing it with ERF's other one would mix two frames.
+    // Flux mode sends no wind, so only the state contract is checked.
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::StatePassing) {
+        const auto& sources = m_atmos_to_ocean_lane_source;
+        const bool u_erf = sources[coupling::Uwind] == coupling::LaneSource::Erf;
+        const bool v_erf = sources[coupling::Vwind] == coupling::LaneSource::Erf;
+        if (u_erf != v_erf) {
+            const int deck_lane = u_erf ? coupling::Vwind : coupling::Uwind;
+            amrex::Abort(std::string(coupling::AtmosToOceanLane(deck_lane).name) +
+                         " is not taken from ERF (" + m_atmos_to_ocean_lane_reason[deck_lane] +
+                         ") but the other wind component is. The wind crosses as an "
+                         "eastward/northward pair, so take Uwind and Vwind from the same source: "
+                         "configure both or neither in the REMORA deck, or set "
+                         "driver.atm2ocn_lane_source.Uwind and .Vwind alike.");
+        }
+    }
+
     // Flux lanes are reported but never withheld: ApplyAtmosphericFluxes skips
     // the whole application if any of the eight is null. Recorded so the report
     // can still say which ones ERF computes.

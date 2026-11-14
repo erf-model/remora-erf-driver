@@ -25,21 +25,6 @@ struct Point2D {
     amrex::Real y{0.0};
 };
 
-// COAWST-style weight family tag for the A2O remap stencils. The storage key
-// is one slot finer than the conceptual three-way family split (TauX/TauY
-// need distinct destination BoxArrays even though both are
-// STRESS_STAG_MATCHED), so this enum doubles as both the classification tag
-// and the m_weight_mf_by_family/m_index_mf_by_family array index.
-enum class WeightFamily {
-    SCALAR_CENTERED,      // rho-point destination: IntVect(0,0,0)
-    TAUX_FACE,             // STRESS_STAG_MATCHED / TauX: u-face destination: IntVect(1,0,0)
-    TAUY_FACE,             // STRESS_STAG_MATCHED / TauY: v-face destination: IntVect(0,1,0)
-    WIND_FACE_TO_CENTER,  // Uwind/Vwind: face-staggered source -> rho-point destination
-    NumWeightFamilies
-};
-
-WeightFamily ClassifyAtmosToOceanFieldFamily(int field_idx);
-
 // What happens to a wet destination cell that no source cell overlaps.
 //
 // Withhold: leave the cell without a stencil. Its index keeps the -1 sentinel,
@@ -124,13 +109,9 @@ public:
     const amrex::Vector<amrex::IntVect>& GetRefRatio() const { return m_ref_ratio; }
     const amrex::Array<int,AMREX_SPACEDIM>& GetIsPeriodic() const { return m_is_periodic; }
 
-    // Accessors for remap weight and index MultiFabs by family slot
-    const amrex::MultiFab* GetA2OWeightMultiFab(WeightFamily family) const {
-        return m_weight_mf_by_family[static_cast<int>(family)].get();
-    }
-    const amrex::iMultiFab* GetA2OIndexMultiFab(WeightFamily family) const {
-        return m_index_mf_by_family[static_cast<int>(family)].get();
-    }
+    // Accessors for remap weight and index MultiFabs
+    const amrex::MultiFab* GetA2OWeightMultiFab() const { return m_weight_a2o_mf.get(); }
+    const amrex::iMultiFab* GetA2OIndexMultiFab() const { return m_index_a2o_mf.get(); }
     const amrex::MultiFab* GetO2AWeightMultiFab() const { return m_weight_o2a_mf.get(); }
     const amrex::iMultiFab* GetO2AIndexMultiFab() const { return m_index_o2a_mf.get(); }
 
@@ -220,11 +201,11 @@ private:
     // Weight calculation and stencil safety helpers
     void BuildRemapWeights();
     void DumpRemapWeights() const;
-    // wet_mask is REMORA's land/sea mask on this family's stagger (1 = wet), used
+    // wet_mask is the land/sea mask on the destination layout (1 = wet), used
     // to report coverage over the cells that actually carry ocean. Pass nullptr
     // when unavailable; coverage is then reported over all cells only.
     //
-    // donor_fill is that family's per-cell donor flag (1 = this cell's stencil was
+    // donor_fill is the per-cell donor flag (1 = this cell's stencil was
     // grafted by the coawst donor search rather than clipped from a real overlap).
     // A donor-filled cell has sum_w > 0 and would otherwise be indistinguishable
     // from a genuinely covered one, so it is reported as its own category. Pass
@@ -418,27 +399,23 @@ private:
     amrex::Vector<amrex::MultiFab*> m_ocean_to_atmos;
 
     static constexpr int MAX_STENCIL_SIZE = 9;
-    static constexpr int kNumWeightFamilies = static_cast<int>(WeightFamily::NumWeightFamilies);
 
-    // Atmosphere -> Ocean (A2O) stencils, one per WeightFamily slot (lives on
-    // REMORA layout, on that family's destination stagger).
-    std::array<std::unique_ptr<amrex::MultiFab>, kNumWeightFamilies> m_weight_mf_by_family;
-    std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_index_mf_by_family;
-    // Per-cell donor flag for each A2O family: 1 where the coawst donor search
-    // grafted a full-weight stencil pointing at the nearest non-land source cell,
-    // 0 everywhere else. Always 0 under driver.remap_donor_fill=withhold and in
+    // Atmosphere -> Ocean (A2O) stencils (live on the REMORA rho layout). Every
+    // A2O lane, vectors included, crosses as a cell-centred field, so one set
+    // of cell -> rho weights serves them all.
+    std::unique_ptr<amrex::MultiFab> m_weight_a2o_mf;
+    std::unique_ptr<amrex::iMultiFab> m_index_a2o_mf;
+    // Per-cell A2O donor flag: 1 where the coawst donor search grafted a
+    // full-weight stencil pointing at the nearest non-land source cell, 0
+    // everywhere else. Always 0 under driver.remap_donor_fill=withhold and in
     // the cartesian frame.
     //
     // This is a flag array rather than a counter accumulated in the weight-build
-    // loop because faces on a box seam belong to two boxes, so a build-loop
-    // counter would double-count seam faces for TAUX_FACE/TAUY_FACE -- and would
-    // double-count them a different number of times under a different
-    // decomposition, which is a rank-dependent diagnostic inside a change whose
-    // whole subject is rank dependence. Carrying the flag on the destination
-    // layout lets NormalizeWeightsAndCheckConservation reuse the seam-ownership
-    // rule it already applies to every other coverage count.
+    // loop so that NormalizeWeightsAndCheckConservation can count it with the
+    // same ownership rule it applies to every other coverage count, and so that
+    // driver.remap_dump_weights can write it.
     //
-    // It cannot be folded into m_index_mf_by_family: every component there is a
+    // It cannot be folded into m_index_a2o_mf: every component there is a
     // stencil coordinate that ApplyConservativeRemap dereferences.
     //
     // This is also the A2O counterpart of m_valid_o2a_mf, which is the array the
@@ -446,11 +423,10 @@ private:
     // value. Nothing yet hands this one to REMORA, so REMORA still cannot tell a
     // coupled 101325 Pa from a placeholder 101325 Pa; closing that asymmetry is a
     // separate change.
-    std::array<std::unique_ptr<amrex::iMultiFab>, kNumWeightFamilies> m_donor_fill_mf_by_family;
+    std::unique_ptr<amrex::iMultiFab> m_donor_fill_a2o_mf;
 
     // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout). O2A is
-    // SST-only/scalar today; kept as a single pair (SCALAR_CENTERED-equivalent)
-    // rather than a full per-family array until O2A gains more lanes.
+    // SST-only today: one set of rho -> cell weights.
     std::unique_ptr<amrex::MultiFab> m_weight_o2a_mf;
     std::unique_ptr<amrex::iMultiFab> m_index_o2a_mf;
     // Per-cell ocean->atmos coverage: 1 where wet REMORA rho-cell source area

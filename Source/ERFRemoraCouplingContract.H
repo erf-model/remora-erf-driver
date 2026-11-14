@@ -26,8 +26,10 @@ namespace erf_remora::coupling
 //
 //   idx  layer   COAWST names   ERF source/derive path    REMORA symbols (sink)                  units
 //   ---  ------  -------------  ------------------------  -------------------------------------  ------------------------
-//    0   Uwind   Uwind, U10     ERF Vars::xvel            vec_uwind; Uwind_data_from_file       m s^-1
-//    1   Vwind   Vwind, V10     ERF Vars::yvel            vec_vwind; Vwind_data_from_file       m s^-1
+//    0   Uwind   Uwind, U10     ERF Vars::xvel/yvel,      vec_uwind; Uwind_data_from_file       m s^-1
+//                                eastward at cell centres
+//    1   Vwind   Vwind, V10     ERF Vars::xvel/yvel,      vec_vwind; Vwind_data_from_file       m s^-1
+//                                northward at cell centres
 //    2   Patm    Pair, MSLP     derived "pressure" field  vec_Pair; solverChoice.Pair;          Pa (driver SI), mb in
 //                                (base via p0_comp)       Pair_data_from_file                    some REMORA paths
 //    3   RH      RH, Hair,      derived rel_humidity      solverChoice.Hair (RH) and/or         0-1 (driver)
@@ -41,8 +43,10 @@ namespace erf_remora::coupling
 //    7   SWrad   swrad, GSW     ERF rad/lsm fields        vec_srflx                              W m^-2
 //    8   LWrad   lwrad, GLW     ERF rad/lsm fields        vec_longwave_down (state path)        W m^-2
 //                                                          and/or vec_lrflx (flux field)
-//    9   TauX    sustr, tau_x   stress export candidate   vec_sustr                              N m^-2
-//   10   TauY    svstr, tau_y   stress export candidate   vec_svstr                              N m^-2
+//    9   TauX    sustr, tau_x   eastward surface stress   vec_sustr (REMORA rotates and          N m^-2
+//                                at cell centres           averages to u-faces)
+//   10   TauY    svstr, tau_y   northward surface stress  vec_svstr (REMORA rotates and          N m^-2
+//                                at cell centres           averages to v-faces)
 //   11   SHflux  shflx, HFX     sensible-heat candidate   vec_shflx                              W m^-2
 //   12   LHflux  lhflx, LH      latent-heat candidate     vec_lhflx                              W m^-2
 //   13   Evap    evap, EVAP     evap export candidate     vec_evap; vec_EminusP                 kg m^-2 s^-1 (or m s^-1)
@@ -55,6 +59,13 @@ namespace erf_remora::coupling
 //    0   SST     SST            surface tracer at         sst_lev and/or                         K in this driver
 //                                Temp_comp (top cell);     lsm.Get_Data_Ptr(lev,0)
 //                                no dedicated vec_sst
+//
+// Location and frame:
+// - Every atmosphere->ocean lane crosses at cell centres (REMORA rho points).
+// - Vectors (Uwind/Vwind, TauX/TauY) cross as eastward/northward components.
+//   Each model turns them between its own grid axes and east/north: ERF from
+//   its lat/lon, REMORA with its grid `angle`. The driver remaps every lane
+//   with the same cell -> rho weights and rotates nothing.
 //
 // Unit notes:
 // - RH may arrive as percent in some legacy forcing paths; normalize to 0-1 in the driver contract.

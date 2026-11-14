@@ -126,7 +126,7 @@ ContainsNonFinite (const amrex::MultiFab& mf)
 // lowest k. A single cell is the case the old min/max guards could miss.
 //
 // Aborts if the cell lies in no valid box, or, when a wet mask is given (laid
-// out like mf; mskr/msku/mskv convention, wet > 0.5), if it is not wet: either
+// out like mf; mskr convention, wet > 0.5), if it is not wet: either
 // way the guard under test would have nothing to find, and the run would fail
 // or pass for the wrong reason. Collective.
 void
@@ -527,15 +527,8 @@ ValidateFluxActiveViewOrAbort (const amrex::Vector<amrex::MultiFab*>& active_vie
         if (active_names[idx] != expected_names[idx]) {
             amrex::Abort("Flux contract active-name order mismatch.");
         }
-        const amrex::IntVect ixtype = active_view[idx]->boxArray().ixType().toIntVect();
-        if (idx == 0 && ixtype != amrex::IntVect(1,0,0)) {
-            amrex::Abort("Flux contract tau_x lane must be x-face centered.");
-        }
-        if (idx == 1 && ixtype != amrex::IntVect(0,1,0)) {
-            amrex::Abort("Flux contract tau_y lane must be y-face centered.");
-        }
-        if (idx >= 2 && ixtype != amrex::IntVect::TheCellVector()) {
-            amrex::Abort("Flux contract scalar flux lanes must remain cell-centered.");
+        if (active_view[idx]->boxArray().ixType().toIntVect() != amrex::IntVect::TheCellVector()) {
+            amrex::Abort("Flux contract lanes, tau_x/tau_y included, must be cell-centered.");
         }
     }
 }
@@ -609,37 +602,6 @@ PrintMultiFabLayout (const char* label, const amrex::MultiFab& mf)
     PrintBoxArrayLayout(label, mf.boxArray(), mf.DistributionMap());
 }
 
-amrex::BoxArray
-AtmosToOceanBoxArray (const amrex::BoxArray& ba_ocn, int idx)
-{
-    if (idx == coupling::TauX) {
-        return amrex::convert(ba_ocn, amrex::IntVect(1,0,0));
-    }
-    if (idx == coupling::TauY) {
-        return amrex::convert(ba_ocn, amrex::IntVect(0,1,0));
-    }
-    return ba_ocn;
-}
-
-// Field -> expected location, taken verbatim from AtmosToOceanBoxArray() above
-// (the trusted development-baseline stagger contract):
-//
-//   field                        expected location (development)
-//   ---------------------------  --------------------------------
-//   TauX                         x-face staggered: IntVect(1,0,0)
-//   TauY                         y-face staggered: IntVect(0,1,0)
-//   Uwind, Vwind, Patm, Qair/RH, cell-centered: IntVect(0,0,0)
-//   Tair, Cloud, Rain, SWrad,
-//   LWrad, SHflux, LHflux, Evap
-//   SST (ocean->atmos)           cell-centered: IntVect(0,0,0)
-amrex::IntVect
-ExpectedAtmosToOceanFieldStagger (int idx)
-{
-    if (idx == coupling::TauX) { return amrex::IntVect(1,0,0); }
-    if (idx == coupling::TauY) { return amrex::IntVect(0,1,0); }
-    return amrex::IntVect(0,0,0);
-}
-
 amrex::IntVect
 AtmosToOceanNGrow (int idx)
 {
@@ -650,37 +612,6 @@ AtmosToOceanNGrow (int idx)
         return flux_ngrow;
     }
     return amrex::IntVect(0, 0, 0);
-}
-
-void
-CopyFieldToCellCenteredPlot (amrex::MultiFab& plot_mf, int comp, const amrex::MultiFab& field)
-{
-    using namespace amrex;
-
-    const IntVect ixtype = field.boxArray().ixType().toIntVect();
-    if (ixtype == IntVect::TheCellVector()) {
-        MultiFab::Copy(plot_mf, field, 0, comp, 1, 0);
-        return;
-    }
-
-    for (MFIter mfi(plot_mf, TilingIfNotGPU()); mfi.isValid(); ++mfi) {
-        Box bx = mfi.validbox();
-        bx.makeSlab(2,0);
-        auto const& src = field.const_array(mfi);
-        auto dst = plot_mf.array(mfi, comp);
-
-        if (ixtype == IntVect(1,0,0)) {
-            ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) {
-                dst(i,j,k) = amrex::Real(0.5) * (src(i,j,k) + src(i+1,j,k));
-            });
-        } else if (ixtype == IntVect(0,1,0)) {
-            ParallelFor(bx, [=] AMREX_GPU_DEVICE (int i, int j, int k) {
-                dst(i,j,k) = amrex::Real(0.5) * (src(i,j,k) + src(i,j+1,k));
-            });
-        } else {
-            amrex::Abort("Unsupported non-cell-centered field in exchange plotfile writer.");
-        }
-    }
 }
 }
 
@@ -1162,17 +1093,14 @@ ERFRemoraMultiBlockContainer::AllocateCaches ()
 void
 ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
 {
-    DriverPrintLine(m_driver_verbose, "querying REMORA rho/u/v atm2ocn interface layouts");
+    // Every atmos->ocean lane, TauX/TauY included, lives on the REMORA rho
+    // layout: vectors cross as eastward/northward components at rho points and
+    // REMORA moves the stresses to its u/v faces itself.
+    DriverPrintLine(m_driver_verbose, "querying REMORA rho atm2ocn interface layout");
     amrex::BoxArray remora_rho_ba;
     amrex::DistributionMapping remora_rho_dm;
-    amrex::BoxArray remora_u_ba;
-    amrex::DistributionMapping remora_u_dm;
-    amrex::BoxArray remora_v_ba;
-    amrex::DistributionMapping remora_v_dm;
 
     REMORAGetAtmosToOceanRhoLayout(m_remora, remora_rho_ba, remora_rho_dm);
-    REMORAGetAtmosToOceanUFaceLayout(m_remora, remora_u_ba, remora_u_dm);
-    REMORAGetAtmosToOceanVFaceLayout(m_remora, remora_v_ba, remora_v_dm);
 
     if (m_use_two_way_coupling) {
         DriverPrintLine(m_driver_verbose, "querying ERF ocean-surface layout for ocean->atmos cache allocation");
@@ -1205,16 +1133,7 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
     m_atmos_to_ocean_storage.resize(coupling::NumAtmosToOceanLayers);
     for (int idx = 0; idx < static_cast<int>(m_atmos_to_ocean_storage.size()); ++idx) {
         auto& mf_ptr = m_atmos_to_ocean_storage[idx];
-        const amrex::BoxArray* lane_ba = &remora_rho_ba;
-        const amrex::DistributionMapping* lane_dm = &remora_rho_dm;
-        if (idx == coupling::TauX) {
-            lane_ba = &remora_u_ba;
-            lane_dm = &remora_u_dm;
-        } else if (idx == coupling::TauY) {
-            lane_ba = &remora_v_ba;
-            lane_dm = &remora_v_dm;
-        }
-        mf_ptr = std::make_unique<amrex::MultiFab>(*lane_ba, *lane_dm, 1, AtmosToOceanNGrow(idx));
+        mf_ptr = std::make_unique<amrex::MultiFab>(remora_rho_ba, remora_rho_dm, 1, AtmosToOceanNGrow(idx));
         mf_ptr->setVal(0.0);
         const std::string label = "Driver AllocateCachesFromSolverLayouts atmos->ocean[" + std::to_string(idx) + "]";
         PrintMultiFabLayout(label.c_str(), *mf_ptr);
@@ -1237,35 +1156,18 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         }
     }
 
-    // Atmosphere -> Ocean (A2O) stencils, one per WeightFamily slot, each built
-    // against its own destination stagger (rho for scalars, u-face for TauX,
-    // v-face for TauY, rho for WIND_FACE_TO_CENTER since the face->center
-    // averaging happens upstream in the source pack step).
-    {
-        const std::array<const amrex::BoxArray*, kNumWeightFamilies> family_ba = {
-            &remora_rho_ba, &remora_u_ba, &remora_v_ba, &remora_rho_ba
-        };
-        const std::array<const amrex::DistributionMapping*, kNumWeightFamilies> family_dm = {
-            &remora_rho_dm, &remora_u_dm, &remora_v_dm, &remora_rho_dm
-        };
-        // Built on the host; BuildRemapWeights moves them to the default arena.
-        for (int f = 0; f < kNumWeightFamilies; ++f) {
-            m_weight_mf_by_family[f] = std::make_unique<amrex::MultiFab>(
-                *family_ba[f], *family_dm[f], MAX_STENCIL_SIZE, 0, HostArenaInfo());
-            m_index_mf_by_family[f] = std::make_unique<amrex::iMultiFab>(
-                *family_ba[f], *family_dm[f], 3 * MAX_STENCIL_SIZE, 0, HostArenaInfo());
-            // The donor-fill flag array is NOT allocated here. It is only ever
-            // written by the coawst donor search, which runs solely in the
-            // spherical frame, and neither the mode nor the frame is resolved
-            // yet: this function is reached from AllocateCaches() one line before
-            // BuildRemapWeights(), which is what calls ResolveRemapFrame() and
-            // ResolveDonorFillMode(). Allocating it unconditionally here gave four
-            // full-layout iMultiFabs that are structurally all-zero under the
-            // shipped default, read back per cell only to add zero. It is
-            // allocated lazily in BuildAtmosToOceanWeights instead, where both are
-            // known.
-        }
-    }
+    // Atmosphere -> Ocean (A2O) stencils: one cell -> rho set for every lane.
+    // Built on the host; BuildRemapWeights moves them to the default arena.
+    m_weight_a2o_mf = std::make_unique<amrex::MultiFab>(
+        remora_rho_ba, remora_rho_dm, MAX_STENCIL_SIZE, 0, HostArenaInfo());
+    m_index_a2o_mf = std::make_unique<amrex::iMultiFab>(
+        remora_rho_ba, remora_rho_dm, 3 * MAX_STENCIL_SIZE, 0, HostArenaInfo());
+    // The donor-fill flag array is NOT allocated here. It is only ever written
+    // by the coawst donor search, which runs solely in the spherical frame, and
+    // neither the mode nor the frame is resolved yet: this function is reached
+    // from AllocateCaches() one line before BuildRemapWeights(), which is what
+    // calls ResolveRemapFrame() and ResolveDonorFillMode(). It is allocated
+    // lazily in BuildAtmosToOceanWeights instead, where both are known.
 
     // Ocean -> Atmosphere (O2A) stencils (lives on ERF layout). Built on the host
     // like the A2O ones above.
@@ -1402,28 +1304,6 @@ ERFRemoraMultiBlockContainer::ValidateCouplingLayoutsFromSolvers () const
     // to support general non-conformal curvilinear grid coupling.
 }
 
-// Weight-family classification per field, per the corrected authoritative
-// contract for this branch:
-//   TAUX_FACE/TAUY_FACE (TauX/TauY): ERF tau_x/tau_y are transferred directly
-//     to REMORA vec_sustr/vec_svstr, which already live on the matching
-//     x-face/y-face stagger (see AtmosToOceanBoxArray() above and
-//     Submodules/REMORA/Source/REMORA.H:423-426). This is a stagger-matched
-//     nodal transfer, not a center->face averaging problem.
-//   WIND_FACE_TO_CENTER (Uwind/Vwind): ERF U/V live on x-face/y-face (native
-//     ERF velocity stagger) but REMORA consumes wind at rho-points
-//     (Submodules/REMORA/Source/REMORA.H:428, "Wind ... defined at rho-points").
-//     Compatible only when a face->center averaging transform hook exists;
-//     none is wired yet, so this family always falls back today.
-//   SCALAR_CENTERED (Patm, Qair, Tair, Cloud, Rain, SWrad, LWrad, SHflux,
-//     LHflux, Evap, SST): both sides are cell-centered/rho already.
-WeightFamily
-ClassifyAtmosToOceanFieldFamily (int field_idx) {
-    if (field_idx == coupling::TauX) { return WeightFamily::TAUX_FACE; }
-    if (field_idx == coupling::TauY) { return WeightFamily::TAUY_FACE; }
-    if (field_idx == coupling::Uwind || field_idx == coupling::Vwind) { return WeightFamily::WIND_FACE_TO_CENTER; }
-    return WeightFamily::SCALAR_CENTERED;
-}
-
 // Normalize each destination cell's stencil by its own covered fraction. Before
 // normalization the weight sum is the fraction of the destination cell covered by
 // source cells, which is SCRIP's grid2_frac; dividing by it is SCRIP's
@@ -1461,16 +1341,18 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
     // The donor search only fires for cells that are wet under this same mask, so
     // this is a wet-cell count whenever it is nonzero.
     amrex::Long n_donor_filled = 0;
-    // Example cells for the two wet-cell verdicts, in this family's own index
-    // space (face indices for the tau families).
+    // Example cells for the two wet-cell verdicts, in the destination index
+    // space.
     OwnerMatchTally donor_example;
     OwnerMatchTally wet_uncovered_example;
 
-    // Faces on a box seam belong to both adjacent boxes, so summing validbox over
-    // boxes would count them twice. Give each face to the lower box and let the
-    // last box in each direction keep its domain-boundary face, which tiles the
-    // staggered index space exactly once. Weights are still computed on every
-    // face including shared ones; this only makes the counts truthful.
+    // Only matters for a face-staggered destination; every remap set is
+    // cell-centered today. Faces on a box seam belong to both adjacent boxes,
+    // so summing validbox over boxes would count them twice. Give each face to
+    // the lower box and let the last box in each direction keep its
+    // domain-boundary face, which tiles the staggered index space exactly once.
+    // Weights are still computed on every face including shared ones; this
+    // only makes the counts truthful.
     const Box stagger_domain = weight_mf.boxArray().minimalBox();
     const IntVect stagger = weight_mf.boxArray().ixType().toIntVect();
 
@@ -1713,46 +1595,6 @@ BuildReplicatedMaskLookup (const amrex::MultiFab& mask_mf, const amrex::Box& dom
     return mask_values;
 }
 
-// Control-volume bounds for a face-staggered destination point on a uniform grid.
-//
-// The u-cell at face index i is centered on the face, spanning half a cell either
-// side; the v-cell likewise in y. Using CellBoundsFromGeom at a face index instead
-// shifts the volume half a cell and, worse, sends the outermost face column
-// (i = n_cell, which is a valid face index) entirely outside the domain, where it
-// finds no source overlap and ends up with zero weights - so tau_x/tau_y carry no
-// forcing along that edge. Clamping to the domain gives an edge face the half-width
-// control volume it actually has, which is also what the spherical path produces
-// from clamped node midpoints.
-amrex::RealBox
-FaceCellBoundsFromGeom (const amrex::Geometry& g, const amrex::Box& cell_domain,
-                        int i, int j, int dir)
-{
-    const amrex::Real* plo = g.ProbLo();
-    const amrex::Real* dx  = g.CellSize();
-
-    const amrex::Real dom_lo_x = plo[0] + static_cast<amrex::Real>(cell_domain.smallEnd(0)    ) * dx[0];
-    const amrex::Real dom_hi_x = plo[0] + static_cast<amrex::Real>(cell_domain.bigEnd(0)   + 1) * dx[0];
-    const amrex::Real dom_lo_y = plo[1] + static_cast<amrex::Real>(cell_domain.smallEnd(1)    ) * dx[1];
-    const amrex::Real dom_hi_y = plo[1] + static_cast<amrex::Real>(cell_domain.bigEnd(1)   + 1) * dx[1];
-
-    amrex::Real xlo, xhi, ylo, yhi;
-    if (dir == 0) {
-        xlo = plo[0] + (static_cast<amrex::Real>(i) - amrex::Real(0.5)) * dx[0];
-        xhi = plo[0] + (static_cast<amrex::Real>(i) + amrex::Real(0.5)) * dx[0];
-        ylo = plo[1] + static_cast<amrex::Real>(j    ) * dx[1];
-        yhi = plo[1] + static_cast<amrex::Real>(j + 1) * dx[1];
-        xlo = std::max(xlo, dom_lo_x); xhi = std::min(xhi, dom_hi_x);
-    } else {
-        xlo = plo[0] + static_cast<amrex::Real>(i    ) * dx[0];
-        xhi = plo[0] + static_cast<amrex::Real>(i + 1) * dx[0];
-        ylo = plo[1] + (static_cast<amrex::Real>(j) - amrex::Real(0.5)) * dx[1];
-        yhi = plo[1] + (static_cast<amrex::Real>(j) + amrex::Real(0.5)) * dx[1];
-        ylo = std::max(ylo, dom_lo_y); yhi = std::min(yhi, dom_hi_y);
-    }
-
-    return amrex::RealBox({xlo, ylo, 0.0}, {xhi, yhi, 0.0});
-}
-
 // Axis-aligned bounds of a polygon, used both to reject candidate pairs cheaply
 // and to size the search structure.
 struct PlanarBBox
@@ -1907,44 +1749,6 @@ private:
     int m_query = 0;
 };
 
-// Control-volume quad for a face-staggered destination point, built from the
-// midpoints of adjacent nodal edges. The u-cell at face index (i,j) spans from
-// the center of cell (i-1,j) to the center of cell (i,j), so its corners are the
-// midpoints of the node pairs bracketing that span. Without this, a face family
-// would reuse the rho-cell polygon at a face index, i.e. a half-cell offset.
-//
-// `node_domain` clamps the reads: at a domain-edge face one of the bracketing
-// nodes lies outside the grid, where FillBoundary has left nothing valid. Clamping
-// collapses that side onto the boundary node, which is the correct half-width
-// control volume for an edge face rather than a quad built from zeros.
-amrex::Vector<Point2D>
-FaceCellQuadFromNodes (int i, int j, int dir,
-                       const amrex::Array4<const amrex::Real>& xn,
-                       const amrex::Array4<const amrex::Real>& yn,
-                       const amrex::Box& node_domain)
-{
-    const int ilo = node_domain.smallEnd(0), ihi = node_domain.bigEnd(0);
-    const int jlo = node_domain.smallEnd(1), jhi = node_domain.bigEnd(1);
-
-    auto mid = [&] (int ia, int ja, int ib, int jb) {
-        ia = std::clamp(ia, ilo, ihi); ib = std::clamp(ib, ilo, ihi);
-        ja = std::clamp(ja, jlo, jhi); jb = std::clamp(jb, jlo, jhi);
-        return Point2D{ amrex::Real(0.5) * (xn(ia,ja,0) + xn(ib,jb,0)),
-                        amrex::Real(0.5) * (yn(ia,ja,0) + yn(ib,jb,0)) };
-    };
-
-    amrex::Vector<Point2D> quad;
-    if (dir == 0) {
-        quad = { mid(i-1, j  , i, j  ), mid(i, j  , i+1, j  ),
-                 mid(i, j+1, i+1, j+1), mid(i-1, j+1, i, j+1) };
-    } else {
-        quad = { mid(i  , j-1, i  , j), mid(i+1, j-1, i+1, j),
-                 mid(i+1, j  , i+1, j+1), mid(i  , j  , i  , j+1) };
-    }
-    EnsureCounterClockwise(quad);
-    return quad;
-}
-
 // Extend a nodal corner mesh outward by one ring, so cells on the outer ring of
 // the owning grid still have corners. Direct port of SCRIP's
 // create_extra_rho_grid (COAWST Lib/SCRIP_COAWST/create_fullgrid.f): linear
@@ -2018,10 +1822,8 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
     // Built on the pinned arena for the host loops above; the per-exchange remap
     // kernels read these, so move them to device memory. Must finish before
     // InitializeBlocks packs the bootstrap ocean->atmos state with the O2A set.
-    for (int f = 0; f < kNumWeightFamilies; ++f) {
-        MoveToDefaultArena(m_weight_mf_by_family[f]);
-        MoveToDefaultArena(m_index_mf_by_family[f]);
-    }
+    MoveToDefaultArena(m_weight_a2o_mf);
+    MoveToDefaultArena(m_index_a2o_mf);
     MoveToDefaultArena(m_weight_o2a_mf);
     MoveToDefaultArena(m_index_o2a_mf);
     MoveToDefaultArena(m_valid_o2a_mf);
@@ -2043,7 +1845,7 @@ ERFRemoraMultiBlockContainer::BuildRemapWeights()
         m_remora_staging_plan->node_mf.reset();
         m_remora_staging_plan->wet_mf.reset();
     }
-    for (auto& donor_fill : m_donor_fill_mf_by_family) { donor_fill.reset(); }
+    m_donor_fill_a2o_mf.reset();
 }
 
 // Write every remap array the exchanges read, for exact comparison of two runs
@@ -2056,16 +1858,10 @@ ERFRemoraMultiBlockContainer::DumpRemapWeights () const
     const std::string dir = "remap_weights";
     UtilCreateCleanDirectory(dir, true);
 
-    static constexpr std::array<const char*, kNumWeightFamilies> family_names = {
-        "scalar", "taux", "tauy", "wind"
-    };
-    for (int f = 0; f < kNumWeightFamilies; ++f) {
-        const std::string family = family_names[f];
-        DumpFabArrayRaw(*m_weight_mf_by_family[f], dir, "a2o_weight_" + family);
-        DumpFabArrayRaw(*m_index_mf_by_family[f], dir, "a2o_index_" + family);
-        if (m_donor_fill_mf_by_family[f]) {
-            DumpFabArrayRaw(*m_donor_fill_mf_by_family[f], dir, "a2o_donor_fill_" + family);
-        }
+    DumpFabArrayRaw(*m_weight_a2o_mf, dir, "a2o_weight");
+    DumpFabArrayRaw(*m_index_a2o_mf, dir, "a2o_index");
+    if (m_donor_fill_a2o_mf) {
+        DumpFabArrayRaw(*m_donor_fill_a2o_mf, dir, "a2o_donor_fill");
     }
     if (m_weight_o2a_mf) {
         DumpFabArrayRaw(*m_weight_o2a_mf, dir, "o2a_weight");
@@ -2256,9 +2052,8 @@ ERFRemoraMultiBlockContainer::CompareWeightsWithSCRIP ()
         }
     };
 
-    const int f = static_cast<int>(WeightFamily::SCALAR_CENTERED);
-    compare(m_scrip_a2o_group, *m_weight_mf_by_family[f], *m_index_mf_by_family[f],
-            m_geom.Domain(), "A2O scalar/rho", "REMORA");
+    compare(m_scrip_a2o_group, *m_weight_a2o_mf, *m_index_a2o_mf,
+            m_geom.Domain(), "A2O rho", "REMORA");
     if (m_use_two_way_coupling && m_weight_o2a_mf) {
         compare(m_scrip_o2a_group, *m_weight_o2a_mf, *m_index_o2a_mf,
                 m_geom_ocn.Domain(), "O2A SST", "ERF");
@@ -2643,9 +2438,7 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
     ParallelDescriptor::ReduceRealMin(erf_lo.dataPtr(), erf_lo.size());
     ParallelDescriptor::ReduceRealMax(erf_hi.dataPtr(), erf_hi.size());
 
-    // REMORA box bounds, same treatment. The rho layout drives this: face
-    // families live on staggered versions of the same boxes, so the rho
-    // footprint grown by one cell covers them.
+    // REMORA box bounds, same treatment, on the rho layout every A2O lane uses.
     const MultiFab* remora_lon_dev = nullptr;
     const MultiFab* remora_lat_dev = nullptr;
     REMORAGetAtmosToOceanPsiLonLat(m_remora, &remora_lon_dev, &remora_lat_dev);
@@ -2660,8 +2453,9 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
     RequireHostAccess("BuildERFStagingPlan", *remora_lon, *remora_lat);
     for (MFIter mfi(*remora_lon); mfi.isValid(); ++mfi) {
         const int b = mfi.index();
-        // One extra node ring so face-staggered REMORA points and their
-        // edge-midpoint control volumes stay inside the requested ERF region.
+        // One extra node ring of margin around the box's rho cells. This also
+        // sets G(B), the donor-search clip, so changing it changes donor-filled
+        // weights.
         const Box nbx = grow(mfi.validbox(), IntVect(1,1,0)) & remora_lon->boxArray().minimalBox();
         auto const& lon = remora_lon->const_array(mfi);
         auto const& lat = remora_lat->const_array(mfi);
@@ -2772,8 +2566,7 @@ ERFRemoraMultiBlockContainer::BuildERFStagingPlan()
 // This mirrors BuildERFStagingPlan() with the source and destination reversed:
 // each ERF box gets told which REMORA rho-cell index region its geographic
 // footprint needs, and amrex::NonLocalBC moves that region onto the ERF
-// DistributionMapping. O2A is SST-only today, so there is no weight-family loop
-// and only the rho mask is staged.
+// DistributionMapping. Only the rho mask is staged.
 void
 ERFRemoraMultiBlockContainer::BuildREMORAStagingPlan()
 {
@@ -2961,31 +2754,16 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     // REMORA wet/dry masks, so coverage can be reported over the cells that carry
     // ocean rather than over land the atmosphere grid was never going to force.
     const MultiFab* remora_mskr_dev = nullptr;
-    const MultiFab* remora_msku_dev = nullptr;
-    const MultiFab* remora_mskv_dev = nullptr;
     if (m_remora != nullptr) {
-        REMORAGetMasks(m_remora, &remora_mskr_dev, &remora_msku_dev, &remora_mskv_dev);
+        REMORAGetMasks(m_remora, &remora_mskr_dev, nullptr, nullptr);
     }
-    MultiFab mskr_copy, msku_copy, mskv_copy;
+    MultiFab mskr_copy;
     const MultiFab* remora_mskr = HostView(remora_mskr_dev, mskr_copy);
-    const MultiFab* remora_msku = HostView(remora_msku_dev, msku_copy);
-    const MultiFab* remora_mskv = HostView(remora_mskv_dev, mskv_copy);
 
-    // Reset A2O weight and index caches, one family slot at a time. Each slot
-    // was allocated (AllocateCachesFromSolverLayouts) against its own
-    // destination BoxArray/stagger (rho for SCALAR_CENTERED/WIND_FACE_TO_CENTER,
-    // u-face for TAUX_FACE, v-face for TAUY_FACE), so building weights
-    // per-slot means TauX/TauY finally get stencils computed against their own
-    // stagger instead of borrowing the rho-point stencil.
-    static const std::array<amrex::IntVect, kNumWeightFamilies> kExpectedFamilyStagger = {
-        amrex::IntVect(0,0,0), amrex::IntVect(1,0,0), amrex::IntVect(0,1,0), amrex::IntVect(0,0,0)
-    };
-    static const std::array<const char*, kNumWeightFamilies> kFamilyLabel = {
-        "A2O scalar/rho", "A2O tau_x/u-face", "A2O tau_y/v-face", "A2O wind->rho"
-    };
-    static const std::array<const char*, kNumWeightFamilies> kExpectedRemoraMask = {
-        "mskr", "msku", "mskv", "mskr"
-    };
+    // One set of cell -> rho weights serves every A2O lane: vectors cross as
+    // eastward/northward components at cell centres, like the scalars.
+    const char* const label = "A2O rho";
+
     // Stencil-capacity accounting: a destination cell that overlaps more than
     // MAX_STENCIL_SIZE source cells keeps the largest-area overlaps and reports
     // the shortfall. Aborting here would kill a run mid-init over a geometry
@@ -2996,547 +2774,421 @@ ERFRemoraMultiBlockContainer::BuildAtmosToOceanWeights()
     Vector<int> candidates;
     Vector<std::pair<Real,IntVect>> overlaps;
 
-    const Box remora_cell_domain = m_geom_ocn.Domain();
+    MultiFab* weight_mf = m_weight_a2o_mf.get();
+    iMultiFab* index_mf = m_index_a2o_mf.get();
+    if (!weight_mf || !index_mf) { return; }
 
-    for (int f = 0; f < kNumWeightFamilies; ++f) {
-        MultiFab* weight_mf = m_weight_mf_by_family[f].get();
-        iMultiFab* index_mf = m_index_mf_by_family[f].get();
-        if (!weight_mf || !index_mf) { continue; }
-
-        // Allocate the donor-fill flag array only when the donor search can
-        // actually run. Under the default driver.remap_donor_fill=withhold, or in
-        // the cartesian frame, nothing ever writes it. A null array here is
-        // therefore normal, not a failure, and must NOT skip the family the way
-        // a missing weight or index array would -- the remap itself is unaffected.
-        // NormalizeWeightsAndCheckConservation already treats a null donor_fill as
-        // "this direction cannot donor-fill" and omits the donor_filled= field,
-        // which is exactly right here; ResolveDonorFillMode has already reported
-        // the mode, so the reader is not left guessing why it is absent.
-        const bool donor_fill_can_run =
-            (m_remap_donor_fill_mode == DonorFillMode::Coawst) && m_remap_spherical;
-        if (donor_fill_can_run && !m_donor_fill_mf_by_family[f]) {
-            m_donor_fill_mf_by_family[f] = std::make_unique<iMultiFab>(
-                weight_mf->boxArray(), weight_mf->DistributionMap(), 1, 0, HostArenaInfo());
-        }
-        iMultiFab* donor_fill_mf = m_donor_fill_mf_by_family[f].get();
-
-        AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-            weight_mf->boxArray().ixType().toIntVect() == kExpectedFamilyStagger[f],
-            "BuildRemapWeights: A2O weight MultiFab stagger does not match its WeightFamily slot.");
-
-        weight_mf->setVal(0.0);
-        index_mf->setVal(-1);
-        if (donor_fill_mf) { donor_fill_mf->setVal(0); }
-
-        const IntVect stagger = kExpectedFamilyStagger[f];
-        // TauX/TauY carry a face-staggered ERF source as well (tau13/tau23 on
-        // x-/y-faces), so their source control volumes and stored indices must
-        // be face-staggered too.
-        const int src_face_dir =
-            (stagger == IntVect(1,0,0)) ? 0 : ((stagger == IntVect(0,1,0)) ? 1 : -1);
-
-        // Index space this family's source cells live in, on the ERF level-0
-        // domain rather than on any one rank's staged region. Used only to key
-        // the donor-search tie-break below. Empty in the cartesian frame, where
-        // there is no staging plan and no donor search.
-        const Box donor_src_domain =
-            (!m_remap_spherical)
-                ? Box()
-                : ((src_face_dir < 0)
-                       ? m_staging_plan->erf_cell_domain
-                       : amrex::convert(m_staging_plan->erf_cell_domain,
-                                        amrex::IntVect::TheDimensionVector(src_face_dir)));
-        // Each family's mask must sit on that family's stagger, or const_array()
-        // would be reading a differently shaped array.
-        const MultiFab* family_mask = remora_mskr;
-        if (f == static_cast<int>(WeightFamily::TAUX_FACE))      { family_mask = remora_msku; }
-        else if (f == static_cast<int>(WeightFamily::TAUY_FACE)) { family_mask = remora_mskv; }
-        const bool donor_fill_needs_mask =
-            m_remap_donor_fill_mode == DonorFillMode::Coawst && m_remap_spherical;
-        if (family_mask == nullptr) {
-            if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
-                amrex::Print() << "[driver] WARNING remap (" << kFamilyLabel[f]
-                               << "): REMORA supplied no " << kExpectedRemoraMask[f]
-                               << " wet mask. Donor fill is inactive for this family; wet cells "
-                               << "without usable source overlap will take the same per-lane "
-                               << "fallback they would under driver.remap_donor_fill=withhold.\n";
-            }
-        } else if (family_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
-            if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
-                amrex::Print() << "[driver] WARNING remap (" << kFamilyLabel[f] << "): REMORA "
-                               << kExpectedRemoraMask[f] << " wet mask ixType="
-                               << family_mask->boxArray().ixType().toIntVect()
-                               << " does not match expected ixType="
-                               << weight_mf->boxArray().ixType().toIntVect()
-                               << ". Donor fill is inactive for this family; wet cells without "
-                               << "usable source overlap will take the same per-lane fallback "
-                               << "they would under driver.remap_donor_fill=withhold.\n";
-            }
-            family_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
-        }
-
-        RequireHostAccess("BuildAtmosToOceanWeights", *weight_mf, *index_mf);
-        RequireHostAccessIfPresent("BuildAtmosToOceanWeights", donor_fill_mf, family_mask);
-        if (m_remap_spherical) {
-            RequireHostAccess("BuildAtmosToOceanWeights", *remora_lon, *remora_lat,
-                              *m_staging_plan->node_mf, *m_staging_plan->land_mf);
-        }
-        for (MFIter mfi(*weight_mf); mfi.isValid(); ++mfi) {
-            Box bx = mfi.validbox();
-            auto weight_arr = weight_mf->array(mfi);
-            auto index_arr = index_mf->array(mfi);
-            // Null under withhold / cartesian; the donor search that writes it is
-            // gated on exactly the condition that allocated it, so an empty Array4
-            // here is never dereferenced.
-            auto donor_fill_arr = donor_fill_mf ? donor_fill_mf->array(mfi)
-                                                : amrex::Array4<int>{};
-
-            // Spherical frame: REMORA corners from its psi lon/lat, and ERF
-            // corners from the staged mesh. All of these arrays are on the REMORA
-            // DistributionMapping, so one MFIter index is valid for all of them.
-            SourceSearchGrid search;
-            Array4<const Real> erf_node{};
-            Array4<const Real> erf_land{};
-            Box erf_staged_box;
-            Box erf_staged_node_box;
-            // Geographic bound on this destination box's donor search. G(B) is
-            // the grown lon/lat bounding box BuildERFStagingPlan used to pick
-            // the ERF boxes to stage, and donor_box_has_erf_overlap is 0 when it
-            // intersected none of them.
-            bool donor_box_has_erf_overlap = false;
-            PlanarBBox donor_box_bbox;
-            if (m_remap_spherical) {
-                erf_node = m_staging_plan->node_mf->const_array(mfi);
-                erf_land = m_staging_plan->land_mf->const_array(mfi);
-                erf_staged_box = m_staging_plan->land_mf->boxArray()[mfi.index()];
-                erf_staged_node_box = m_staging_plan->node_mf->boxArray()[mfi.index()];
-                search.define(erf_staged_box, Array4<const Real>(erf_node, 0),
-                              Array4<const Real>(erf_node, 1), m_remap_bin_cells);
-                // Same index space the erf_staged_box lookup just above uses:
-                // the staging plan's per-box vectors are indexed by REMORA box,
-                // and this family's BoxArray is m_ba_ocn on that family's
-                // stagger, so mfi.index() is that box index.
-                const int d = mfi.index();
-                AMREX_ASSERT(d < static_cast<int>(m_staging_plan->box_has_erf_overlap.size()));
-                donor_box_has_erf_overlap =
-                    (m_staging_plan->box_has_erf_overlap[d] != 0);
-                donor_box_bbox.xlo = m_staging_plan->box_bbox_lo[2*d  ];
-                donor_box_bbox.xhi = m_staging_plan->box_bbox_hi[2*d  ];
-                donor_box_bbox.ylo = m_staging_plan->box_bbox_lo[2*d+1];
-                donor_box_bbox.yhi = m_staging_plan->box_bbox_hi[2*d+1];
-            }
-            // Spherical ERF source geometry on the active source stagger. A
-            // face is treated as land when either bracketing ERF cell is land,
-            // matching REMORA's own msku/mskv convention.
-            auto erf_src_poly = [&] (int si, int sj) {
-                if (src_face_dir >= 0) {
-                    return FaceCellQuadFromNodes(si, sj, src_face_dir,
-                                                 Array4<const Real>(erf_node, 0),
-                                                 Array4<const Real>(erf_node, 1),
-                                                 erf_staged_node_box);
-                }
-                return ExtractCellQuadFromCoords(si, sj,
-                                                 Array4<const Real>(erf_node, 0),
-                                                 Array4<const Real>(erf_node, 1));
-            };
-            auto erf_src_is_land = [&] (int si, int sj) -> bool {
-                if (src_face_dir == 0) {
-                    const int im = std::max(si - 1, erf_staged_box.smallEnd(0));
-                    const int ip = std::min(si,     erf_staged_box.bigEnd(0));
-                    return erf_land(im, sj, 0) >= Real(0.5) || erf_land(ip, sj, 0) >= Real(0.5);
-                }
-                if (src_face_dir == 1) {
-                    const int jm = std::max(sj - 1, erf_staged_box.smallEnd(1));
-                    const int jp = std::min(sj,     erf_staged_box.bigEnd(1));
-                    return erf_land(si, jm, 0) >= Real(0.5) || erf_land(si, jp, 0) >= Real(0.5);
-                }
-                return erf_land(si, sj, 0) >= Real(0.5);
-            };
-            // REMORA wet/dry mask on this family's stagger, used to decide which
-            // empty destination cells deserve a donor search.
-            const Array4<const Real> wet_arr =
-                (family_mask != nullptr) ? family_mask->const_array(mfi) : Array4<const Real>{};
-            const Array4<const Real> remora_lon_arr =
-                m_remap_spherical ? remora_lon->const_array(mfi) : Array4<const Real>{};
-            const Array4<const Real> remora_lat_arr =
-                m_remap_spherical ? remora_lat->const_array(mfi) : Array4<const Real>{};
-            const Box remora_node_domain =
-                m_remap_spherical ? remora_lon->boxArray().minimalBox() : Box();
-
-            for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
-                for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
-                    Vector<Point2D> remora_poly;
-
-                    if (m_remap_spherical) {
-                        if (stagger == IntVect(1,0,0)) {
-                            remora_poly = FaceCellQuadFromNodes(i, j, 0, remora_lon_arr, remora_lat_arr,
-                                                                remora_node_domain);
-                        } else if (stagger == IntVect(0,1,0)) {
-                            remora_poly = FaceCellQuadFromNodes(i, j, 1, remora_lon_arr, remora_lat_arr,
-                                                                remora_node_domain);
-                        } else {
-                            remora_poly = ExtractCellQuadFromCoords(i, j, remora_lon_arr, remora_lat_arr);
-                        }
-                    } else {
-                        // Face families get their own control volume here too, not
-                        // the rho-cell bounds evaluated at a face index.
-                        RealBox bounds =
-                            (stagger == IntVect(1,0,0))
-                                ? FaceCellBoundsFromGeom(m_geom_ocn, remora_cell_domain, i, j, 0)
-                                : (stagger == IntVect(0,1,0))
-                                    ? FaceCellBoundsFromGeom(m_geom_ocn, remora_cell_domain, i, j, 1)
-                                    : CellBoundsFromGeom(m_geom_ocn, i, j);
-                        remora_poly = {
-                            {bounds.lo(0), bounds.lo(1)},
-                            {bounds.hi(0), bounds.lo(1)},
-                            {bounds.hi(0), bounds.hi(1)},
-                            {bounds.lo(0), bounds.hi(1)}
-                        };
-                    }
-
-                    // Areas are planar in whatever frame is active. In the
-                    // spherical frame that means degrees squared, not true
-                    // spherical area as SCRIP computes: the cos(latitude) factor
-                    // cancels to first order because only the ratio
-                    // intersect/destination is used, and the residual bias across
-                    // one ~2 km cell is far below the interpolation error. Revisit
-                    // if this is ever used at basin-scale cell sizes.
-                    Real remora_area = PolygonArea(remora_poly);
-                    if (remora_area <= 0.0) continue;
-
-                    const PlanarBBox remora_bbox = BBoxOfPolygon(remora_poly);
-
-                    overlaps.clear();
-                    if (m_remap_spherical) {
-                        search.query(remora_bbox, candidates);
-                        if (src_face_dir >= 0 && !candidates.empty()) {
-                            // SourceSearchGrid indexes source cells. For face
-                            // families, scan the candidate-cell hull and include
-                            // the high face in the staggered direction.
-                            int ci_lo = std::numeric_limits<int>::max();
-                            int ci_hi = std::numeric_limits<int>::min();
-                            int cj_lo = std::numeric_limits<int>::max();
-                            int cj_hi = std::numeric_limits<int>::min();
-                            for (const int item : candidates) {
-                                const IntVect cij = search.itemIndex(item);
-                                ci_lo = std::min(ci_lo, cij[0]); ci_hi = std::max(ci_hi, cij[0]);
-                                cj_lo = std::min(cj_lo, cij[1]); cj_hi = std::max(cj_hi, cij[1]);
-                            }
-                            ci_hi += (src_face_dir == 0) ? 1 : 0;
-                            cj_hi += (src_face_dir == 1) ? 1 : 0;
-                            for (int erf_j = cj_lo; erf_j <= cj_hi; ++erf_j) {
-                                for (int erf_i = ci_lo; erf_i <= ci_hi; ++erf_i) {
-                                    if (erf_src_is_land(erf_i, erf_j)) { continue; }
-                                    const Real area =
-                                        ClippedArea(remora_poly, erf_src_poly(erf_i, erf_j));
-                                    if (area > 0.0) {
-                                        overlaps.emplace_back(area, IntVect(erf_i, erf_j, 0));
-                                    }
-                                }
-                            }
-                        } else {
-                            for (const int item : candidates) {
-                                const IntVect erf_ij = search.itemIndex(item);
-                                const int erf_i = erf_ij[0], erf_j = erf_ij[1];
-                                // Wet/dry masking only (no vector rotation): skip
-                                // land ERF cells so atmospheric land fluxes cannot
-                                // bleed into coastal ocean cells via the remap
-                                // stencil.
-                                if (erf_land(erf_i, erf_j, 0) >= Real(0.5)) { continue; }
-
-                                const Vector<Point2D> erf_poly =
-                                    ExtractCellQuadFromCoords(erf_i, erf_j,
-                                                              Array4<const Real>(erf_node, 0),
-                                                              Array4<const Real>(erf_node, 1));
-                                const Real area = ClippedArea(remora_poly, erf_poly);
-                                if (area > 0.0) { overlaps.emplace_back(area, erf_ij); }
-                            }
-                        }
-                    } else {
-                        // Cartesian frame: both sides are uniform in the shared
-                        // driver RealBox, so the candidate window comes straight
-                        // from an affine index estimate plus a distortion pad.
-                        Box erf_candidate_box = m_geom.Domain();
-                        int erf_i_lo = std::floor((remora_bbox.xlo - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
-                        int erf_i_hi = std::ceil((remora_bbox.xhi - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
-                        int erf_j_lo = std::floor((remora_bbox.ylo - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
-                        int erf_j_hi = std::ceil((remora_bbox.yhi - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
-
-                        erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 2);
-                        erf_i_hi = std::min(erf_candidate_box.bigEnd(0) + ((src_face_dir == 0) ? 1 : 0),
-                                            erf_i_hi + 2);
-                        erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 2);
-                        erf_j_hi = std::min(erf_candidate_box.bigEnd(1) + ((src_face_dir == 1) ? 1 : 0),
-                                            erf_j_hi + 2);
-
-                        for (int erf_j = erf_j_lo; erf_j <= erf_j_hi; ++erf_j) {
-                            for (int erf_i = erf_i_lo; erf_i <= erf_i_hi; ++erf_i) {
-                                RealBox erf_bounds =
-                                    (src_face_dir >= 0)
-                                        ? FaceCellBoundsFromGeom(m_geom, erf_candidate_box,
-                                                                 erf_i, erf_j, src_face_dir)
-                                        : CellBoundsFromGeom(m_geom, erf_i, erf_j);
-                                const Vector<Point2D> erf_poly = {
-                                    {erf_bounds.lo(0), erf_bounds.lo(1)},
-                                    {erf_bounds.hi(0), erf_bounds.lo(1)},
-                                    {erf_bounds.hi(0), erf_bounds.hi(1)},
-                                    {erf_bounds.lo(0), erf_bounds.hi(1)}
-                                };
-                                const Real area = ClippedArea(remora_poly, erf_poly);
-                                if (area > 0.0) {
-                                    overlaps.emplace_back(area, IntVect(erf_i, erf_j, 0));
-                                }
-                            }
-                        }
-                    }
-
-                    // Nearest-valid-donor fill, ported from COAWST's check_weights
-                    // (Lib/SCRIP_COAWST/scrip.f:343). A wet destination cell whose
-                    // overlapping source cells are all land gets no stencil at all;
-                    // COAWST detects exactly this case as
-                    // (dst_mask_unlim - dst_mask) == 1 and hands the cell the
-                    // nearest valid donor rather than leaving it empty. Searching
-                    // the staged source cells keeps this rank-local: the staged
-                    // region already covers this destination box's footprint plus
-                    // margin, so the donor is in hand without a cross-rank search.
-                    //
-                    // Only wet holes are searched. Dry holes are both uninteresting
-                    // and numerous (they are the land-shadowed majority), and
-                    // scanning for them would cost orders of magnitude more.
-                    //
-                    // Off by default (driver.remap_donor_fill=withhold), because no
-                    // production coupler donor-fills an unmapped cell and because the
-                    // graft below is not conservative -- ESMF refuses to combine
-                    // extrapolation with conservative regridding for exactly this
-                    // reason. See ResolveDonorFillMode() for the full argument and
-                    // for the warning the coawst mode prints. Under withhold this
-                    // block is simply not entered: `overlaps` stays empty, the
-                    // `continue` below leaves the -1 index sentinel and zero weights
-                    // in place, NormalizeWeightsAndCheckConservation counts the cell
-                    // uncovered, and ApplyConservativeRemap assigns that lane's
-                    // fallback. Nothing else is bypassed.
-                    //
-                    // donor_box_has_erf_overlap excludes destination boxes whose
-                    // grown geographic footprint intersected no ERF box at all.
-                    // For those, erf_staged_box is not a real region: it is the
-                    // one-cell placeholder BuildERFStagingPlan parks at
-                    // erf_cell_domain.smallEnd(), because a BoxArray cannot hold
-                    // an empty box. Without this test the search happily selects
-                    // that corner and grafts a full-weight stencil, so every wet
-                    // cell in such a box takes the ERF domain corner's
-                    // atmospheric state -- and is then counted as covered rather
-                    // than reported uncovered. A distance threshold cannot
-                    // reliably reject it: two nearly-touching grids could place
-                    // the corner within any radius. The recorded flag rejects it
-                    // by construction instead.
-                    if (m_remap_donor_fill_mode == DonorFillMode::Coawst &&
-                        overlaps.empty() && m_remap_spherical && wet_arr &&
-                        wet_arr(i,j,0) > Real(0.5) && donor_box_has_erf_overlap) {
-                        // Global source ID: row-major linear index over donor_src_domain. This
-                        // is deliberately a *domain* quantity. It contains no rank, no box
-                        // index and no reference to erf_staged_box, so two ranks that both hold
-                        // source cell (si,sj) agree on its ID under any decomposition. That is
-                        // the whole point: an MPI_MINLOC-style tie-break is only reproducible
-                        // when the key it minimizes over is a global cell ID -- feed it a rank
-                        // or a local index and the answer becomes rank-count dependent.
-                        auto donor_global_id = [&] (int si, int sj) -> long long {
-                            return static_cast<long long>(sj - donor_src_domain.smallEnd(1))
-                                     * static_cast<long long>(donor_src_domain.length(0))
-                                 + static_cast<long long>(si - donor_src_domain.smallEnd(0));
-                        };
-                        Real dst_cx = 0.0, dst_cy = 0.0;
-                        for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }
-                        dst_cx /= static_cast<Real>(remora_poly.size());
-                        dst_cy /= static_cast<Real>(remora_poly.size());
-                        // Longitude degrees are shorter than latitude degrees away
-                        // from the equator; without this the nearest donor would be
-                        // biased along the meridian.
-                        const Real cos_lat = std::max(std::cos(dst_cy * Real(M_PI) / Real(180.0)),
-                                                      Real(1.0e-6));
-
-                        // Ordering is lexicographic on (distance^2, global source
-                        // ID), not on distance alone. Exact ties are common rather
-                        // than exotic on a structured grid -- a destination cell
-                        // centered between two source cells produces bitwise-equal
-                        // d2 -- and a bare `d2 < best_d2` resolves them by scan
-                        // order, which starts at erf_staged_box.smallEnd() and so
-                        // moves with the decomposition. ESMF and YAC both break
-                        // nearest-neighbour ties by smallest global ID for exactly
-                        // this reason; ESMF documents it as "if two points are
-                        // equally close, then the point with the smallest sequence
-                        // index is arbitrarily used".
-                        //
-                        // The `d2 == best_d2` test is exact on purpose. The staged
-                        // node coordinates are exact NonLocalBC::ParallelCopy copies
-                        // of ERF's node values, so d2 for a given (si,sj) is
-                        // bitwise identical under any decomposition; ties here are
-                        // genuine ties, and a tolerance would introduce a new
-                        // ordering ambiguity rather than remove one.
-                        Real best_d2 = std::numeric_limits<Real>::max();
-                        long long best_gid = std::numeric_limits<long long>::max();
-                        IntVect best_ij(-1,-1,0);
-                        // The winning donor's own control volume. Kept from the
-                        // loop rather than re-derived from the node array
-                        // afterwards, because the search runs one index past
-                        // erf_staged_box in the staggered direction for the face
-                        // families: a raw erf_node(bi+1,bj+1) read at the winning
-                        // index would step one node past erf_staged_node_box.
-                        Vector<Point2D> best_poly;
-                        // The donor index is stored in index_arr and dereferenced by
-                        // ApplyConservativeRemap against this family's source layout,
-                        // so it has to be selected in the same index space the main
-                        // overlap loop uses. For the face families that is face
-                        // space: one extra index in the active direction, face
-                        // centroids rather than cell centroids, and the bracketing
-                        // land rule. A cell index here would be legal but would
-                        // reintroduce the half-cell displacement on donor-filled
-                        // coastal cells, which is the defect this change removes.
-                        const int donor_i_hi =
-                            erf_staged_box.bigEnd(0) + ((src_face_dir == 0) ? 1 : 0);
-                        const int donor_j_hi =
-                            erf_staged_box.bigEnd(1) + ((src_face_dir == 1) ? 1 : 0);
-                        for (int sj = erf_staged_box.smallEnd(1); sj <= donor_j_hi; ++sj) {
-                            for (int si = erf_staged_box.smallEnd(0); si <= donor_i_hi; ++si) {
-                                if (erf_src_is_land(si, sj)) { continue; }
-                                const Vector<Point2D> src_poly = erf_src_poly(si, sj);
-                                if (src_poly.empty()) { continue; }
-                                Real sx = 0.0, sy = 0.0;
-                                for (const auto& p : src_poly) { sx += p.x; sy += p.y; }
-                                sx /= static_cast<Real>(src_poly.size());
-                                sy /= static_cast<Real>(src_poly.size());
-                                // Clip the candidate set to G(B). This is what
-                                // takes ERF's decomposition out of the answer,
-                                // and it is a proof rather than a heuristic: any
-                                // ERF cell whose lon/lat lies inside G(B) belongs
-                                // to some ERF box whose own geographic bounding
-                                // box intersects G(B), and BuildERFStagingPlan
-                                // minBox-unions every such ERF box into
-                                // erf_staged_box. So the surviving candidates are
-                                // exactly the in-G(B) source cells under every ERF
-                                // box layout, whatever NProcs() and
-                                // amr.max_grid_size* do to ERF. What it does not
-                                // remove is dependence on REMORA's decomposition:
-                                // G(B) is itself a per-REMORA-box quantity, so a
-                                // destination cell near the edge of G(B) can see a
-                                // donor accepted under one REMORA box layout and
-                                // rejected under another. This mode is bounded,
-                                // not proven rank-invariant.
-                                if (sx < donor_box_bbox.xlo || sx > donor_box_bbox.xhi ||
-                                    sy < donor_box_bbox.ylo || sy > donor_box_bbox.yhi) {
-                                    continue;
-                                }
-                                const Real dx = (sx - dst_cx) * cos_lat;
-                                const Real dy = (sy - dst_cy);
-                                const Real d2 = dx*dx + dy*dy;
-                                const long long gid = donor_global_id(si, sj);
-                                if (d2 < best_d2 || (d2 == best_d2 && gid < best_gid)) {
-                                    best_d2 = d2;
-                                    best_gid = gid;
-                                    best_ij = IntVect(si,sj,0);
-                                    best_poly = src_poly;
-                                }
-                            }
-                        }
-
-                        if (best_ij[0] >= 0) {
-                            // Acceptance radius, measured against the diagonal of
-                            // the donor's own control volume in the same
-                            // cos(latitude)-corrected metric the search used.
-                            // Taken from the polygon the loop already built, not
-                            // from a raw erf_node(bi+1,bj+1) read, which would
-                            // step one node past erf_staged_node_box for the face
-                            // families.
-                            //
-                            // Unlike the geographic clip above this is a
-                            // heuristic, and it is a deliberate departure from
-                            // precedent rather than borrowed practice: no
-                            // production coupler bounds a nearest-source fill by
-                            // distance. ESMF's NEAREST_STOD is explicitly
-                            // unbounded -- it queries its process directory with
-                            // an infinite box when no local candidate exists, so
-                            // it always finds the globally nearest source -- and
-                            // creep fill bounds by iteration count instead. The
-                            // default of 3 diagonals is uncalibrated.
-                            //
-                            // Applied uniformly, not conditioned on whether this
-                            // destination box was partially or fully uncovered,
-                            // because the rank dependence exists in both cases.
-                            // (Zero-overlap boxes are already excluded above, so
-                            // in practice this governs the partially covered
-                            // case.)
-                            const PlanarBBox donor_bb = BBoxOfPolygon(best_poly);
-                            const Real ddx = (donor_bb.xhi - donor_bb.xlo) * cos_lat;
-                            const Real ddy = (donor_bb.yhi - donor_bb.ylo);
-                            const Real donor_diag2 = ddx*ddx + ddy*ddy;
-                            const Real r = m_remap_donor_max_diagonals;
-                            if (best_d2 > r * r * donor_diag2) {
-                                // Rejected. `overlaps` stays empty, the continue
-                                // below leaves the -1 index sentinel, and the cell
-                                // takes the same per-lane ERF-side fallback it
-                                // would under withhold. There is no third outcome.
-                                best_ij = IntVect(-1,-1,0);
-                            }
-                        }
-
-                        if (best_ij[0] >= 0) {
-                            // Full weight to the donor: after fracarea normalization
-                            // this cell takes the donor's value exactly.
-                            overlaps.emplace_back(remora_area, best_ij);
-                            ++donor_filled;
-                            // Mark the cell so the coverage report can separate it
-                            // from a genuinely covered one. Both this flag and
-                            // donor_filled count the same event; they differ in
-                            // that donor_filled is a raw per-box tally used only
-                            // for the one-line summary, whereas this flag is
-                            // de-duplicated across box seams downstream.
-                            donor_fill_arr(i, j, 0) = 1;
-                        }
-                    }
-
-                    if (overlaps.empty()) { continue; }
-
-                    max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
-                    if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
-                        dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
-                        std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
-                                          overlaps.end(),
-                                          [] (const std::pair<Real,IntVect>& a,
-                                              const std::pair<Real,IntVect>& b) {
-                                              return a.first > b.first;
-                                          });
-                        overlaps.resize(MAX_STENCIL_SIZE);
-                    }
-
-                    for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
-                        weight_arr(i, j, 0, m) = overlaps[m].first / remora_area;
-                        index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
-                        index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
-                        index_arr(i, j, 0, m * 3 + 2) = 0;
-                    }
-                }
-            }
-        }
-        NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, family_mask,
-                                             donor_fill_mf, kFamilyLabel[f]);
+    // Allocate the donor-fill flag array only when the donor search can
+    // actually run. Under the default driver.remap_donor_fill=withhold, or in
+    // the cartesian frame, nothing ever writes it. A null array here is
+    // therefore normal, not a failure, and must NOT skip the build the way
+    // a missing weight or index array would -- the remap itself is unaffected.
+    // NormalizeWeightsAndCheckConservation already treats a null donor_fill as
+    // "this direction cannot donor-fill" and omits the donor_filled= field,
+    // which is exactly right here; ResolveDonorFillMode has already reported
+    // the mode, so the reader is not left guessing why it is absent.
+    const bool donor_fill_can_run =
+        (m_remap_donor_fill_mode == DonorFillMode::Coawst) && m_remap_spherical;
+    if (donor_fill_can_run && !m_donor_fill_a2o_mf) {
+        m_donor_fill_a2o_mf = std::make_unique<iMultiFab>(
+            weight_mf->boxArray(), weight_mf->DistributionMap(), 1, 0, HostArenaInfo());
     }
+    iMultiFab* donor_fill_mf = m_donor_fill_a2o_mf.get();
+
+    AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+        weight_mf->boxArray().ixType().cellCentered(),
+        "BuildRemapWeights: A2O weight MultiFab must be cell-centered (REMORA rho points).");
+
+    weight_mf->setVal(0.0);
+    index_mf->setVal(-1);
+    if (donor_fill_mf) { donor_fill_mf->setVal(0); }
+
+    // Index space the source cells live in, on the ERF level-0 domain
+    // rather than on any one rank's staged region. Used only to key the
+    // donor-search tie-break below. Empty in the cartesian frame, where
+    // there is no staging plan and no donor search.
+    const Box donor_src_domain =
+        m_remap_spherical ? m_staging_plan->erf_cell_domain : Box();
+    // The wet mask must sit on the destination stagger (rho), or
+    // const_array() would be reading a differently shaped array.
+    const MultiFab* dst_mask = remora_mskr;
+    const bool donor_fill_needs_mask =
+        m_remap_donor_fill_mode == DonorFillMode::Coawst && m_remap_spherical;
+    if (dst_mask == nullptr) {
+        if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
+            amrex::Print() << "[driver] WARNING remap (" << label
+                           << "): REMORA supplied no mskr wet mask. Donor fill is inactive; wet cells "
+                           << "without usable source overlap will take the same per-lane "
+                           << "fallback they would under driver.remap_donor_fill=withhold.\n";
+        }
+    } else if (dst_mask->boxArray().ixType() != weight_mf->boxArray().ixType()) {
+        if (donor_fill_needs_mask && ParallelDescriptor::IOProcessor()) {
+            amrex::Print() << "[driver] WARNING remap (" << label << "): REMORA mskr wet mask ixType="
+                           << dst_mask->boxArray().ixType().toIntVect()
+                           << " does not match expected ixType="
+                           << weight_mf->boxArray().ixType().toIntVect()
+                           << ". Donor fill is inactive; wet cells without "
+                           << "usable source overlap will take the same per-lane fallback "
+                           << "they would under driver.remap_donor_fill=withhold.\n";
+        }
+        dst_mask = nullptr;   // stagger mismatch: report unmasked rather than lie
+    }
+
+    RequireHostAccess("BuildAtmosToOceanWeights", *weight_mf, *index_mf);
+    RequireHostAccessIfPresent("BuildAtmosToOceanWeights", donor_fill_mf, dst_mask);
+    if (m_remap_spherical) {
+        RequireHostAccess("BuildAtmosToOceanWeights", *remora_lon, *remora_lat,
+                          *m_staging_plan->node_mf, *m_staging_plan->land_mf);
+    }
+    for (MFIter mfi(*weight_mf); mfi.isValid(); ++mfi) {
+        Box bx = mfi.validbox();
+        auto weight_arr = weight_mf->array(mfi);
+        auto index_arr = index_mf->array(mfi);
+        // Null under withhold / cartesian; the donor search that writes it is
+        // gated on exactly the condition that allocated it, so an empty Array4
+        // here is never dereferenced.
+        auto donor_fill_arr = donor_fill_mf ? donor_fill_mf->array(mfi)
+                                            : amrex::Array4<int>{};
+
+        // Spherical frame: REMORA corners from its psi lon/lat, and ERF
+        // corners from the staged mesh. All of these arrays are on the REMORA
+        // DistributionMapping, so one MFIter index is valid for all of them.
+        SourceSearchGrid search;
+        Array4<const Real> erf_node{};
+        Array4<const Real> erf_land{};
+        Box erf_staged_box;
+        // Geographic bound on this destination box's donor search. G(B) is
+        // the grown lon/lat bounding box BuildERFStagingPlan used to pick
+        // the ERF boxes to stage, and donor_box_has_erf_overlap is 0 when it
+        // intersected none of them.
+        bool donor_box_has_erf_overlap = false;
+        PlanarBBox donor_box_bbox;
+        if (m_remap_spherical) {
+            erf_node = m_staging_plan->node_mf->const_array(mfi);
+            erf_land = m_staging_plan->land_mf->const_array(mfi);
+            erf_staged_box = m_staging_plan->land_mf->boxArray()[mfi.index()];
+            search.define(erf_staged_box, Array4<const Real>(erf_node, 0),
+                          Array4<const Real>(erf_node, 1), m_remap_bin_cells);
+            // Same index space the erf_staged_box lookup just above uses:
+            // the staging plan's per-box vectors are indexed by REMORA box,
+            // and weight_mf's BoxArray is m_ba_ocn, so mfi.index() is that
+            // box index.
+            const int d = mfi.index();
+            AMREX_ASSERT(d < static_cast<int>(m_staging_plan->box_has_erf_overlap.size()));
+            donor_box_has_erf_overlap =
+                (m_staging_plan->box_has_erf_overlap[d] != 0);
+            donor_box_bbox.xlo = m_staging_plan->box_bbox_lo[2*d  ];
+            donor_box_bbox.xhi = m_staging_plan->box_bbox_hi[2*d  ];
+            donor_box_bbox.ylo = m_staging_plan->box_bbox_lo[2*d+1];
+            donor_box_bbox.yhi = m_staging_plan->box_bbox_hi[2*d+1];
+        }
+        // REMORA rho wet/dry mask, used to decide which empty destination
+        // cells deserve a donor search.
+        const Array4<const Real> wet_arr =
+            (dst_mask != nullptr) ? dst_mask->const_array(mfi) : Array4<const Real>{};
+        const Array4<const Real> remora_lon_arr =
+            m_remap_spherical ? remora_lon->const_array(mfi) : Array4<const Real>{};
+        const Array4<const Real> remora_lat_arr =
+            m_remap_spherical ? remora_lat->const_array(mfi) : Array4<const Real>{};
+
+        for (int j = bx.smallEnd(1); j <= bx.bigEnd(1); ++j) {
+            for (int i = bx.smallEnd(0); i <= bx.bigEnd(0); ++i) {
+                Vector<Point2D> remora_poly;
+
+                if (m_remap_spherical) {
+                    remora_poly = ExtractCellQuadFromCoords(i, j, remora_lon_arr, remora_lat_arr);
+                } else {
+                    RealBox bounds = CellBoundsFromGeom(m_geom_ocn, i, j);
+                    remora_poly = {
+                        {bounds.lo(0), bounds.lo(1)},
+                        {bounds.hi(0), bounds.lo(1)},
+                        {bounds.hi(0), bounds.hi(1)},
+                        {bounds.lo(0), bounds.hi(1)}
+                    };
+                }
+
+                // Areas are planar in whatever frame is active. In the
+                // spherical frame that means degrees squared, not true
+                // spherical area as SCRIP computes: the cos(latitude) factor
+                // cancels to first order because only the ratio
+                // intersect/destination is used, and the residual bias across
+                // one ~2 km cell is far below the interpolation error. Revisit
+                // if this is ever used at basin-scale cell sizes.
+                Real remora_area = PolygonArea(remora_poly);
+                if (remora_area <= 0.0) continue;
+
+                const PlanarBBox remora_bbox = BBoxOfPolygon(remora_poly);
+
+                overlaps.clear();
+                if (m_remap_spherical) {
+                    search.query(remora_bbox, candidates);
+                    for (const int item : candidates) {
+                        const IntVect erf_ij = search.itemIndex(item);
+                        const int erf_i = erf_ij[0], erf_j = erf_ij[1];
+                        // Skip land ERF cells so atmospheric land fluxes
+                        // cannot bleed into coastal ocean cells via the
+                        // remap stencil.
+                        if (erf_land(erf_i, erf_j, 0) >= Real(0.5)) { continue; }
+
+                        const Vector<Point2D> erf_poly =
+                            ExtractCellQuadFromCoords(erf_i, erf_j,
+                                                      Array4<const Real>(erf_node, 0),
+                                                      Array4<const Real>(erf_node, 1));
+                        const Real area = ClippedArea(remora_poly, erf_poly);
+                        if (area > 0.0) { overlaps.emplace_back(area, erf_ij); }
+                    }
+                } else {
+                    // Cartesian frame: both sides are uniform in the shared
+                    // driver RealBox, so the candidate window comes straight
+                    // from an affine index estimate plus a distortion pad.
+                    Box erf_candidate_box = m_geom.Domain();
+                    int erf_i_lo = std::floor((remora_bbox.xlo - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
+                    int erf_i_hi = std::ceil((remora_bbox.xhi - m_atm_rb.lo(0)) / (m_atm_rb.hi(0) - m_atm_rb.lo(0)) * m_atm_n_cell[0]);
+                    int erf_j_lo = std::floor((remora_bbox.ylo - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+                    int erf_j_hi = std::ceil((remora_bbox.yhi - m_atm_rb.lo(1)) / (m_atm_rb.hi(1) - m_atm_rb.lo(1)) * m_atm_n_cell[1]);
+
+                    erf_i_lo = std::max(erf_candidate_box.smallEnd(0), erf_i_lo - 2);
+                    erf_i_hi = std::min(erf_candidate_box.bigEnd(0), erf_i_hi + 2);
+                    erf_j_lo = std::max(erf_candidate_box.smallEnd(1), erf_j_lo - 2);
+                    erf_j_hi = std::min(erf_candidate_box.bigEnd(1), erf_j_hi + 2);
+
+                    for (int erf_j = erf_j_lo; erf_j <= erf_j_hi; ++erf_j) {
+                        for (int erf_i = erf_i_lo; erf_i <= erf_i_hi; ++erf_i) {
+                            RealBox erf_bounds = CellBoundsFromGeom(m_geom, erf_i, erf_j);
+                            const Vector<Point2D> erf_poly = {
+                                {erf_bounds.lo(0), erf_bounds.lo(1)},
+                                {erf_bounds.hi(0), erf_bounds.lo(1)},
+                                {erf_bounds.hi(0), erf_bounds.hi(1)},
+                                {erf_bounds.lo(0), erf_bounds.hi(1)}
+                            };
+                            const Real area = ClippedArea(remora_poly, erf_poly);
+                            if (area > 0.0) {
+                                overlaps.emplace_back(area, IntVect(erf_i, erf_j, 0));
+                            }
+                        }
+                    }
+                }
+
+                // Nearest-valid-donor fill, ported from COAWST's check_weights
+                // (Lib/SCRIP_COAWST/scrip.f:343). A wet destination cell whose
+                // overlapping source cells are all land gets no stencil at all;
+                // COAWST detects exactly this case as
+                // (dst_mask_unlim - dst_mask) == 1 and hands the cell the
+                // nearest valid donor rather than leaving it empty. Searching
+                // the staged source cells keeps this rank-local: the staged
+                // region already covers this destination box's footprint plus
+                // margin, so the donor is in hand without a cross-rank search.
+                //
+                // Only wet holes are searched. Dry holes are both uninteresting
+                // and numerous (they are the land-shadowed majority), and
+                // scanning for them would cost orders of magnitude more.
+                //
+                // Off by default (driver.remap_donor_fill=withhold), because no
+                // production coupler donor-fills an unmapped cell and because the
+                // graft below is not conservative -- ESMF refuses to combine
+                // extrapolation with conservative regridding for exactly this
+                // reason. See ResolveDonorFillMode() for the full argument and
+                // for the warning the coawst mode prints. Under withhold this
+                // block is simply not entered: `overlaps` stays empty, the
+                // `continue` below leaves the -1 index sentinel and zero weights
+                // in place, NormalizeWeightsAndCheckConservation counts the cell
+                // uncovered, and ApplyConservativeRemap assigns that lane's
+                // fallback. Nothing else is bypassed.
+                //
+                // donor_box_has_erf_overlap excludes destination boxes whose
+                // grown geographic footprint intersected no ERF box at all.
+                // For those, erf_staged_box is not a real region: it is the
+                // one-cell placeholder BuildERFStagingPlan parks at
+                // erf_cell_domain.smallEnd(), because a BoxArray cannot hold
+                // an empty box. Without this test the search happily selects
+                // that corner and grafts a full-weight stencil, so every wet
+                // cell in such a box takes the ERF domain corner's
+                // atmospheric state -- and is then counted as covered rather
+                // than reported uncovered. A distance threshold cannot
+                // reliably reject it: two nearly-touching grids could place
+                // the corner within any radius. The recorded flag rejects it
+                // by construction instead.
+                if (m_remap_donor_fill_mode == DonorFillMode::Coawst &&
+                    overlaps.empty() && m_remap_spherical && wet_arr &&
+                    wet_arr(i,j,0) > Real(0.5) && donor_box_has_erf_overlap) {
+                    // Global source ID: row-major linear index over donor_src_domain. This
+                    // is deliberately a *domain* quantity. It contains no rank, no box
+                    // index and no reference to erf_staged_box, so two ranks that both hold
+                    // source cell (si,sj) agree on its ID under any decomposition. That is
+                    // the whole point: an MPI_MINLOC-style tie-break is only reproducible
+                    // when the key it minimizes over is a global cell ID -- feed it a rank
+                    // or a local index and the answer becomes rank-count dependent.
+                    auto donor_global_id = [&] (int si, int sj) -> long long {
+                        return static_cast<long long>(sj - donor_src_domain.smallEnd(1))
+                                 * static_cast<long long>(donor_src_domain.length(0))
+                             + static_cast<long long>(si - donor_src_domain.smallEnd(0));
+                    };
+                    Real dst_cx = 0.0, dst_cy = 0.0;
+                    for (const auto& p : remora_poly) { dst_cx += p.x; dst_cy += p.y; }
+                    dst_cx /= static_cast<Real>(remora_poly.size());
+                    dst_cy /= static_cast<Real>(remora_poly.size());
+                    // Longitude degrees are shorter than latitude degrees away
+                    // from the equator; without this the nearest donor would be
+                    // biased along the meridian.
+                    const Real cos_lat = std::max(std::cos(dst_cy * Real(M_PI) / Real(180.0)),
+                                                  Real(1.0e-6));
+
+                    // Ordering is lexicographic on (distance^2, global source
+                    // ID), not on distance alone. Exact ties are common rather
+                    // than exotic on a structured grid -- a destination cell
+                    // centered between two source cells produces bitwise-equal
+                    // d2 -- and a bare `d2 < best_d2` resolves them by scan
+                    // order, which starts at erf_staged_box.smallEnd() and so
+                    // moves with the decomposition. ESMF and YAC both break
+                    // nearest-neighbour ties by smallest global ID for exactly
+                    // this reason; ESMF documents it as "if two points are
+                    // equally close, then the point with the smallest sequence
+                    // index is arbitrarily used".
+                    //
+                    // The `d2 == best_d2` test is exact on purpose. The staged
+                    // node coordinates are exact NonLocalBC::ParallelCopy copies
+                    // of ERF's node values, so d2 for a given (si,sj) is
+                    // bitwise identical under any decomposition; ties here are
+                    // genuine ties, and a tolerance would introduce a new
+                    // ordering ambiguity rather than remove one.
+                    Real best_d2 = std::numeric_limits<Real>::max();
+                    long long best_gid = std::numeric_limits<long long>::max();
+                    IntVect best_ij(-1,-1,0);
+                    // The winning donor's own control volume, kept from the
+                    // loop for the acceptance radius below.
+                    Vector<Point2D> best_poly;
+                    for (int sj = erf_staged_box.smallEnd(1); sj <= erf_staged_box.bigEnd(1); ++sj) {
+                        for (int si = erf_staged_box.smallEnd(0); si <= erf_staged_box.bigEnd(0); ++si) {
+                            if (erf_land(si, sj, 0) >= Real(0.5)) { continue; }
+                            const Vector<Point2D> src_poly =
+                                ExtractCellQuadFromCoords(si, sj,
+                                                          Array4<const Real>(erf_node, 0),
+                                                          Array4<const Real>(erf_node, 1));
+                            if (src_poly.empty()) { continue; }
+                            Real sx = 0.0, sy = 0.0;
+                            for (const auto& p : src_poly) { sx += p.x; sy += p.y; }
+                            sx /= static_cast<Real>(src_poly.size());
+                            sy /= static_cast<Real>(src_poly.size());
+                            // Clip the candidate set to G(B). This is what
+                            // takes ERF's decomposition out of the answer,
+                            // and it is a proof rather than a heuristic: any
+                            // ERF cell whose lon/lat lies inside G(B) belongs
+                            // to some ERF box whose own geographic bounding
+                            // box intersects G(B), and BuildERFStagingPlan
+                            // minBox-unions every such ERF box into
+                            // erf_staged_box. So the surviving candidates are
+                            // exactly the in-G(B) source cells under every ERF
+                            // box layout, whatever NProcs() and
+                            // amr.max_grid_size* do to ERF. What it does not
+                            // remove is dependence on REMORA's decomposition:
+                            // G(B) is itself a per-REMORA-box quantity, so a
+                            // destination cell near the edge of G(B) can see a
+                            // donor accepted under one REMORA box layout and
+                            // rejected under another. This mode is bounded,
+                            // not proven rank-invariant.
+                            if (sx < donor_box_bbox.xlo || sx > donor_box_bbox.xhi ||
+                                sy < donor_box_bbox.ylo || sy > donor_box_bbox.yhi) {
+                                continue;
+                            }
+                            const Real dx = (sx - dst_cx) * cos_lat;
+                            const Real dy = (sy - dst_cy);
+                            const Real d2 = dx*dx + dy*dy;
+                            const long long gid = donor_global_id(si, sj);
+                            if (d2 < best_d2 || (d2 == best_d2 && gid < best_gid)) {
+                                best_d2 = d2;
+                                best_gid = gid;
+                                best_ij = IntVect(si,sj,0);
+                                best_poly = src_poly;
+                            }
+                        }
+                    }
+
+                    if (best_ij[0] >= 0) {
+                        // Acceptance radius, measured against the diagonal of
+                        // the donor's own control volume in the same
+                        // cos(latitude)-corrected metric the search used.
+                        // Taken from the polygon the loop already built.
+                        //
+                        // Unlike the geographic clip above this is a
+                        // heuristic, and it is a deliberate departure from
+                        // precedent rather than borrowed practice: no
+                        // production coupler bounds a nearest-source fill by
+                        // distance. ESMF's NEAREST_STOD is explicitly
+                        // unbounded -- it queries its process directory with
+                        // an infinite box when no local candidate exists, so
+                        // it always finds the globally nearest source -- and
+                        // creep fill bounds by iteration count instead. The
+                        // default of 3 diagonals is uncalibrated.
+                        //
+                        // Applied uniformly, not conditioned on whether this
+                        // destination box was partially or fully uncovered,
+                        // because the rank dependence exists in both cases.
+                        // (Zero-overlap boxes are already excluded above, so
+                        // in practice this governs the partially covered
+                        // case.)
+                        const PlanarBBox donor_bb = BBoxOfPolygon(best_poly);
+                        const Real ddx = (donor_bb.xhi - donor_bb.xlo) * cos_lat;
+                        const Real ddy = (donor_bb.yhi - donor_bb.ylo);
+                        const Real donor_diag2 = ddx*ddx + ddy*ddy;
+                        const Real r = m_remap_donor_max_diagonals;
+                        if (best_d2 > r * r * donor_diag2) {
+                            // Rejected. `overlaps` stays empty, the continue
+                            // below leaves the -1 index sentinel, and the cell
+                            // takes the same per-lane ERF-side fallback it
+                            // would under withhold. There is no third outcome.
+                            best_ij = IntVect(-1,-1,0);
+                        }
+                    }
+
+                    if (best_ij[0] >= 0) {
+                        // Full weight to the donor: after fracarea normalization
+                        // this cell takes the donor's value exactly.
+                        overlaps.emplace_back(remora_area, best_ij);
+                        ++donor_filled;
+                        // Mark the cell so the coverage report can separate it
+                        // from a genuinely covered one. Both this flag and
+                        // donor_filled count the same event; they differ in
+                        // that donor_filled is a raw per-box tally used only
+                        // for the one-line summary, whereas this flag is
+                        // de-duplicated across box seams downstream.
+                        donor_fill_arr(i, j, 0) = 1;
+                    }
+                }
+
+                if (overlaps.empty()) { continue; }
+
+                max_stencil_used = std::max(max_stencil_used, static_cast<int>(overlaps.size()));
+                if (static_cast<int>(overlaps.size()) > MAX_STENCIL_SIZE) {
+                    dropped_overlaps += static_cast<amrex::Long>(overlaps.size()) - MAX_STENCIL_SIZE;
+                    std::partial_sort(overlaps.begin(), overlaps.begin() + MAX_STENCIL_SIZE,
+                                      overlaps.end(),
+                                      [] (const std::pair<Real,IntVect>& a,
+                                          const std::pair<Real,IntVect>& b) {
+                                          return a.first > b.first;
+                                      });
+                    overlaps.resize(MAX_STENCIL_SIZE);
+                }
+
+                for (int m = 0; m < static_cast<int>(overlaps.size()); ++m) {
+                    weight_arr(i, j, 0, m) = overlaps[m].first / remora_area;
+                    index_arr(i, j, 0, m * 3    ) = overlaps[m].second[0];
+                    index_arr(i, j, 0, m * 3 + 1) = overlaps[m].second[1];
+                    index_arr(i, j, 0, m * 3 + 2) = 0;
+                }
+            }
+        }
+    }
+    NormalizeWeightsAndCheckConservation(*weight_mf, *index_mf, dst_mask,
+                                         donor_fill_mf, label);
 
     ParallelDescriptor::ReduceIntMax(max_stencil_used);
     ParallelDescriptor::ReduceLongSum(dropped_overlaps);
     ParallelDescriptor::ReduceLongSum(donor_filled);
     if (donor_filled > 0) {
-        // Summed over all four families and incremented once per box visit, so for
-        // TAUX_FACE/TAUY_FACE a donor-filled face on a box seam is counted once
-        // per adjacent box that fills it and this total moves with the
-        // decomposition. The per-family donor_filled= field on the coverage lines
-        // above applies the same seam-ownership rule as every other coverage
-        // count, so that is the number to compare between runs.
         amrex::Print() << "[driver] remap: " << donor_filled
                        << " wet destination cells had no valid source overlap and were filled from "
                        << "their nearest non-land source cell (COAWST check_weights behaviour). "
-                       << "These carry a neighbour's atmospheric state rather than their own. "
-                       << "Counted per box visit, so a donor-filled face on a box seam can be "
-                       << "counted once per adjacent box; the per-family donor_filled= counts "
-                       << "above are seam-de-duplicated.\n";
+                       << "These carry a neighbour's atmospheric state rather than their own.\n";
     }
     if (dropped_overlaps > 0) {
         amrex::Print() << "[driver] WARNING BuildRemapWeights: " << dropped_overlaps
@@ -3979,10 +3631,8 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
     if (m_driver_verbose < 1) { return; }
 
     const amrex::MultiFab* remora_mskr = nullptr;
-    const amrex::MultiFab* remora_msku = nullptr;
-    const amrex::MultiFab* remora_mskv = nullptr;
     if (!ocean_to_atmos && m_remora != nullptr) {
-        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+        REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
     }
 
     auto mask_for = [&] (const amrex::MultiFab& field) -> const amrex::MultiFab* {
@@ -3992,14 +3642,8 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
             candidate = m_o2a_uncoupled_mask ? m_o2a_uncoupled_mask.get()
                                              : m_erf_land_mask.get();
         } else {
-            const amrex::IntVect stagger = field.boxArray().ixType().toIntVect();
-            if (stagger == amrex::IntVect(1,0,0)) {
-                candidate = remora_msku;
-            } else if (stagger == amrex::IntVect(0,1,0)) {
-                candidate = remora_mskv;
-            } else if (stagger == amrex::IntVect::TheCellVector()) {
-                candidate = remora_mskr;
-            }
+            // Every A2O lane, TauX/TauY included, is on the REMORA rho layout.
+            candidate = remora_mskr;
         }
         // MaskedMinMax indexes the mask with an MFIter built on the field, which is
         // only defined when the two share a BoxArray *and* a DistributionMapping --
@@ -4065,10 +3709,8 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
     if (m_driver_verbose < 1) { return; }
 
     const amrex::MultiFab* remora_mskr = nullptr;
-    const amrex::MultiFab* remora_msku = nullptr;
-    const amrex::MultiFab* remora_mskv = nullptr;
     if (!ocean_to_atmos && m_remora != nullptr) {
-        REMORAGetMasks(m_remora, &remora_mskr, &remora_msku, &remora_mskv);
+        REMORAGetMasks(m_remora, &remora_mskr, nullptr, nullptr);
     }
 
     auto mask_for = [&] (const amrex::MultiFab& field) -> const amrex::MultiFab* {
@@ -4078,14 +3720,8 @@ ERFRemoraMultiBlockContainer::ValidateFields (const char* label,
             candidate = m_o2a_uncoupled_mask ? m_o2a_uncoupled_mask.get()
                                              : m_erf_land_mask.get();
         } else {
-            const amrex::IntVect stagger = field.boxArray().ixType().toIntVect();
-            if (stagger == amrex::IntVect(1,0,0)) {
-                candidate = remora_msku;
-            } else if (stagger == amrex::IntVect(0,1,0)) {
-                candidate = remora_mskv;
-            } else if (stagger == amrex::IntVect::TheCellVector()) {
-                candidate = remora_mskr;
-            }
+            // Every A2O lane, TauX/TauY included, is on the REMORA rho layout.
+            candidate = remora_mskr;
         }
         // MaskedMinMax indexes the mask with an MFIter built on the field, which is
         // only defined when the two share a BoxArray *and* a DistributionMapping --
@@ -4208,14 +3844,8 @@ ERFRemoraMultiBlockContainer::MaybeInjectDebugNaN (const amrex::Vector<amrex::Mu
         // Ahead of it the unmasked guard sees any cell.
         const amrex::MultiFab* wet_mask = nullptr;
         if (after_guard && m_remora != nullptr) {
-            const amrex::MultiFab* mskr = nullptr;
-            const amrex::MultiFab* msku = nullptr;
-            const amrex::MultiFab* mskv = nullptr;
-            REMORAGetMasks(m_remora, &mskr, &msku, &mskv);
-            const amrex::IntVect stagger = lanes[idx]->boxArray().ixType().toIntVect();
-            wet_mask = (stagger == amrex::IntVect(1,0,0)) ? msku
-                     : (stagger == amrex::IntVect(0,1,0)) ? mskv
-                     : (stagger == amrex::IntVect::TheCellVector()) ? mskr : nullptr;
+            // Every A2O lane is on the REMORA rho layout, so mskr.
+            REMORAGetMasks(m_remora, &wet_mask, nullptr, nullptr);
             // Same rule as ValidateFields: a mask on another layout is not used.
             if (wet_mask != nullptr &&
                 (wet_mask->boxArray() != lanes[idx]->boxArray() ||
@@ -4297,10 +3927,10 @@ ERFRemoraMultiBlockContainer::WriteExchangePlotfile (
         if (fields[comp] == nullptr) {
             amrex::Abort("Cannot write exchange plotfile with a null field.");
         }
-        if (amrex::convert(fields[comp]->boxArray(), amrex::IntVect::TheCellVector()) != plot_ba) {
-            amrex::Abort("Exchange plotfile writer requires a common enclosed-cell slab layout.");
+        if (fields[comp]->boxArray() != plot_ba) {
+            amrex::Abort("Exchange plotfile writer requires every field on one cell-centered slab layout.");
         }
-        CopyFieldToCellCenteredPlot(plot_mf, comp, *fields[comp]);
+        amrex::MultiFab::Copy(plot_mf, *fields[comp], 0, comp, 1, 0);
     }
 
     const std::string plotfilename = amrex::Concatenate(prefix, static_cast<int>(ocean_step), 5);
@@ -4438,8 +4068,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
                long long /*ocean_step*/) {
             BL_PROFILE("Driver::Pack_Surface");
             // ERF land mask on the destination (ERF) layout: zeroes out
-            // land cells in the remapped ocean->atmos SST. Wet/dry masking
-            // only, no vector rotation.
+            // land cells in the remapped ocean->atmos SST.
             const amrex::iMultiFab* erf_is_land = nullptr;
             ERFGetLandMask(m_erf, &erf_is_land);
             REMORAPackSurfaceState(m_remora, state, time,
@@ -4461,21 +4090,15 @@ ERFRemoraMultiBlockContainer::AdvanceBlocks (int ocean_steps)
         [this](amrex::Vector<amrex::MultiFab*>& states, amrex::Real time,
                long long ocean_step) {
             BL_PROFILE("Driver::Pack_Atmos");
-            amrex::Vector<const amrex::MultiFab*> weight_mf_by_family(kNumWeightFamilies);
-            amrex::Vector<const amrex::iMultiFab*> index_mf_by_family(kNumWeightFamilies);
-            for (int f = 0; f < kNumWeightFamilies; ++f) {
-                weight_mf_by_family[f] = m_weight_mf_by_family[f].get();
-                index_mf_by_family[f] = m_index_mf_by_family[f].get();
-            }
-            // REMORA wet/dry masks: mskr masks the scalar destination lanes,
-            // msku/mskv mask TauX/TauY. Wet/dry masking only, no vector rotation.
+            // Every lane, vectors included, is remapped with the same
+            // cell -> rho weights and masked with REMORA's rho wet/dry mask.
+            // ERF packs Uwind/Vwind and TauX/TauY as eastward/northward
+            // components; REMORA turns them to its grid axes. The driver
+            // rotates nothing.
             const amrex::MultiFab* mskr = nullptr;
-            const amrex::MultiFab* msku = nullptr;
-            const amrex::MultiFab* mskv = nullptr;
-            REMORAGetMasks(m_remora, &mskr, &msku, &mskv);
-            ERFPackAtmosphericStates(m_erf, states, time,
-                                    weight_mf_by_family, index_mf_by_family, MAX_STENCIL_SIZE,
-                                    mskr, msku, mskv);
+            REMORAGetMasks(m_remora, &mskr, nullptr, nullptr);
+            ERFPackAtmosphericStates(m_erf, states, time, *m_weight_a2o_mf, *m_index_a2o_mf,
+                                    MAX_STENCIL_SIZE, mskr);
             static int cloud_warn_count = 0;
             constexpr int cloud_warn_limit = 5;
             constexpr amrex::Real cloud_tol = 1.0e-6;

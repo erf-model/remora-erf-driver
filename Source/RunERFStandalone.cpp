@@ -115,16 +115,13 @@ void
 ERFPackAtmosphericStates(void* erf_handle,
                          amrex::Vector<amrex::MultiFab*>& states,
                          amrex::Real time,
-                         const amrex::Vector<const amrex::MultiFab*>& weight_mf_by_family,
-                         const amrex::Vector<const amrex::iMultiFab*>& index_mf_by_family,
+                         const amrex::MultiFab& weight_mf,
+                         const amrex::iMultiFab& index_mf,
                          int max_stencil_size,
-                         const amrex::MultiFab* dst_mskr,
-                         const amrex::MultiFab* dst_msku,
-                         const amrex::MultiFab* dst_mskv)
+                         const amrex::MultiFab* dst_mskr)
 {
     static_cast<ERF*>(erf_handle)->PackAtmosphericStates(
-        states, time, weight_mf_by_family, index_mf_by_family, max_stencil_size,
-        dst_mskr, dst_msku, dst_mskv);
+        states, time, weight_mf, index_mf, max_stencil_size, dst_mskr);
 }
 
 amrex::Real

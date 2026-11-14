@@ -122,11 +122,11 @@ _check_case("a2o_pack_tair"
   "Non-finite value detected in PackAtmosphericStates output, lane 'Tair'")
 
 # Atmos->ocean, behind the post-pack guard: only ValidateFields' masked count
-# stands between the NaN and REMORA. Once on a cell-centred lane (mskr) and once
-# on an x-face lane (msku).
+# stands between the NaN and REMORA. Once on a state lane and once on a stress
+# lane; both are on the REMORA rho layout and masked with mskr.
 _check_case("a2o_validate_tair"
   "driver.atm2ocn_mode=state;driver.v=1;driver.debug_inject_nan_lane=Tair;driver.debug_inject_nan_after_guard=1"
   "Post-pack atmos->ocean validation: 1 non-finite value\\(s\\) in field 'Tair' \\(wet only\\)")
 _check_case("a2o_validate_taux"
   "driver.atm2ocn_mode=flux;driver.v=1;driver.debug_inject_nan_lane=tau_x;driver.debug_inject_nan_after_guard=1"
-  "Post-pack atmos->ocean validation: [12] non-finite value\\(s\\) in field 'tau_x' \\(wet only\\)")
+  "Post-pack atmos->ocean validation: 1 non-finite value\\(s\\) in field 'tau_x' \\(wet only\\)")

@@ -1225,7 +1225,10 @@ ERFRemoraMultiBlockContainer::AllocateCachesFromSolverLayouts ()
         m_atmos_to_ocean_accumulator_storage.resize(coupling::NumAtmosToOceanLayers);
         for (int idx = 0;
              idx < static_cast<int>(m_atmos_to_ocean_accumulator_storage.size()); ++idx) {
-            if (!TimeAverageAtmosToOceanLane(idx)) { continue; }
+            // Rain is summed whenever any lane is averaged, not only under the flux
+            // flag: the pack then runs after every ERF step, so the last sample
+            // alone would be the last step's rate rather than the interval's.
+            if (!TimeAverageAtmosToOceanLane(idx) && !coupling::IsAccumulationRateLane(idx)) { continue; }
             const amrex::MultiFab& lane = *m_atmos_to_ocean[idx];
             auto& accumulator = m_atmos_to_ocean_accumulator_storage[idx];
             accumulator = std::make_unique<amrex::MultiFab>(
@@ -1332,25 +1335,35 @@ ERFRemoraMultiBlockContainer::ResetAtmosToOceanAccumulators ()
         if (accumulator) { accumulator->setVal(0.0); }
     }
     m_a2o_accum_weight = amrex::Real(0.0);
+    m_a2o_rate_accum_weight = amrex::Real(0.0);
 }
 
 void
-ERFRemoraMultiBlockContainer::AccumulateAtmosToOcean (amrex::Real weight)
+ERFRemoraMultiBlockContainer::AccumulateAtmosToOcean (amrex::Real weight,
+                                                     amrex::Real steps_since_last_sample)
 {
+    // weight is the sample's trapezoid weight. An accumulation-rate lane (rain)
+    // already holds the mean over the steps since the previous sample, so it is
+    // weighted by that span instead: zero for the sample at the interval start,
+    // which only repeats the previous interval's last rate, and one per ERF step
+    // after that. Its mean is then the interval's accumulation over its length.
     AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
-        weight > amrex::Real(0.0),
+        weight > amrex::Real(0.0) && steps_since_last_sample >= amrex::Real(0.0),
         "Atmos->ocean averaging sample weight must be positive");
     for (int local_idx = 0;
          local_idx < static_cast<int>(m_atmos_to_ocean_active_indices.size()); ++local_idx) {
         const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
         auto* accumulator = m_atmos_to_ocean_accumulator_storage[global_idx].get();
         if (accumulator != nullptr) {
+            const amrex::Real w = coupling::IsAccumulationRateLane(global_idx)
+                                      ? steps_since_last_sample : weight;
             amrex::MultiFab::Saxpy(*accumulator,
-                                   weight, *m_atmos_to_ocean_active[local_idx],
+                                   w, *m_atmos_to_ocean_active[local_idx],
                                    0, 0, 1, 0);
         }
     }
     m_a2o_accum_weight += weight;
+    m_a2o_rate_accum_weight += steps_since_last_sample;
 }
 
 void
@@ -1365,13 +1378,21 @@ ERFRemoraMultiBlockContainer::DrainAtmosToOceanAccumulators ()
         const int global_idx = m_atmos_to_ocean_active_indices[local_idx];
         const auto* accumulator = m_atmos_to_ocean_accumulator_storage[global_idx].get();
         if (accumulator != nullptr) {
+            amrex::Real inv = inverse_weight;
+            if (coupling::IsAccumulationRateLane(global_idx)) {
+                AMREX_ALWAYS_ASSERT_WITH_MESSAGE(
+                    m_a2o_rate_accum_weight > amrex::Real(0.0),
+                    "Atmos->ocean averaging drained a rain sum that no ERF step contributed to");
+                inv = amrex::Real(1.0) / m_a2o_rate_accum_weight;
+            }
             amrex::MultiFab::Copy(*m_atmos_to_ocean_active[local_idx],
                                   *accumulator,
                                   0, 0, 1, 0);
-            m_atmos_to_ocean_active[local_idx]->mult(inverse_weight, 0);
+            m_atmos_to_ocean_active[local_idx]->mult(inv, 0);
         }
     }
     m_a2o_accum_weight = amrex::Real(0.0);
+    m_a2o_rate_accum_weight = amrex::Real(0.0);
 }
 
 void
@@ -1618,9 +1639,8 @@ ERFRemoraMultiBlockContainer::NormalizeWeightsAndCheckConservation(amrex::MultiF
                            << "ERF_to_REMORA.cpp branches on the -1 index sentinel and assigns a "
                            << "per-lane fallback: Patm=101325 Pa and Tair=288.15 K are the "
                            << "standard-atmosphere values; Uwind/Vwind=0 m/s; Cloud, SWrad, LWrad, "
-                           << "and all eight flux lanes=0.0. Qair and Rain are not remapped and "
-                           << "retain the PrefillAtmosToOceanFallbacks values from "
-                           << "remora.air_humidity and remora.rain. Thus uncovered Patm/Tair cells "
+                           << "Rain, and all eight flux lanes=0.0. Qair is not remapped and REMORA's "
+                           << "remora.air_humidity stands. Thus uncovered Patm/Tair cells "
                            << "are forced but not coupled; for wind and flux lanes they are neither "
                            << "forced nor coupled. Expect these along coastlines where the two land "
                            << "masks disagree, or where the ocean grid reaches past the atmosphere.\n";
@@ -4020,9 +4040,12 @@ ERFRemoraMultiBlockContainer::PrintDiagnostics (const char* label,
             amrex::Print() << " non-finite=" << extrema.nonfinite_cells;
         }
         amrex::Print() << marker << "\n";
-        if (names[idx] == "rain" &&
-            (extrema.min_value > 100.0 || extrema.max_value > 100.0)) {
-            amrex::Print() << "  *** WARNING: implausibly large rain values detected! ***\n";
+        // The lane is a rate in kg m^-2 s^-1; 0.1 is 360 mm/h, beyond any observed
+        // hourly rainfall, so a value past it is more likely an accumulation [kg m^-2]
+        // or a rate in mm/h than a rate.
+        if (names[idx] == "rain" && extrema.max_value > 0.1) {
+            amrex::Print() << "  *** WARNING: rain above 0.1 kg m^-2 s^-1 (360 mm/h); "
+                              "check that it is a rate in kg m^-2 s^-1 ***\n";
         }
     }
 }
@@ -4334,11 +4357,26 @@ ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename
         return;
     }
 
+    // ERF's rain is an interval mean however it is packed: ERF differences its
+    // accumulation since the previous pack, which with averaging off is the
+    // previous interval's end. Without it the rain lane is the driver's prefill.
+    const bool erf_rain_mean = m_atmos_to_ocean_lane_sources_resolved &&
+        m_atmos_to_ocean_lane_source[coupling::Rain] == coupling::LaneSource::Erf;
+    auto interval_mean = [&] (int global_idx) {
+        return global_idx >= 0 &&
+               (TimeAverageAtmosToOceanLane(global_idx) ||
+                (coupling::IsAccumulationRateLane(global_idx) && erf_rain_mean));
+    };
+    bool any_averaged = false;
+    for (int global_idx : m_atmos_to_ocean_active_indices) {
+        any_averaged = any_averaged || interval_mean(global_idx);
+    }
+
     os << "--- time averaging ---\n"
        << "driver.time_average_atm2ocn_state : " << (m_time_average_atm2ocn_state ? 1 : 0) << "\n"
        << "driver.time_average_atm2ocn_flux  : " << (m_time_average_atm2ocn_flux ? 1 : 0) << "\n"
-       << "any lane averaged                 : "
-       << (AtmosToOceanAveragingActive() ? "yes" : "no") << "\n\n";
+       << "any lane averaged                 : " << (any_averaged ? "yes" : "no")
+       << (erf_rain_mean ? " (ERF rain is an interval mean under any setting)" : "") << "\n\n";
 
     os << "--- lanes ---\n"
        << "A lane is averaged according to its CHARACTER, so a view holding both\n"
@@ -4353,7 +4391,7 @@ ERFRemoraMultiBlockContainer::WriteExchangeInfo (const std::string& plotfilename
         const int global_idx =
             (local < static_cast<int>(m_atmos_to_ocean_active_indices.size()))
                 ? m_atmos_to_ocean_active_indices[local] : -1;
-        const bool averaged = (global_idx >= 0) && TimeAverageAtmosToOceanLane(global_idx);
+        const bool averaged = interval_mean(global_idx);
         const bool flux_character = (global_idx >= 0) &&
             (global_idx == coupling::Rain   || global_idx == coupling::SWrad  ||
              global_idx == coupling::LWrad  || global_idx == coupling::TauX   ||
@@ -4666,6 +4704,42 @@ ERFRemoraMultiBlockContainer::ResolveAtmosToOceanLaneSources ()
             "; REMORA longwave set to external downward";
     }
 
+    // SWrad, LWrad and rain sit in both views and were resolved above as state
+    // lanes. The flux contract hands REMORA every flux lane, so there they reach
+    // REMORA from ERF whatever the state rules said, or as zero where ERF computes
+    // none: a deck's own forcing for them is overwritten, and a request to keep
+    // it cannot be met. Say which, and refuse that request.
+    if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
+        for (int local = 0; local < static_cast<int>(flux_indices.size()); ++local) {
+            const int global_idx = flux_indices[local];
+            if (global_idx >= coupling::TauX) { continue; }
+            const auto& spec = coupling::AtmosToOceanLane(global_idx);
+
+            std::string requested = "auto";
+            if (pp_lane.query(spec.name, requested) && amrex::toLower(requested) == "remora") {
+                amrex::Abort("driver.atm2ocn_lane_source." + std::string(spec.name) +
+                             " = remora cannot be honoured with driver.atm2ocn_mode = flux: the flux "
+                             "contract passes every flux lane, " + spec.name + " included, so "
+                             "REMORA's own " + spec.name + " forcing is replaced either way. "
+                             "Drop the override or use driver.atm2ocn_mode = state.");
+            }
+            if (m_atmos_to_ocean_lane_source[global_idx] == coupling::LaneSource::Erf) { continue; }
+
+            const bool erf_can_fill =
+                (local < static_cast<int>(erf_can_fill_flux.size())) && erf_can_fill_flux[local] != 0;
+            const std::string state_reason = m_atmos_to_ocean_lane_reason[global_idx];
+            if (erf_can_fill) {
+                m_atmos_to_ocean_lane_source[global_idx] = coupling::LaneSource::Erf;
+                m_atmos_to_ocean_lane_reason[global_idx] =
+                    "packed by ERF; flux mode passes every lane, overriding " + state_reason;
+            } else {
+                m_atmos_to_ocean_lane_source[global_idx] = coupling::LaneSource::RemoraDefault;
+                m_atmos_to_ocean_lane_reason[global_idx] =
+                    "ERF does not compute it; passed as zero (flux mode passes every lane)";
+            }
+        }
+    }
+
     m_atmos_to_ocean_lane_sources_resolved = true;
 }
 
@@ -4687,13 +4761,14 @@ ERFRemoraMultiBlockContainer::PrintAtmosToOceanLaneProvenance () const
         print_lane(global_idx);
     }
     if (m_atmos_to_ocean_contract == coupling::AtmosToOceanContract::FluxPassing) {
-        amrex::Print() << "  (above is the ocean_step=0 bootstrap; steady-state flux lanes follow)\n";
+        amrex::Print() << "  (flux mode: of the lanes above only SWrad, LWrad and rain reach REMORA; "
+                          "the flux lanes follow)\n";
         for (int global_idx : m_atmos_to_ocean_flux_active_indices) {
             if (global_idx >= coupling::TauX) { print_lane(global_idx); }
         }
     }
-    amrex::Print() << "  A lane sourced from REMORA is withheld from the apply view, so REMORA's own\n"
-                      "  forcing for it stands. Override per lane with "
+    amrex::Print() << "  In state mode a lane sourced from REMORA is withheld from the apply view, so\n"
+                      "  REMORA's own forcing for it stands. Override per lane with "
                       "driver.atm2ocn_lane_source.<lane>.\n";
 }
 
@@ -4865,7 +4940,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
 
             if (averaging_active && substep == 0 && !cold_start_extrapolate) {
                 pack_atmos_states(m_atmos_to_ocean_active, ocean_time, global_ocean_step);
-                AccumulateAtmosToOcean(amrex::Real(0.5));
+                AccumulateAtmosToOcean(amrex::Real(0.5), amrex::Real(0.0));
             }
             const amrex::Real atm_time = m_atm_tick * m_erf_dt;
 
@@ -4921,7 +4996,7 @@ ERFRemoraMultiBlockContainer::AdvanceBlocksWithCallbacks (const MutableStateFn& 
                         sample_weight -= amrex::Real(0.5);
                     }
                 }
-                AccumulateAtmosToOcean(sample_weight);
+                AccumulateAtmosToOcean(sample_weight, amrex::Real(1.0));
             }
         }
 
